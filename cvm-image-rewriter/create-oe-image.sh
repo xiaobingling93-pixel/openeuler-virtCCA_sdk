@@ -235,19 +235,10 @@ softdep hisi_plat_sec pre: hisi_plat_qm
 softdep hisi_plat_hpre pre: hisi_plat_sec
 EOF
 
-    cat > ${TMP_MOUNT_PATH}/home/depmod.sh << EOF
-depmod -a
-EOF
-
-    chmod +x ${TMP_MOUNT_PATH}/home/depmod.sh
     guestunmount ${TMP_MOUNT_PATH}
     guestfish --rw -i -a ${target_image} << EOF
-sh /home/depmod.sh
+sh "depmod -a ${KERNEL_VERSION}"
 EOF
-
-    guestmount -a ${target_image} -i ${TMP_MOUNT_PATH} || error "Failed to mount the VM image."
-    rm ${TMP_MOUNT_PATH}/home/depmod.sh
-    guestunmount ${TMP_MOUNT_PATH}
 
     cd $SCRIPT_DIR
     ok "Install KAE driver successfully."
