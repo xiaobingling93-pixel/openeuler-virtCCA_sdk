@@ -25,6 +25,8 @@
 #include "openssl/rand.h"
 #include "openssl/x509.h"
 #include "openssl/pem.h"
+#include "openssl/ec.h"
+#include "openssl/obj_mac.h"
 
 #define MAX_MEASUREMENT_SIZE 64
 #define CCEL_ACPI_TABLE_PATH "./ccel.bin"
@@ -47,7 +49,67 @@ char* ref_json_file = NULL;
 bool use_fde = false;
 char* rootfs_key_file = NULL;
 
-/* Helper function: Extract string value from JSON */
+
+/*
+/* Certificate format detection function
+/* Returns: 0 for DER format, 1 for PEM format, -1 for unknown format
+*/
+static int detect_cert_format(const unsigned char *cert_data, size_t cert_len)
+{
+    if (!cert_data || cert_len == 0) {
+        return -1;
+    }
+
+    /*
+    /* Check for PEM format first
+    /* PEM certificates start with "-----BEGIN CERTIFICATE-----"
+    */
+    const char *pem_begin = "-----BEGIN CERTIFICATE-----";
+    const char *pem_end = "-----END CERTIFICATE-----";
+    
+    if (cert_len >= strlen(pem_begin)) {
+        if (strncmp((const char*)cert_data, pem_begin, strlen(pem_begin)) == 0) {
+            /* Verify it also has the end marker */
+            if (strstr((const char*)cert_data, pem_end)) {
+                return 1; /* PEM format */
+            }
+        }
+    }
+
+    /*
+    /* Check for DER format
+    /* DER certificates start with ASN.1 SEQUENCE tag (0x30)
+    /* followed by length encoding
+    */
+    if (cert_len >= 4 && cert_data[0] == 0x30) {
+        /* Basic ASN.1 SEQUENCE validation */
+        size_t length_bytes = 1;
+        size_t total_length = 0;
+        
+        if (cert_data[1] & 0x80) {
+            /* Long form length encoding */
+            length_bytes = (cert_data[1] & 0x7F) + 1;
+            if (length_bytes > 4 || length_bytes + 1 >= cert_len) {
+                return -1; /* Invalid length encoding */
+            }
+            
+            for (size_t i = 0; i < length_bytes - 1; i++) {
+                total_length = (total_length << 8) | cert_data[2 + i];
+            }
+        } else {
+            /* Short form length encoding */
+            total_length = cert_data[1];
+        }
+        
+        /* Verify the total length makes sense */
+        if (total_length + length_bytes + 1 <= cert_len) {
+            return 0; /* DER format */
+        }
+    }
+
+    return -1; /* Unknown format */
+}
+
 static char* extract_json_string(const char* json, const char* key)
 {
     char* value = NULL;
@@ -94,9 +156,32 @@ int verify_token(unsigned char *token, size_t token_len)
     strcpy(cert_info.root_cert_url, DEFAULT_ROOT_CERT_URL);
     strcpy(cert_info.sub_cert_url, DEFAULT_SUB_CERT_URL);
 
-    ret = verify_cca_token_signatures(&cert_info,
-                                cca_token.cvm_cose,
-                                cca_token.cvm_token.pub_key);
+    /*
+     * Support both legacy CVM-only tokens and complete attestation tokens (CVM and Platform)
+     * Check if platform token exists to determine verification mode
+     */
+    if (cca_token.platform_cose.ptr != NULL && cca_token.platform_cose.len > 0) {
+        /* Platform token exists - use new verification logic for CVM+Platform tokens */
+        ret = verify_cca_token_signatures(&cert_info,
+                                          cca_token.platform_cose,
+                                          cca_token.cvm_cose,
+                                          cca_token.cvm_token.pub_key,
+                                          cca_token.platform_token.challenge,
+                                          cca_token.cvm_token.pub_key_hash_algo_id);
+    } else {
+        /*
+        /* No platform token - use legacy verification logic for CVM-only tokens
+        /* Create empty qbuf_t structures for compatibility
+        */
+        qbuf_t empty_buf = {.ptr = NULL, .len = 0};
+        ret = verify_cca_token_signatures(&cert_info,
+                                          empty_buf,  /* platform_cose */
+                                          cca_token.cvm_cose,
+                                          cca_token.cvm_token.pub_key,
+                                          empty_buf,  /* platform challenge */
+                                          cca_token.cvm_token.pub_key_hash_algo_id);
+        printf("Using legacy CVM-only token verification mode\n");
+    }
     if (!ret) {
         return VERIFY_FAILED;
     }
@@ -180,6 +265,7 @@ int save_dev_cert(const char *prefix, const char * filename, const char *dev_cer
 {
     char fullpath[PATH_MAX] = {0};
     FILE *fp = NULL;
+    const unsigned char *cert_data = (const unsigned char *)dev_cert;
 
     snprintf(fullpath, sizeof(fullpath), "%s/%s", prefix, filename);
     fp = fopen(fullpath, "wb");
@@ -188,11 +274,102 @@ int save_dev_cert(const char *prefix, const char * filename, const char *dev_cer
         return 1;
     }
 
-    X509 *aik = X509_new();
-    aik = d2i_X509(&aik, (const unsigned char **)&dev_cert, dev_cert_len);
-    PEM_write_X509(fp, aik);
+    /* Detect certificate format and parse accordingly */
+    X509 *cert = NULL;
+    int cert_format = detect_cert_format(cert_data, dev_cert_len);
+    
+    printf("Detected certificate format: ");
+    
+    if (cert_format == 0) {
+        /* DER format */
+        printf("DER\n");
+        cert = d2i_X509(NULL, &cert_data, dev_cert_len);
+        if (!cert) {
+            printf("Failed to parse DER certificate\n");
+            fclose(fp);
+            return 1;
+        }
+    } else if (cert_format == 1) {
+        /* PEM format */
+        printf("PEM\n");
+        BIO *bio = BIO_new_mem_buf(cert_data, dev_cert_len);
+        if (bio) {
+            cert = PEM_read_bio_X509(bio, NULL, NULL, NULL);
+            BIO_free(bio);
+        }
+        if (!cert) {
+            printf("Failed to parse PEM certificate\n");
+            fclose(fp);
+            return 1;
+        }
+    } else {
+        /* Unknown format, try both formats as fallback */
+        printf("Unknown, trying DER first\n");
+        cert = d2i_X509(NULL, &cert_data, dev_cert_len);
+        if (!cert) {
+            printf("DER failed, trying PEM format\n");
+            cert_data = (const unsigned char *)dev_cert;
+            BIO *bio = BIO_new_mem_buf(cert_data, dev_cert_len);
+            if (bio) {
+                cert = PEM_read_bio_X509(bio, NULL, NULL, NULL);
+                BIO_free(bio);
+            }
+        }
+        
+        if (!cert) {
+            printf("Failed to parse certificate in any supported format\n");
+            fclose(fp);
+            return 1;
+        }
+    }
 
-    X509_free(aik);
+    EVP_PKEY *pkey = X509_get_pubkey(cert);
+    if (pkey) {
+        int key_type = EVP_PKEY_base_id(pkey);
+        printf("Device certificate key type: %s\n",
+               key_type == EVP_PKEY_RSA ? "RSA" :
+               key_type == EVP_PKEY_EC ? "ECC" : "Unknown");
+        
+        if (key_type == EVP_PKEY_EC) {
+            EC_KEY *ec_key = EVP_PKEY_get1_EC_KEY(pkey);
+            if (ec_key) {
+                const EC_GROUP *group = EC_KEY_get0_group(ec_key);
+                if (group) {
+                    int curve_nid = EC_GROUP_get_curve_name(group);
+                    const char* curve_name = "Unknown";
+                    
+                    if (curve_nid == NID_secp521r1) {
+                        curve_name = "P-521";
+                    } else if (curve_nid == NID_secp384r1) {
+                        curve_name = "P-384";
+#ifdef NID_X9_62_prime256v1
+                    } else if (curve_nid == NID_X9_62_prime256v1) {
+                        curve_name = "P-256";
+#endif
+#ifdef NID_secp256r1
+                    } else if (curve_nid == NID_secp256r1) {
+                        curve_name = "P-256";
+#endif
+                    }
+                    
+                    printf("ECC curve: %s (NID: %d)\n", curve_name, curve_nid);
+                }
+                EC_KEY_free(ec_key);
+            }
+        }
+        EVP_PKEY_free(pkey);
+    }
+
+    /* Write certificate in PEM format */
+    if (PEM_write_X509(fp, cert) != 1) {
+        printf("Failed to write certificate to PEM file\n");
+        X509_free(cert);
+        fclose(fp);
+        return 1;
+    }
+
+    printf("Successfully saved device certificate to %s\n", fullpath);
+    X509_free(cert);
     fclose(fp);
     return 0;
 }
