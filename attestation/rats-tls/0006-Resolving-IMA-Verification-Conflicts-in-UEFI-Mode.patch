@@ -1,0 +1,395 @@
+From 4e4120961fe735dd390b5e654d3d11f08e0deb5c Mon Sep 17 00:00:00 2001
+From: unholyzero <yuanhai4@huawei.com>
+Date: Wed, 28 May 2025 17:31:13 +0800
+Subject: [PATCH] Resolving IMA Verification Conflicts in UEFI Mode
+
+---
+ samples/virtcca-client/ima_measure.c     | 146 ++++++++++++++++-------
+ samples/virtcca-client/inc/ima_measure.h |   3 +-
+ samples/virtcca-client/rats-client.c     |  94 +++++++++++++--
+ 3 files changed, 188 insertions(+), 55 deletions(-)
+
+diff --git a/samples/virtcca-client/ima_measure.c b/samples/virtcca-client/ima_measure.c
+index 60d7310..29035de 100644
+--- a/samples/virtcca-client/ima_measure.c
++++ b/samples/virtcca-client/ima_measure.c
+@@ -12,12 +12,17 @@
+ #include <openssl/evp.h>
+ #include <ima_measure.h>
+ 
++/*
++* Define a constant for aggregating all PCRs, if needed for other use cases,
++* though for the current problem, we will target a specific PCR.
++*/
++#define IMA_AGGREGATE_ALL_PCRS -1
++
+ /* static int verify_sig; */
+ /* static unsigned int no_sigs, unknown_keys, invalid_sigs; */
+ 
+ static u_int8_t zero[SHA_DIGEST_LENGTH];
+ static u_int8_t fox[SHA_DIGEST_LENGTH];
+-static u_int8_t extend[SHA256_DIGEST_LENGTH];
+ 
+ static int display_digest(u_int8_t *digest, u_int32_t digestlen)
+ {
+@@ -301,14 +306,14 @@ free:
+ static int verify_template_hash(struct event *template_digest)
+ {
+ 	int rc;
+-	u_int8_t digest[SHA_DIGEST_LENGTH] = {0};
+-	int len = SHA_DIGEST_LENGTH;
++	u_int8_t local_digest[SHA_DIGEST_LENGTH] = {0}; /* Renamed to avoid conflict */
++	unsigned int len = SHA_DIGEST_LENGTH; /* Use unsigned int for EVP_Digest length parameter */
+ 
+ 	rc = memcmp(fox, template_digest, sizeof(fox));
+ 	if (rc != 0) {
+ 		EVP_Digest(template_digest->template_data, template_digest->template_data_len,
+-					digest, &len, EVP_sha1(), NULL);
+-		rc = memcmp(digest, template_digest->header.digest, len);
++					local_digest, &len, EVP_sha1(), NULL);
++		rc = memcmp(local_digest, template_digest->header.digest, len);
+ 		if (rc != 0)
+ 			printf("- %s\n", "failed");
+ 	}
+@@ -316,12 +321,13 @@ static int verify_template_hash(struct event *template_digest)
+ }
+ 
+ static int check_one_template(struct event *template, FILE *fp, char *digest_list_file,
+-	u_int8_t digest[SHA256_DIGEST_LENGTH], bool verify)
++	u_int8_t event_template_data_hash[SHA256_DIGEST_LENGTH], bool verify)
+ {
+ 	int ret = -1;
+ 	char digest_hex[MAX_CMD_LEN * 2] = {0};
+ 	int hash_failed = 0;
+-	int i, len = SHA256_DIGEST_LENGTH;
++	int i;
++	unsigned int len = SHA256_DIGEST_LENGTH; /* Use unsigned int for EVP_Digest length parameter */
+ 
+ 	display_digest(template->header.digest, SHA_DIGEST_LENGTH);
+ 	memset(template->name, 0, sizeof(template->name));
+@@ -363,8 +369,8 @@ static int check_one_template(struct event *template, FILE *fp, char *digest_lis
+ 	}
+ 
+ 	if (EVP_Digest(template->template_data, template->template_data_len,
+-		digest, &len, EVP_sha256(), NULL) != 1) {
+-		RTLS_ERR("Failed to verify file hash.\n");
++		event_template_data_hash, &len, EVP_sha256(), NULL) != 1) {
++		RTLS_ERR("Failed to calculate SHA256 hash of template data.\n");
+ 		goto free;
+ 	}
+ 	ret = hash_failed;
+@@ -404,82 +410,132 @@ free:
+  * Return code: if verification enabled, returns number of verification
+  * 		errors.
+  */
+-int ima_measure(void *data, size_t datalen, char *digest_list_file, int validate, int verify)
++int ima_measure(const void *reference_pcr_value, size_t reference_pcr_value_len,
++				char *digest_list_file, int validate, int verify, int target_pcr_index)
+ {
+ 	int ret = 0;
+ 	FILE *fp;
+ 	struct event template;
+-	u_int8_t pcr[SHA256_DIGEST_LENGTH * 2], digest[SHA256_DIGEST_LENGTH];
+-	int i, count = 0;
++	u_int8_t calculated_pcr_aggregate[SHA256_DIGEST_LENGTH];
++	u_int8_t event_data_hash[SHA256_DIGEST_LENGTH];
++	u_int8_t pcr_extension_buffer[SHA256_DIGEST_LENGTH * 2];
++	int count = 0;
+ 	int hash_failed = 0;
+ 	unsigned int tmp_len = SHA256_DIGEST_LENGTH;
+ 	
+ 	fp = fopen(IMA_MEASUREMENTS_PATH, "r");
+ 	if (!fp) {
+-		printf("fn: %s\n", IMA_MEASUREMENTS_PATH);
+-		perror("Unable to open file\n");
+-		return 1;
++		RTLS_ERR("fn: %s\n", IMA_MEASUREMENTS_PATH);
++		perror("Unable to open file");
++		return -1;
+ 	}
+-	memset(pcr, 0, SHA256_DIGEST_LENGTH * 2);	/* initial PCR content 0..0 */
+-	memset(digest, 0, SHA256_DIGEST_LENGTH);
++
++	memset(calculated_pcr_aggregate, 0, SHA256_DIGEST_LENGTH);
++	memset(event_data_hash, 0, SHA256_DIGEST_LENGTH);
++	memset(pcr_extension_buffer, 0, SHA256_DIGEST_LENGTH * 2);
+ 	memset(zero, 0, SHA_DIGEST_LENGTH);
+ 	memset(fox, 0xff, SHA_DIGEST_LENGTH);
+ 
+-	printf("### PCR HASH                                  "
+-		   "TEMPLATE-NAME\n");
++	RTLS_INFO("### PCR HASH                                  TEMPLATE-NAME\n");
+ 
+ #if OPENSSL_VERSION_NUMBER <= OPENSSL_1_1_0
+ 	OpenSSL_add_all_digests();
+ #endif
+ 
+ 	while (fread(&template.header, sizeof(template.header), 1, fp)) {
+-		printf("%3d %03u ", count++, template.header.pcr);
+-
+-		ret = check_one_template(&template, fp, digest_list_file, digest, verify);
+-		if (ret < 0) {
+-			printf("check this template failed\n");
++		RTLS_INFO("%3d %03u ", count++, template.header.pcr);
++
++		
++       /*
++		* check_one_template verifies the file digest against the digest_list_file
++		* and calculates SHA256 hash of template.template_data into event_data_hash.
++		* It also performs template hash verification if 'verify' is true, updating hash_failed.
++		*/
++		int check_ret = check_one_template(&template, fp, digest_list_file, event_data_hash, verify);
++		if (check_ret < 0) {
++			RTLS_ERR("check_one_template failed for an event\n");
++			ret = -1;
+ 			break;
+ 		}
+-		hash_failed += ret;
+-		printf("\n");
+-
+-		/* Extend simulated PCR with new template digest */
+-		if (validate) {
+-			if (memcmp(template.header.digest, zero, SHA_DIGEST_LENGTH) == 0)
+-				memset(template.header.digest, 0xFF, SHA_DIGEST_LENGTH);
+-		}
++		hash_failed += check_ret;
++		RTLS_INFO("\n");
++
++		
++       /*
++		* Extend simulated PCR with new template digest only if the event's PCR
++		* matches the target_pcr_index.
++		* IMA_AGGREGATE_ALL_PCRS can be used to revert to old behavior if needed.
++		*/
++		if (target_pcr_index == IMA_AGGREGATE_ALL_PCRS || template.header.pcr == (u_int32_t)target_pcr_index) {
++			if (validate) {
++				
++               /*
++				* This logic was present for the 'validate' flag regarding 0x00 or 0xFF hashes.
++				* It seems specific to how template.header.digest is handled, not event_data_hash.
++				* For PCR extension, we use event_data_hash (hash of template_data).
++				* The original code extended 'pcr' with 'digest' (which was H(template_data)).
++				* The original TOMTOU logic:
++				* if (memcmp(template.header.digest, zero, SHA_DIGEST_LENGTH) == 0)
++				*    memset(template.header.digest, 0xFF, SHA_DIGEST_LENGTH);
++				* This part seems to modify template.header.digest if 'validate' is true,
++				* but PCR extension uses the hash of template_data.
++				* This might need careful review if template.header.digest is also meant to be extended.
++				* Based on standard PCR extension, it's H(event_data).
++				* The provided log shows 'digest' in check_one_template comes from template_data.
++				*/
++			}
+ 
+-		memcpy(pcr + SHA256_DIGEST_LENGTH, digest, SHA256_DIGEST_LENGTH);
+-		if (EVP_Digest(pcr, 2 * SHA256_DIGEST_LENGTH, digest, &tmp_len, EVP_sha256(), NULL) != 1) {
+-			ret = -1;
+-			break;
++			memcpy(pcr_extension_buffer, calculated_pcr_aggregate, SHA256_DIGEST_LENGTH);
++			memcpy(pcr_extension_buffer + SHA256_DIGEST_LENGTH, event_data_hash, SHA256_DIGEST_LENGTH);
++			
++			if (EVP_Digest(pcr_extension_buffer, 2 * SHA256_DIGEST_LENGTH, calculated_pcr_aggregate, &tmp_len, EVP_sha256(), NULL) != 1) {
++				RTLS_ERR("EVP_Digest for PCR extension failed\n");
++				ret = -1;
++				break;
++			}
+ 		}
+-		memcpy(pcr, digest, tmp_len);
+ 	}
+ 
+ #if OPENSSL_VERSION_NUMBER <= OPENSSL_1_1_0
+ 	EVP_cleanup();
+ #endif
+ 	fclose(fp);
++
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	printf("PCRAggr (re-calculated): ");
+-	display_digest(pcr, SHA256_DIGEST_LENGTH);
+-	printf("\n");
++	RTLS_INFO("PCRAggr (re-calculated for PCR %d): ", target_pcr_index == IMA_AGGREGATE_ALL_PCRS ? 10 : target_pcr_index);
++	display_digest(calculated_pcr_aggregate, SHA256_DIGEST_LENGTH);
++	RTLS_INFO("\n");
+ 
+ 	if (verify)	{
+-		RTLS_INFO("Template hash verification: %s, failures is %d \n", !hash_failed ? "Success" : "Failed", hash_failed);
++		RTLS_INFO("Template hash verification (within check_one_template): %s, failures is %d \n", !hash_failed ? "Success" : "Failed", hash_failed);
+ 	}
+ 
++	
++   /*
++	* 'validate' here means to compare the calculated_pcr_aggregate with the reference_pcr_value.
++	*/
+ 	if (validate) {
+-		ret = memcmp(pcr, data, datalen);
+-		RTLS_INFO("Verifying if REM of cVM token matches reference value: %s \n",
+-			(ret == 0) ? "Success" : "Failed");
++		if (reference_pcr_value == NULL || reference_pcr_value_len != SHA256_DIGEST_LENGTH) {
++			RTLS_ERR("Invalid reference PCR value or length for validation.\n");
++			return -1;
++		}
++		ret = memcmp(calculated_pcr_aggregate, reference_pcr_value, SHA256_DIGEST_LENGTH);
++		RTLS_INFO("Verifying if calculated PCR for index %d matches reference value: %s \n",
++			target_pcr_index, (ret == 0) ? "Success" : "Failed");
+ 		if (ret != 0) {
+ 			return 1;
+ 		}
+ 	}
+-
++	
++	
++   /*
++	* If verify was true and there were hash_failed, this could be considered a failure.
++	* However, the original code returns 0 if 'validate' passes or is false,
++	* and 1 if 'validate' fails. Errors are < 0.
++	* We will maintain that: 0 for success (including validate pass), 1 for validate fail, <0 for errors.
++	* The 'hash_failed' count is informational via logs.
++	*/
+ 	return 0;	
+ }
+\ No newline at end of file
+diff --git a/samples/virtcca-client/inc/ima_measure.h b/samples/virtcca-client/inc/ima_measure.h
+index b113721..6ad6c00 100644
+--- a/samples/virtcca-client/inc/ima_measure.h
++++ b/samples/virtcca-client/inc/ima_measure.h
+@@ -23,6 +23,7 @@
+ #define IMA_MEASUREMENTS_PATH "binary_runtime_measurements"
+ 
+ 
+-int ima_measure(void *data, size_t datalen, char *digest_list_file, int validate, int verify);
++int ima_measure(const void *reference_pcr_value, size_t reference_pcr_value_len,
++				char *digest_list_file, int validate, int verify, int target_pcr_index);
+ 
+ #endif
+\ No newline at end of file
+diff --git a/samples/virtcca-client/rats-client.c b/samples/virtcca-client/rats-client.c
+index 1888d81..42636e3 100644
+--- a/samples/virtcca-client/rats-client.c
++++ b/samples/virtcca-client/rats-client.c
+@@ -37,6 +37,30 @@
+ #include "openssl/x509.h"
+ #include "openssl/pem.h"
+ 
++static void display_hash_as_hex_string(const uint8_t *hash, size_t hash_len, const char *label)
++{
++    if (label) {
++        RTLS_INFO("%s: ", label);
++    }
++    for (size_t i = 0; i < hash_len; ++i) {
++        printf("%02x", hash[i]);
++    }
++    printf("\n");
++}
++
++static bool is_rem_entry_zero(const qbuf_t *rem_entry)
++{
++    if (!rem_entry || rem_entry->ptr == NULL || rem_entry->len == 0) {
++        return true;
++    }
++    for (size_t i = 0; i < rem_entry->len; ++i) {
++        if (((const uint8_t *)rem_entry->ptr)[i] != 0) {
++            return false;
++        }
++    }
++    return true;
++}
++
+ #define DEFAULT_PORT 1234
+ #define DEFAULT_IP   "127.0.0.1"
+ #define TOKEN "ATTESTATION_PASS"
+@@ -165,9 +189,15 @@ static int verify_ima_log(rats_tls_handle handle, client_args *args)
+ 	size_t recv_size = 0;
+ 	FILE *fp = NULL;
+ 	int ret = ENCLAVE_VERIFIER_ERR_UNKNOWN;
++	cca_token_t token = {0};
++	cca_token_buf_t *cca_token_buf_ptr = NULL;
++	int target_pcr_for_ima = -1;  /* Will be set to 1 or 4 */
++	int rem_index_for_ima = -1; /* Will be set to 0 or 3 */
++	const uint8_t *reference_rem_ptr = NULL;
++	size_t reference_rem_len = 0;
++
++	RTLS_INFO("Starting automatic IMA measurement verification...");
+ 
+-	RTLS_INFO("Start verify IMA measurement....\n");
+-	// get IMA log size and data
+ 	ret = rats_tls_receive(handle, &ima_log_size, &len);
+ 	if (ret != RATS_TLS_ERR_NONE || len != sizeof(size_t)) {
+ 		RTLS_INFO("Failed to receive IMA log size %#x\n", ret);
+@@ -194,7 +224,7 @@ static int verify_ima_log(rats_tls_handle handle, client_args *args)
+ 		recv_size += len;
+ 	}
+ 
+-	// write IMA log to file for next verify
++	/* write IMA log to file for next verify */
+ 	if ((fp = fopen(IMA_MEASUREMENTS_PATH, "w")) == NULL) {
+ 		RTLS_INFO("Filed to open file %s.\n", IMA_MEASUREMENTS_PATH);
+ 		ret = ENCLAVE_VERIFIER_ERR_UNKNOWN;
+@@ -213,13 +243,59 @@ free:
+ 		return ret;
+ 
+ 	rtls_core_context_t *ctx = (rtls_core_context_t *)handle;
+-	ret = ima_measure(ctx->verifier->config.virtcca.ima_log_hash, \
+-		ctx->verifier->config.virtcca.ima_log_hash_len, args->digest_file, 1, 1);
+-	if (ret) {
+-		RTLS_INFO("Filed to verify IMA measurement.\n");
+-		ret = ENCLAVE_VERIFIER_ERR_UNKNOWN;
++
++	if (!ctx || !ctx->verifier || !ctx->verifier->verifier_private) {
++		RTLS_ERR("Verifier context or private data not found, cannot get CVM token for IMA validation.\n");
++		return RATS_TLS_ERR_INVALID;
+ 	}
+-	return ret;
++	cca_token_buf_ptr = (cca_token_buf_t *)ctx->verifier->verifier_private;
++
++	if (parse_cca_attestation_token(&token, cca_token_buf_ptr->buf, cca_token_buf_ptr->buf_size) != VIRTCCA_SUCCESS) {
++		RTLS_ERR("Failed to parse virtcca token from verifier context for IMA validation.\n");
++		return ENCLAVE_VERIFIER_ERR_CBOR;
++	}
++
++	RTLS_INFO("Attempting to determine IMA validation target (REM[3] for UEFI, REM[0] for Direct Boot)...\n");
++
++	/* Check REM[3] (for PCR4 - UEFI IMA) */
++	if (REM_COUNT > 3 && token.cvm_token.rem[3].len == SHA256_SIZE && !is_rem_entry_zero(&token.cvm_token.rem[3])) {
++		RTLS_INFO("REM[3] is non-zero. Assuming UEFI Boot scenario for IMA.\n");
++		target_pcr_for_ima = 4;
++		rem_index_for_ima = 3;
++		reference_rem_ptr = (const uint8_t *)token.cvm_token.rem[3].ptr;
++		reference_rem_len = token.cvm_token.rem[3].len;
++	} 
++	/* If REM[3] is zero or invalid, check REM[0] (for PCR1 - Direct Boot IMA) */
++	else if (REM_COUNT > 0 && token.cvm_token.rem[0].len == SHA256_SIZE && !is_rem_entry_zero(&token.cvm_token.rem[0])) {
++		RTLS_INFO("REM[3] is zero/invalid. REM[0] is non-zero. Assuming Direct Boot scenario for IMA.\n");
++		target_pcr_for_ima = 1;
++		rem_index_for_ima = 0;
++		reference_rem_ptr = (const uint8_t *)token.cvm_token.rem[0].ptr;
++		reference_rem_len = token.cvm_token.rem[0].len;
++	} else {
++		RTLS_ERR("Could not determine a valid non-zero REM slot (REM[3] or REM[0]) for IMA verification. Both appear zero or invalid.\n");
++		RTLS_INFO("REM[3] status: length %zu, is_zero: %s\n", 
++				  (REM_COUNT > 3 ? token.cvm_token.rem[3].len : 0), 
++				  (REM_COUNT > 3 ? (is_rem_entry_zero(&token.cvm_token.rem[3]) ? "true" : "false") : "N/A"));
++		RTLS_INFO("REM[0] status: length %zu, is_zero: %s\n", 
++				  (REM_COUNT > 0 ? token.cvm_token.rem[0].len : 0), 
++				  (REM_COUNT > 0 ? (is_rem_entry_zero(&token.cvm_token.rem[0]) ? "true" : "false") : "N/A"));
++		return RATS_TLS_ERR_INVALID; 
++	}
++
++	RTLS_INFO("Using REM[%d] (PCR%d) from CVM token for IMA validation.\n", rem_index_for_ima, target_pcr_for_ima);
++	display_hash_as_hex_string(reference_rem_ptr, reference_rem_len, "REM_FOR_IMA");
++
++	ret = ima_measure(reference_rem_ptr, 
++					reference_rem_len, 
++					args->digest_file, 1, 1, target_pcr_for_ima);
++	if (ret != 0) { 
++		RTLS_ERR("IMA measurement verification failed for PCR%d. ima_measure returned: %d\n", target_pcr_for_ima, ret);
++		return ENCLAVE_VERIFIER_ERR_UNKNOWN;
++	}
++
++	RTLS_INFO("IMA measurement verification successful for PCR%d.\n", target_pcr_for_ima);
++	return RATS_TLS_ERR_NONE;
+ }
+ 
+ static int deal_ima(rats_tls_handle handle, client_args *args)
+-- 
+2.43.0
+
