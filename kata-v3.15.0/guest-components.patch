@@ -1,0 +1,268 @@
+From cbbbae48d14182e9265fff666c2bcd1b4e80f827 Mon Sep 17 00:00:00 2001
+From: fuju <fuju1@huawei.com>
+Date: Mon, 9 Jun 2025 08:22:28 -0400
+Subject: [PATCH] Support VirtCCA
+
+---
+ Cargo.lock                                     |  2 -
+ Cargo.toml                                     |  2 +-
+ Makefile                                       |  2 +
+ attestation-agent/attestation-agent/Cargo.toml |  2 +
+ attestation-agent/attestation-agent/build.rs   |  1 +
+ attestation-agent/attester/Cargo.toml          |  2 +
+ attestation-agent/attester/src/lib.rs          | 10 +++
+ attestation-agent/attester/src/virtcca/mod.rs  | 91 ++++++++++++++++++++++++++
+ attestation-agent/kbc/Cargo.toml               |  1 +
+ attestation-agent/kbs_protocol/Cargo.toml      |  1 +
+ 10 files changed, 111 insertions(+), 3 deletions(-)
+ create mode 100644 attestation-agent/attester/src/virtcca/mod.rs
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 97bab9e..6ddf109 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -3383,8 +3383,6 @@ dependencies = [
+ [[package]]
+ name = "kbs-types"
+ version = "0.10.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "6db954f164e19a63a1eb7c04c46511167d68a5eb5025d4a435c1ba297f00dbf4"
+ dependencies = [
+  "base64 0.22.1",
+  "serde",
+diff --git a/Cargo.toml b/Cargo.toml
+index c001449..8be0c4b 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -38,7 +38,7 @@ hmac = "0.12.1"
+ jwt-simple = { version = "0.12", default-features = false, features = [
+     "pure-rust",
+ ] }
+-kbs-types = "0.10.0"
++kbs-types = { path = "../kbs-types" }
+ log = "0.4.25"
+ nix = "0.29"
+ openssl = "0.10"
+diff --git a/Makefile b/Makefile
+index c6bfa89..a0f27d8 100644
+--- a/Makefile
++++ b/Makefile
+@@ -50,6 +50,8 @@ else ifeq ($(TEE_PLATFORM), amd)
+   endif
+ else ifeq ($(TEE_PLATFORM), cca)
+   ATTESTER = cca-attester
++else ifeq ($(TEE_PLATFORM), virtcca)
++  ATTESTER = virtcca-attester
+ endif
+ # TODO: Add support for CSV
+ 
+diff --git a/attestation-agent/attestation-agent/Cargo.toml b/attestation-agent/attestation-agent/Cargo.toml
+index c3a74d3..15cb89b 100644
+--- a/attestation-agent/attestation-agent/Cargo.toml
++++ b/attestation-agent/attestation-agent/Cargo.toml
+@@ -74,6 +74,7 @@ all-attesters = [
+     "snp-attester",
+     "se-attester",
+     "cca-attester",
++    "virtcca-attester",
+ ]
+ tdx-attester = ["kbs_protocol?/tdx-attester", "attester/tdx-attester"]
+ tdx-attester-libtdx = ["kbs_protocol?/tdx-attester-libtdx", "attester/tdx-attester", "attester/tdx-attest-dcap-ioctls"]
+@@ -89,6 +90,7 @@ az-tdx-vtpm-attester = [
+ snp-attester = ["kbs_protocol?/snp-attester", "attester/snp-attester"]
+ se-attester = ["kbs_protocol?/se-attester", "attester/se-attester"]
+ cca-attester = ["kbs_protocol?/cca-attester", "attester/cca-attester"]
++virtcca-attester = ["kbs_protocol?/virtcca-attester", "attester/virtcca-attester"]
+ 
+ # Either `rust-crypto` or `openssl` should be enabled to work as underlying crypto module
+ rust-crypto = ["kbs_protocol?/rust-crypto"]
+diff --git a/attestation-agent/attestation-agent/build.rs b/attestation-agent/attestation-agent/build.rs
+index 5358cfe..14dbae2 100644
+--- a/attestation-agent/attestation-agent/build.rs
++++ b/attestation-agent/attestation-agent/build.rs
+@@ -60,6 +60,7 @@ fn main() -> std::io::Result<()> {
+             "AZ_TDX_VTPM_ATTESTER",
+             "SNP_ATTESTER",
+             "SE_ATTESTER",
++	     "VIRTCCA_ATTESTER",
+         ]);
+ 
+         let out_dir = env::var("OUT_DIR").unwrap();
+diff --git a/attestation-agent/attester/Cargo.toml b/attestation-agent/attester/Cargo.toml
+index 5cb2c31..313cb09 100644
+--- a/attestation-agent/attester/Cargo.toml
++++ b/attestation-agent/attester/Cargo.toml
+@@ -56,6 +56,7 @@ all-attesters = [
+     "csv-attester",
+     "cca-attester",
+     "se-attester",
++    "virtcca-attester",
+ ]
+ 
+ # tsm-report enables a module that helps attesters to use Linux TSM_REPORTS for generating
+@@ -71,5 +72,6 @@ snp-attester = ["sev"]
+ csv-attester = ["csv-rs", "codicon", "hyper", "hyper-tls", "tokio"]
+ cca-attester = ["tsm-report"]
+ se-attester  = ["pv"]
++virtcca-attester = ["iocuddle"]
+ 
+ bin = ["tokio/rt", "tokio/macros", "clap"]
+diff --git a/attestation-agent/attester/src/lib.rs b/attestation-agent/attester/src/lib.rs
+index 195e79e..c998691 100644
+--- a/attestation-agent/attester/src/lib.rs
++++ b/attestation-agent/attester/src/lib.rs
+@@ -36,6 +36,9 @@ pub mod tsm_report;
+ #[cfg(feature = "se-attester")]
+ pub mod se;
+ 
++#[cfg(feature = "virtcca-attester")]
++pub mod virtcca;
++
+ pub type BoxedAttester = Box<dyn Attester + Send + Sync>;
+ 
+ impl TryFrom<Tee> for BoxedAttester {
+@@ -60,6 +63,8 @@ impl TryFrom<Tee> for BoxedAttester {
+             Tee::Csv => Box::<csv::CsvAttester>::default(),
+             #[cfg(feature = "se-attester")]
+             Tee::Se => Box::<se::SeAttester>::default(),
++	     #[cfg(feature = "virtcca-attester")]
++	     Tee::Virtcca => Box::<virtcca::VirtccaAttester>::default(),
+             _ => bail!("TEE is not supported!"),
+         };
+ 
+@@ -143,6 +148,11 @@ pub fn detect_tee_type() -> Tee {
+         return Tee::Se;
+     }
+ 
++    #[cfg(feature = "virtcca-attester")]
++    if virtcca::detect_platform() {
++	return Tee::Virtcca;
++    }
++
+     log::warn!("No TEE platform detected. Sample Attester will be used.");
+     Tee::Sample
+ }
+diff --git a/attestation-agent/attester/src/virtcca/mod.rs b/attestation-agent/attester/src/virtcca/mod.rs
+new file mode 100644
+index 0000000..f9afd70
+--- /dev/null
++++ b/attestation-agent/attester/src/virtcca/mod.rs
+@@ -0,0 +1,91 @@
++// virtcca tee plugin
++//
++// Call the hardware sdk or driver to get the specific evidence
++
++use super::Attester;
++use anyhow::*;
++use iocuddle::{Group, Ioctl, WriteRead, Read};
++use serde::{Deserialize, Serialize};
++use std::path::Path;
++
++const VIRTCCA_GUEST_IOCTL: &str = "/dev/tsi";
++const VIRTCCA_REPORT_DATA_SIZE: usize = 64;
++const MAX_DEV_CERT_SIZE: usize = 4096;
++const GRANULE_SIZE: usize = 4096;
++const MAX_TOKEN_GRANULE_COUNT: usize = 2;
++
++pub fn detect_platform() -> bool {
++    Path::new(VIRTCCA_GUEST_IOCTL).exists()
++}
++
++#[derive(Debug, Default)]
++pub struct VirtccaAttester {}
++
++#[derive(Serialize, Deserialize)]
++pub struct VirtccaEvidence {
++    // virtcca token
++    pub evidence_virtcca: Vec<u8>,
++    // virtcca device certificate
++    pub dev_cert: Vec<u8>
++}
++
++#[repr(C)]
++pub struct CvmAttestationCmd {
++    challenge: [u8; VIRTCCA_REPORT_DATA_SIZE],
++    token: [u8; GRANULE_SIZE * MAX_TOKEN_GRANULE_COUNT],
++    token_size: u64,
++}
++
++#[repr(C)]
++pub struct VirtccaDevCert {
++    size: u64,
++    value: [u8; MAX_DEV_CERT_SIZE],
++}
++
++const TSI: Group = Group::new(b'T');
++const TSI_CMD_GET_TOKEN: Ioctl<WriteRead, &CvmAttestationCmd> = unsafe { TSI.write_read(0x1) };
++const TSI_CMD_GET_CERT: Ioctl<Read, &VirtccaDevCert> = unsafe { TSI.read(0x2) };
++
++#[async_trait::async_trait]
++impl Attester for VirtccaAttester {
++    async fn get_evidence(&self, mut report_data: Vec<u8>) -> Result<String> {
++        report_data.resize(VIRTCCA_REPORT_DATA_SIZE, 0);
++        let mut fd = std::fs::File::open(VIRTCCA_GUEST_IOCTL)
++        .context("Open virtCCA device failed")?;
++
++        let mut token_cmd = CvmAttestationCmd {
++            challenge: report_data.try_into().unwrap(),
++            token: [0u8; GRANULE_SIZE * MAX_TOKEN_GRANULE_COUNT],
++            token_size: 0,
++        };
++
++        TSI_CMD_GET_TOKEN
++            .ioctl(&mut fd, &mut token_cmd)
++            .context("Get virtcca attestation token failed")?;
++
++        let (_, cert_cmd) = TSI_CMD_GET_CERT
++                                .ioctl(&mut fd)
++                                .context("Get virtcca device cert failed")?;
++
++        let evidence = VirtccaEvidence {
++            evidence_virtcca: token_cmd.token[..token_cmd.token_size as usize].to_vec(),
++            dev_cert: cert_cmd.value[..cert_cmd.size as usize].to_vec(),
++        };
++
++        serde_json::to_string(&evidence).context("Serialize virtCCA evidence failed")
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[ignore]
++    #[tokio::test]
++    async fn test_virtcca_get_evidence() {
++        let attester = VirtccaAttester::default();
++        let report_data: Vec<u8> = vec![0; 48];
++        let evidence = attester.get_evidence(report_data).await;
++        assert!(evidence.is_ok());
++    }
++}
+diff --git a/attestation-agent/kbc/Cargo.toml b/attestation-agent/kbc/Cargo.toml
+index bb7f9b5..59a1841 100644
+--- a/attestation-agent/kbc/Cargo.toml
++++ b/attestation-agent/kbc/Cargo.toml
+@@ -46,6 +46,7 @@ az-tdx-vtpm-attester= ["kbs_protocol/az-tdx-vtpm-attester"]
+ snp-attester = ["kbs_protocol/snp-attester"]
+ cca-attester = ["kbs_protocol/cca-attester"]
+ se-attester  = ["kbs_protocol/se-attester"]
++virtcca-attester  = ["kbs_protocol/virtcca-attester"]
+ 
+ sample_kbc = []
+ offline_fs_kbc = []
+diff --git a/attestation-agent/kbs_protocol/Cargo.toml b/attestation-agent/kbs_protocol/Cargo.toml
+index b75b73d..134286c 100644
+--- a/attestation-agent/kbs_protocol/Cargo.toml
++++ b/attestation-agent/kbs_protocol/Cargo.toml
+@@ -61,6 +61,7 @@ snp-attester = ["attester/snp-attester"]
+ csv-attester = ["attester/csv-attester"]
+ cca-attester = ["attester/cca-attester"]
+ se-attester = ["attester/se-attester"]
++virtcca-attester = ["attester/virtcca-attester"]
+ 
+ rust-crypto = ["reqwest/rustls-tls", "crypto/rust-crypto"]
+ openssl = ["reqwest/native-tls-vendored", "crypto/openssl"]
+-- 
+1.8.3.1
+
