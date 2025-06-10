@@ -1,0 +1,7 @@
+127.0.0.1	localhost
+::1		localhost ip6-localhost ip6-loopback
+ff02::1		ip6-allnodes
+ff02::2		ip6-allrouters
+
+133.144.1.191 registry-local.hw.com
+90.90.25.33 registry.hw.com
