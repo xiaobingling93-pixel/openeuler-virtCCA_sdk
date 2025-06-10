@@ -1,0 +1,555 @@
+From e55bdde6546d2dd76527719b3b3a486cb49ab6af Mon Sep 17 00:00:00 2001
+From: fuju <fuju1@huawei.com>
+Date: Mon, 9 Jun 2025 08:18:25 -0400
+Subject: [PATCH] Support VirtCCA
+
+---
+ Cargo.toml                                 |   4 +-
+ attestation-service/Cargo.toml             |   1 +
+ attestation-service/README.md              |   1 +
+ attestation-service/docs/grpc-as.md        |   1 +
+ attestation-service/src/bin/grpc/mod.rs    |   1 +
+ attestation-service/src/bin/restful/mod.rs |   1 +
+ deps/verifier/Cargo.toml                   |   3 +
+ deps/verifier/src/lib.rs                   |  13 +
+ deps/verifier/src/virtcca/mod.rs           | 377 +++++++++++++++++++++++++++++
+ kbs/Cargo.toml                             |   2 +-
+ tools/kbs-client/Cargo.toml                |   1 +
+ 11 files changed, 402 insertions(+), 3 deletions(-)
+ create mode 100644 deps/verifier/src/virtcca/mod.rs
+
+diff --git a/Cargo.toml b/Cargo.toml
+index d0f7904..6531148 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -33,8 +33,8 @@ hex = "0.4.3"
+ jwt-simple = { version = "0.12", default-features = false, features = [
+     "pure-rust",
+ ] }
+-kbs_protocol = { git = "https://github.com/confidential-containers/guest-components.git", rev = "27b8245", default-features = false }
+-kbs-types = "0.10.0"
++kbs_protocol = { path = "../guest-components/attestation-agent/kbs_protocol", default-features = false }
++kbs-types = { path = "../kbs-types" }
+ kms = { git = "https://github.com/confidential-containers/guest-components.git", rev = "e6999a3c0fd877dae9e68ea78b8b483062db32b8", default-features = false }
+ jsonwebtoken = { version = "9", default-features = false }
+ log = "0.4.17"
+diff --git a/attestation-service/Cargo.toml b/attestation-service/Cargo.toml
+index 140b401..877426f 100644
+--- a/attestation-service/Cargo.toml
++++ b/attestation-service/Cargo.toml
+@@ -14,6 +14,7 @@ snp-verifier = [ "verifier/snp-verifier" ]
+ csv-verifier = [ "verifier/csv-verifier" ]
+ cca-verifier = [ "verifier/cca-verifier" ]
+ se-verifier  = [ "verifier/se-verifier" ]
++virtcca-verifier = [ "verifier/virtcca-verifier" ]
+ 
+ rvps-grpc = ["prost", "tonic"]
+ 
+diff --git a/attestation-service/README.md b/attestation-service/README.md
+index fafc656..9753f86 100644
+--- a/attestation-service/README.md
++++ b/attestation-service/README.md
+@@ -135,6 +135,7 @@ Supported Verifier Drivers:
+ - `cca`: Verifier Driver for Confidential Compute Architecture (Arm CCA).
+ - `csv`: Verifier Driver for China Security Virtualization (Hygon CSV).
+ - `se`: Verifier Driver for IBM Secure Execution (SE).
++- `virtcca`: Verifier Driver for Virtualized Arm Confidential Compute Architecture with TrustZone (VirtCCA).
+ 
+ ### Policy Engine
+ 
+diff --git a/attestation-service/docs/grpc-as.md b/attestation-service/docs/grpc-as.md
+index 25ad2a8..34a0615 100644
+--- a/attestation-service/docs/grpc-as.md
++++ b/attestation-service/docs/grpc-as.md
+@@ -13,6 +13,7 @@ Now the following types of evidence are supported:
+ - `csv`: Hygon CSV
+ - `aztdxvtpm`: Azure TDX vTPM
+ - `se`: IBM Secure Execution
++- `virtcca`: VirtCCA
+ 
+ ## Quick Start
+ 
+diff --git a/attestation-service/src/bin/grpc/mod.rs b/attestation-service/src/bin/grpc/mod.rs
+index faba652..2869887 100644
+--- a/attestation-service/src/bin/grpc/mod.rs
++++ b/attestation-service/src/bin/grpc/mod.rs
+@@ -41,6 +41,7 @@ fn to_kbs_tee(tee: &str) -> anyhow::Result<Tee> {
+         "cca" => Tee::Cca,
+         "aztdxvtpm" => Tee::AzTdxVtpm,
+         "se" => Tee::Se,
++	  "virtcca" => Tee::Virtcca,
+         other => bail!("Unsupported TEE type: {other}"),
+     };
+ 
+diff --git a/attestation-service/src/bin/restful/mod.rs b/attestation-service/src/bin/restful/mod.rs
+index 96d83fd..5d1cfec 100644
+--- a/attestation-service/src/bin/restful/mod.rs
++++ b/attestation-service/src/bin/restful/mod.rs
+@@ -72,6 +72,7 @@ fn to_tee(tee: &str) -> anyhow::Result<Tee> {
+         "sample" => Tee::Sample,
+         "aztdxvtpm" => Tee::AzTdxVtpm,
+         "se" => Tee::Se,
++	  "virtcca" => Tee::Virtcca,
+         other => bail!("tee `{other} not supported`"),
+     };
+ 
+diff --git a/deps/verifier/Cargo.toml b/deps/verifier/Cargo.toml
+index dac7a5a..f3ad264 100644
+--- a/deps/verifier/Cargo.toml
++++ b/deps/verifier/Cargo.toml
+@@ -14,6 +14,7 @@ snp-verifier = [ "asn1-rs", "openssl", "sev", "x509-parser" ]
+ csv-verifier = [ "openssl", "csv-rs", "codicon" ]
+ cca-verifier = [ "ear", "jsonwebtoken", "veraison-apiclient" ]
+ se-verifier = [ "openssl", "pv", "serde_with", "tokio/sync" ]
++virtcca-verifier = ["cose-rust", "openssl", "ciborium"]
+ 
+ [dependencies]
+ anyhow.workspace = true
+@@ -51,6 +52,8 @@ ear = { git = "https://github.com/veraison/rust-ear", rev = "43f7f480d09ea2ebc03
+ x509-parser = { version = "0.16.0", optional = true }
+ reqwest.workspace = true
+ bitflags = { version = "2.8.0", features = ["serde"] }
++cose-rust = { version = "0.1.7", optional = true }
++ciborium = { version = "0.2.2", optional = true }
+ 
+ [build-dependencies]
+ shadow-rs.workspace = true
+diff --git a/deps/verifier/src/lib.rs b/deps/verifier/src/lib.rs
+index dfcaf36..861f9ce 100644
+--- a/deps/verifier/src/lib.rs
++++ b/deps/verifier/src/lib.rs
+@@ -33,6 +33,9 @@ pub mod cca;
+ #[cfg(feature = "se-verifier")]
+ pub mod se;
+ 
++#[cfg(feature = "virtcca-verifier")]
++pub mod virtcca;
++
+ #[cfg(any(
+     feature = "az-tdx-vtpm-verifier",
+     feature = "tdx-verifier",
+@@ -121,6 +124,16 @@ pub fn to_verifier(tee: &Tee) -> Result<Box<dyn Verifier + Send + Sync>> {
+                 }
+             }
+         }
++
++        Tee::Virtcca => {
++            cfg_if::cfg_if! {
++                if #[cfg(feature = "virtcca-verifier")] {
++                    Ok(Box::<virtcca::VirtCCAVerifier>::default() as Box<dyn Verifier + Send + Sync>)
++                } else {
++                    bail!("feature `virtcca-verifier` is not enabled for `verifier` crate.")
++                }
++            }
++        }
+     }
+ }
+ 
+diff --git a/deps/verifier/src/virtcca/mod.rs b/deps/verifier/src/virtcca/mod.rs
+new file mode 100644
+index 0000000..f9a5170
+--- /dev/null
++++ b/deps/verifier/src/virtcca/mod.rs
+@@ -0,0 +1,377 @@
++// VirtCCA verifier plugin
++
++use super::*;
++use anyhow::anyhow;
++use async_trait::async_trait;
++use core::result::Result::Ok;
++use ciborium;
++use ciborium::Value;
++use openssl::rsa;
++use openssl::pkey::Public;
++use openssl::x509;
++use openssl::pkey::PKey;
++use log;
++use serde_json::json;
++use serde::Deserialize;
++
++use cose::message::CoseMessage;
++use cose::keys::CoseKey;
++
++// Define constants for the tags
++const TAG_CCA_TOKEN_COLLECTION: u64 = 399;
++const TAG_CCA_REALM_TOKEN: i128 = 44241;
++const TAG_CCA_PLATFORM_TOKEN: i128 = 44234;
++
++// Realm Claim Tags
++const TAG_CCA_REALM_CHALLENGE: i128 = 10;
++const TAG_CCA_REALM_PERSONALIZATION_VALUE: i128 = 44235;
++const TAG_CCA_REALM_INITIAL_MEASUREMENT: i128 = 44238;
++const TAG_CCA_REALM_EXTENSIBLE_MEASUREMENTS: i128 = 44239;
++const TAG_CCA_REALM_HASH_ALGO_ID: i128 = 44236;
++const TAG_CCA_REALM_PUB_KEY: i128 = 44237;
++const TAG_CCA_REALM_PUB_KEY_HASH_ALGO_ID: i128 = 44240;
++
++const CVM_CHALLENGE_SIZE: usize = 64;
++const CVM_RPV_SIZE: usize = 64;
++const CVM_REM_ARR_SIZE: usize = 4;
++const CVM_PUB_KEY_SIZE: usize = 550;
++
++#[derive(Debug, Deserialize)]
++pub struct VirtccaEvidence {
++    pub evidence_virtcca: Vec<u8>,
++    pub dev_cert: Vec<u8>,
++}
++
++pub struct CcaCoseEvidence {
++    pub realm_envelop: CoseMessage,
++    pub platform_envelop: Option<CoseMessage>,
++}
++
++#[derive(Debug)]
++pub struct CcaRealmClaims {
++    pub challenge: [u8; CVM_CHALLENGE_SIZE],        //    10 => bytes .size 64
++    pub rpv: [u8; CVM_RPV_SIZE],                    // 44235 => bytes .size 64
++    pub rim: Vec<u8>,                               // 44238 => bytes .size {32,48,64}
++    pub rem: [Vec<u8>; CVM_REM_ARR_SIZE],           // 44239 => [ 4*4 bytes .size {32,48,64} ]
++    pub hash_alg: String,                           // 44236 => text
++    pub pub_key: [u8; CVM_PUB_KEY_SIZE],            // 44237 => bytes .size 550
++    pub pub_key_hash_alg: String,                   // 44240 => text
++}
++
++#[derive(Debug)]
++struct CcaPlatformClaims {
++    pub payload: String,
++}
++
++const DEFAULT_ROOT_CERT: &str = "/etc/attestation/attestation-service/verifier/virtcca/Huawei Equipment Root CA.pem";
++const DEFAULT_SUB_CERT: &str = "/etc/attestation/attestation-service/verifier/virtcca/Huawei IT Product CA.pem";
++const ROOT_CERT_ENV: &str = "VIRTCCA_ROOT_CERT";
++const SUB_CERT_ENV: &str = "VIRTCCA_SUB_CERT";
++
++
++#[derive(Debug, Default)]
++pub struct VirtCCAVerifier {}
++
++#[async_trait]
++impl Verifier for VirtCCAVerifier {
++    async fn evaluate(
++        &self,
++        evidence: &[u8],
++        expected_report_data: &ReportData,
++        expected_init_data_hash: &InitDataHash,
++    ) -> Result<TeeEvidenceParsedClaim> {
++
++        let ReportData::Value(expected_report_data) = expected_report_data else {
++            bail!("Failed to extract report data for VirtCCA verifier!");
++        };
++
++        let expected_report_data = regularize_data(expected_report_data, 64, "REPORT_DATA", "VIRTCCA");
++
++        // Extract raw evidence and device certificate
++        let evidence = serde_json::from_slice::<VirtccaEvidence>(evidence)
++                       .context("Failed to deserialize VirtCCA CcaCoseEvidence!")?;
++
++        // Read certificates
++        let sub_cert_path = std::env::var(SUB_CERT_ENV).unwrap_or_else(|_| DEFAULT_SUB_CERT.to_string());
++        let root_cert_path = std::env::var(ROOT_CERT_ENV).unwrap_or_else(|_| DEFAULT_ROOT_CERT.to_string());
++        let sub_cert_file = std::fs::read(sub_cert_path)?;
++        let root_cert_file = std::fs::read(root_cert_path)?;
++
++        let dev_cert = x509::X509::from_der(&evidence.dev_cert)?;
++        let sub_cert = x509::X509::from_pem(&sub_cert_file)?;
++        let root_cert = x509::X509::from_pem(&root_cert_file)?;
++
++        // Decode the CCA Evidence CBOR Envelop
++        let val: Value = ciborium::de::from_reader(evidence.evidence_virtcca.as_slice())?;
++        let Value::Tag(t, m) = val else { bail!("Invalid VirtCCA evidence format: expecting tag type"); };
++        if t != TAG_CCA_TOKEN_COLLECTION {
++            bail!("Invalid VirtCCA evidence format: expecting tag {}, got {}", TAG_CCA_TOKEN_COLLECTION, t);
++        }
++
++        let mut cca_evidence = CcaCoseEvidence::new();
++        let Value::Map(contents) = *m else { bail!("Invalid VirtCCA evidence format: expecting map type"); };
++        for (k, v) in contents.iter() {
++            let Value::Integer(i) = k else { bail!("Invalid VirtCCA evidence format: expecting integer key"); };
++            match (*i).into() {
++                TAG_CCA_REALM_TOKEN => cca_evidence.realm_envelop.bytes = v.as_bytes().unwrap().clone(),
++                TAG_CCA_PLATFORM_TOKEN => { // Handle situations that there are no platform tokens
++                    cca_evidence.platform_envelop = Some(CoseMessage::new_sign());
++                    if let Some(envelop) = &mut cca_evidence.platform_envelop {
++                        envelop.bytes = v.as_bytes().unwrap().clone();
++                    }
++                },
++                err => bail!("Invalid VirtCCA evidence format: unknown label {}", err),
++            }
++        }
++
++        // Decode the Realm COSE Envelop
++        match cca_evidence.realm_envelop.init_decoder(None) {
++            Ok(_) => log::info!("Success in decoding realm COSE envelop"),
++            Err(_e) => bail!("Failed to decode realm COSE envelop"),
++        }
++        let realm_claims = decode_realm_evidence(&cca_evidence.realm_envelop.payload)?;
++
++        // Decode the Platform COSE Envelop
++        let platform_claims = if let Some(envelop) = &mut cca_evidence.platform_envelop {
++            match envelop.init_decoder(None) {
++                Ok(_) => log::info!("Success in decoding platform COSE envelop"),
++                Err(_e) => bail!("Failed to decode platform COSE envelop"),
++            }
++            Some(decode_platform_evidence(&envelop.payload)?)
++        } else {
++            None
++        };
++
++        // Verify the platform certificate chain and public key identity
++        let dev_pub_key = verify_dev_cert_chain(&dev_cert, &sub_cert, &root_cert)
++            .context("Failed to verify device certificate chain!")?;
++
++        // Verify the cose envelop integrity
++        verify_evidence_integrity(cca_evidence.realm_envelop, &realm_claims.pub_key)
++            .context("Failed to verify realm evidence integrity!")?;
++
++        if dev_pub_key.as_slice() != &realm_claims.pub_key {
++            bail!("Failed to matching device cert pub key ({:?}) with realm pub key ({:?})!",
++                  dev_pub_key, realm_claims.pub_key);
++        }
++
++        // Verify the challenges
++        if &realm_claims.challenge != expected_report_data.as_slice() {
++            bail!("Failed to matching realm challenge ({:?}) with report_data ({:?})!",
++                  realm_claims.challenge, expected_report_data);
++        }
++
++        // Not to verify if no init data from attester
++        if let InitDataHash::Value(expected_init_data_hash) = expected_init_data_hash {
++            let expected_init_data_hash = regularize_data(expected_init_data_hash, 64, "REPORT_DATA", "VIRTCCA");
++            if &realm_claims.rpv != expected_init_data_hash.as_slice() {
++                bail!("Failed to matching realm rpv ({:?}) with init_data_hash ({:?})!",
++                    realm_claims.rpv, expected_init_data_hash);
++            }
++        }
++
++        // Extract and parse TeeClaim from evidence_virtcca
++        let tee_claim = build_tee_claims(realm_claims, platform_claims)
++            .context("Failed to TeeEvidenceParsedClaim")?;
++
++        Ok(tee_claim)
++    }
++}
++
++fn decode_realm_evidence(payload: &Vec<u8>) -> Result<CcaRealmClaims> {
++
++    let payload: Vec<u8> = ciborium::de::from_reader(payload.as_slice())?;
++    let payload: Value = ciborium::de::from_reader(payload.as_slice())?;
++
++    let mut realm_claims: CcaRealmClaims = CcaRealmClaims::new();
++    if let Value::Map(contents) = payload {
++        for (k, v) in contents.iter() {
++            if let Value::Integer(i) = k {
++                match (*i).into() {
++                    TAG_CCA_REALM_CHALLENGE => realm_claims.set_challenge(v)?,
++                    TAG_CCA_REALM_PERSONALIZATION_VALUE => realm_claims.set_rpv(v)?,
++                    TAG_CCA_REALM_INITIAL_MEASUREMENT => realm_claims.set_rim(v)?,
++                    TAG_CCA_REALM_EXTENSIBLE_MEASUREMENTS => realm_claims.set_rem(v)?,
++                    TAG_CCA_REALM_HASH_ALGO_ID => realm_claims.set_hash_alg(v)?,
++                    TAG_CCA_REALM_PUB_KEY => realm_claims.set_pub_key(v)?,
++                    TAG_CCA_REALM_PUB_KEY_HASH_ALGO_ID => realm_claims.set_pub_key_hash_alg(v)?,
++                    err => bail!("Invalid realm evidence format: unkown label {:?}", err),
++                }
++            } else {
++                bail!("Invalid realm evidence format: expecting integer key");
++            }
++        }
++    } else {
++        bail!("Invalid realm evidence format: expecting map type");
++    }
++    Ok(realm_claims)
++}
++
++fn decode_platform_evidence(payload: &Vec<u8>) -> Result<CcaPlatformClaims> {
++    // Decoding platform evidence will be supported in the future
++    let mut platform_claims: CcaPlatformClaims = CcaPlatformClaims::new();
++    platform_claims.set_platform_payload(payload)?;
++
++    Ok(platform_claims)
++}
++
++impl CcaCoseEvidence {
++    pub fn new() -> Self {
++        Self {
++            realm_envelop: CoseMessage::new_sign(),
++            platform_envelop: None,
++        }
++    }
++}
++
++impl CcaRealmClaims {
++    pub fn new() -> Self {
++        Self {
++            challenge: [0; CVM_CHALLENGE_SIZE],
++            rpv: [0; CVM_RPV_SIZE],
++            rim: vec![0, 64],
++            rem: Default::default(),
++            hash_alg: String::from(""),
++            pub_key: [0; CVM_PUB_KEY_SIZE],
++            pub_key_hash_alg: String::from(""),
++        }
++    }
++
++    fn set_challenge(&mut self, v: &Value) -> Result<()> {
++        let res = v.as_bytes().ok_or_else(|| format_err!("Invalid realm evidence format: challenge is none"))?.clone();
++        if res.len() != CVM_CHALLENGE_SIZE {
++            bail!("Invalid realm evidence format: challenge expecting {} bytes, got {}", CVM_CHALLENGE_SIZE, res.len());
++        }
++        self.challenge[..].clone_from_slice(&res);
++        Ok(())
++    }
++
++    fn set_rpv(&mut self, v: &Value) -> Result<()> {
++        let res = v.as_bytes().ok_or_else(|| format_err!("Invalid realm evidence format: rpv is none"))?.clone();
++        if res.len() != CVM_RPV_SIZE {
++            bail!("Invalid realm evidence format: rpv expecting {} bytes, got {}", CVM_RPV_SIZE, res.len());
++        }
++        self.rpv[..].clone_from_slice(&res);
++        Ok(())
++    }
++
++    fn get_measurement(v: &Value, who: &str) -> Result<Vec<u8>> {
++        let res = v.as_bytes().ok_or_else(|| format_err!("Invalid realm evidence format: {} is none", who))?.clone();
++        if ![32, 48, 64].contains(&res.len()) {
++            bail!("Invalid realm evidence format: {} expecting 32, 48 or 64 bytes, got {}", who, res.len());
++        }
++        Ok(res)
++    }
++
++    fn set_rim(&mut self, v: &Value) -> Result<()> {
++        self.rim = Self::get_measurement(v, "rim")?;
++        Ok(())
++    }
++
++    fn set_rem(&mut self, v: &Value) -> Result<()> {
++        let res = v.as_array().ok_or_else(|| format_err!("Invalid realm evidence format: rem is none"))?.clone();
++        for (i, val) in res.iter().enumerate() {
++            self.rem[i] = Self::get_measurement(val, &format!("rem[{}]", i))?;
++        }
++        Ok(())
++    }
++
++    fn get_hash_alg(v: &Value, who: &str) -> Result<String> {
++        v.as_text().ok_or_else(|| format_err!("Invalid realm evidence format: {} hash alg must be str", who)).map(|s| s.to_string())
++    }
++
++    fn set_hash_alg(&mut self, v: &Value) -> Result<()> {
++        self.hash_alg = Self::get_hash_alg(v, "realm")?;
++        Ok(())
++    }
++
++    fn set_pub_key(&mut self, v: &Value) -> Result<()> {
++        let res = v.as_bytes().ok_or_else(|| format_err!("Invalid realm evidence format: pub key is none"))?.clone();
++        if res.len() != CVM_PUB_KEY_SIZE {
++            bail!("Invalid realm evidence format: pub key expecting {} bytes, got {}", CVM_PUB_KEY_SIZE, res.len());
++        }
++        self.pub_key[..].clone_from_slice(&res);
++        Ok(())
++    }
++
++    fn set_pub_key_hash_alg(&mut self, v: &Value) -> Result<()> {
++        self.pub_key_hash_alg = Self::get_hash_alg(v, "realm pub key")?;
++        Ok(())
++    }
++}
++
++impl CcaPlatformClaims {
++    pub fn new() -> Self {
++        Self {
++            payload: String::from(""),
++        }
++    }
++
++    fn set_platform_payload(&mut self, v: &Vec<u8>) -> Result<()> {
++        self.payload = hex::encode(v.clone());
++        Ok(())
++    }
++}
++
++fn verify_evidence_integrity(mut cose_envelop: CoseMessage, public_key: &[u8]) -> Result<()> {
++
++    // Verify realm COSE envelop signature
++    let public_key: rsa::Rsa<Public> = rsa::Rsa::public_key_from_der(public_key)?;
++    let mut cose_key = CoseKey::new();
++    cose_key.kty(cose::keys::RSA);
++    cose_key.e(public_key.e().to_vec());
++    cose_key.n(public_key.n().to_vec());
++    cose_key.key_ops(vec![cose::keys::KEY_OPS_VERIFY]);
++    match cose_envelop.header.alg {
++        Some(alg) => cose_key.alg(alg),
++        None => bail!("Faild to get signature algorithm"),
++    }
++    cose_envelop.key(&cose_key).map_err(|err| anyhow!("Failed to set cose_key to COSE_Sign1 envelop: {err:?}"))?;
++    cose_envelop.decode(None, None).map_err(|err| anyhow!("Failed to verify COSE_Sign1 signature:{err:?}"))?;
++
++    Ok(())
++}
++
++fn verify_dev_cert_chain(dev_cert: &x509::X509, sub_cert: &x509::X509, root_cert: &x509::X509) -> Result<Vec<u8>> {
++
++    // verify if pub key of dev_cert match expected_public_key
++    let dev_cert_pub_key_der = dev_cert.public_key()?.public_key_to_der()?;
++
++    // verify if dev_cert is signed by sub_cert
++    let ret = dev_cert.verify(&(sub_cert.public_key()? as PKey<Public>))?;
++    if !ret {
++        bail!("Failed to verify public key identity: failed to verify device cert signature");
++    }
++    // verify if sub_cert is signed by root_cert
++    let ret = sub_cert.verify(&(root_cert.public_key()? as PKey<Public>))?;
++    if !ret {
++        bail!("Failed to verify public key identity: failed to verify sub cert signature");
++    }
++    // verify self signed root_cert
++    let ret = root_cert.verify(&(root_cert.public_key()? as PKey<Public>))?;
++    if !ret {
++        bail!("Failed to verify public key identity: failed to verify root cert signature");
++    }
++    Ok(dev_cert_pub_key_der)
++}
++
++fn build_tee_claims(realm: CcaRealmClaims, platform: Option<CcaPlatformClaims>) -> Result<TeeEvidenceParsedClaim> {
++    let claim = json!({
++        "realm": {
++            "challenge": hex::encode(realm.challenge.clone()),
++            "rpv": hex::encode(realm.rpv.clone()),
++            "rim": hex::encode(realm.rim.clone()),
++            "rem": [
++                hex::encode(realm.rem[0].clone()),
++                hex::encode(realm.rem[1].clone()),
++                hex::encode(realm.rem[2].clone()),
++                hex::encode(realm.rem[3].clone())
++            ],
++        },
++        "platform" : {
++            "payload": platform.as_ref().map(|p| hex::encode(&p.payload)).unwrap_or_default(),
++        },
++        "report_data" : hex::encode(realm.challenge.clone()),
++    });
++    Ok(claim as TeeEvidenceParsedClaim)
++}
+diff --git a/kbs/Cargo.toml b/kbs/Cargo.toml
+index 80eb231..0e168e6 100644
+--- a/kbs/Cargo.toml
++++ b/kbs/Cargo.toml
+@@ -94,7 +94,7 @@ attestation-service = { path = "../attestation-service", default-features = fals
+ 
+ [target.'cfg(target_arch = "aarch64")'.dependencies]
+ attestation-service = { path = "../attestation-service", default-features = false, features = [
+-    "cca-verifier",
++    "cca-verifier","virtcca-verifier",
+ ], optional = true }
+ 
+ 
+diff --git a/tools/kbs-client/Cargo.toml b/tools/kbs-client/Cargo.toml
+index d0ce617..17483e7 100644
+--- a/tools/kbs-client/Cargo.toml
++++ b/tools/kbs-client/Cargo.toml
+@@ -38,3 +38,4 @@ snp-attester = ["kbs_protocol/snp-attester"]
+ csv-attester = ["kbs_protocol/csv-attester"]
+ cca-attester = ["kbs_protocol/cca-attester"]
+ se-attester  = ["kbs_protocol/se-attester"]
++virtcca-attester  = ["kbs_protocol/virtcca-attester"]
+-- 
+1.8.3.1
+

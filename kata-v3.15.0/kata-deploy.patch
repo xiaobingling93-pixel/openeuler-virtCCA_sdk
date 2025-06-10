@@ -1,0 +1,510 @@
+From 6ba0f3d40854d9abe7e1b66100d77426046e69a8 Mon Sep 17 00:00:00 2001
+From: fuju <fuju1@huawei.com>
+Date: Tue, 10 Jun 2025 05:04:29 -0400
+Subject: [PATCH] kata-deploy
+
+---
+ .../osbuilder/rootfs-builder/ubuntu/Dockerfile.in  |  9 +++--
+ .../osbuilder/rootfs-builder/ubuntu/rootfs_lib.sh  |  3 ++
+ .../kata-deploy/helm-chart/kata-deploy/values.yaml |  2 +-
+ .../kata-deploy/kata-deploy/base/kata-deploy.yaml  |  2 +-
+ tools/packaging/kata-deploy/local-build/Makefile   | 21 +++++++++--
+ .../local-build/kata-deploy-binaries.sh            | 42 +++++++++++++++++++---
+ .../local-build/kata-deploy-merge-builds.sh        |  2 +-
+ .../runtimeclasses/kata-qemu-virtcca.yaml          | 13 +++++++
+ .../runtimeclasses/kata-runtimeClasses.yaml        | 14 ++++++++
+ tools/packaging/kernel/build-kernel.sh             | 37 +++++++++++++++++--
+ .../build-static-coco-guest-components.sh          | 13 +++----
+ versions.yaml                                      | 15 +++++++-
+ 12 files changed, 149 insertions(+), 24 deletions(-)
+ create mode 100644 tools/packaging/kata-deploy/runtimeclasses/kata-qemu-virtcca.yaml
+
+diff --git a/tools/osbuilder/rootfs-builder/ubuntu/Dockerfile.in b/tools/osbuilder/rootfs-builder/ubuntu/Dockerfile.in
+index 16fa213..813ff3f 100644
+--- a/tools/osbuilder/rootfs-builder/ubuntu/Dockerfile.in
++++ b/tools/osbuilder/rootfs-builder/ubuntu/Dockerfile.in
+@@ -52,8 +52,13 @@ RUN apt-get update && \
+     python3-dev \
+     libclang-dev \
+     zstd && \
+-    apt-get clean && rm -rf /var/lib/apt/lists/&& \
+-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${RUST_TOOLCHAIN}
++    apt-get clean && rm -rf /var/lib/apt/lists/
++
++# Ensure that rootCA.crt is installed into rootfs
++COPY certs/* /usr/local/share/ca-certificates/
++RUN update-ca-certificates
++
++RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${RUST_TOOLCHAIN}
+ 
+ RUN ARCH=$(uname -m); \
+     goarch=""; \
+diff --git a/tools/osbuilder/rootfs-builder/ubuntu/rootfs_lib.sh b/tools/osbuilder/rootfs-builder/ubuntu/rootfs_lib.sh
+index 8dd88f4..f10ad85 100644
+--- a/tools/osbuilder/rootfs-builder/ubuntu/rootfs_lib.sh
++++ b/tools/osbuilder/rootfs-builder/ubuntu/rootfs_lib.sh
+@@ -12,6 +12,7 @@ build_dbus() {
+ 
+ build_rootfs() {
+ 	local rootfs_dir=$1
++	local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ 	local multistrap_conf=multistrap.conf
+ 
+ 	# For simplicity's sake, use multistrap for foreign and native bootstraps.
+@@ -68,6 +69,8 @@ EOF
+ 	mkdir -p "$dir"
+ 	cp --remove-destination /etc/ssl/certs/ca-certificates.crt "$dir"
+ 
++	cp --remove-destination "$script_dir/../../../../build/hosts" "$rootfs_dir/etc/hosts"
++
+ 	# Reduce image size and memory footprint by removing unnecessary files and directories.
+ 	rm -rf $rootfs_dir/usr/share/{bash-completion,bug,doc,info,lintian,locale,man,menu,misc,pixmaps,terminfo,zsh}
+ 
+diff --git a/tools/packaging/kata-deploy/helm-chart/kata-deploy/values.yaml b/tools/packaging/kata-deploy/helm-chart/kata-deploy/values.yaml
+index fe1a4f9..ac09571 100644
+--- a/tools/packaging/kata-deploy/helm-chart/kata-deploy/values.yaml
++++ b/tools/packaging/kata-deploy/helm-chart/kata-deploy/values.yaml
+@@ -7,7 +7,7 @@ image:
+ k8sDistribution: "k8s"
+ env:
+   debug: "false"
+-  shims: "clh cloud-hypervisor dragonball fc qemu qemu-coco-dev qemu-runtime-rs qemu-se-runtime-rs qemu-sev qemu-snp qemu-tdx stratovirt qemu-nvidia-gpu qemu-nvidia-gpu-snp qemu-nvidia-gpu-tdx"
++  shims: "clh cloud-hypervisor dragonball fc qemu qemu-coco-dev qemu-runtime-rs qemu-se-runtime-rs qemu-sev qemu-snp qemu-tdx qemu-virtcca stratovirt qemu-nvidia-gpu qemu-nvidia-gpu-snp qemu-nvidia-gpu-tdx"
+   defaultShim: "qemu"
+   createRuntimeClasses: "false"
+   createDefaultRuntimeClass: "false"
+diff --git a/tools/packaging/kata-deploy/kata-deploy/base/kata-deploy.yaml b/tools/packaging/kata-deploy/kata-deploy/base/kata-deploy.yaml
+index 9225dec..fe04ac0 100644
+--- a/tools/packaging/kata-deploy/kata-deploy/base/kata-deploy.yaml
++++ b/tools/packaging/kata-deploy/kata-deploy/base/kata-deploy.yaml
+@@ -33,7 +33,7 @@ spec:
+             - name: DEBUG
+               value: "false"
+             - name: SHIMS
+-              value: "clh cloud-hypervisor dragonball fc qemu qemu-coco-dev qemu-runtime-rs qemu-se-runtime-rs qemu-sev qemu-snp qemu-tdx stratovirt qemu-nvidia-gpu qemu-nvidia-gpu-snp qemu-nvidia-gpu-tdx"
++              value: "clh cloud-hypervisor dragonball fc qemu qemu-coco-dev qemu-runtime-rs qemu-se-runtime-rs qemu-sev qemu-snp qemu-tdx qemu-virtcca stratovirt qemu-nvidia-gpu qemu-nvidia-gpu-snp qemu-nvidia-gpu-tdx"
+             - name: DEFAULT_SHIM
+               value: "qemu"
+             - name: CREATE_RUNTIMECLASSES
+diff --git a/tools/packaging/kata-deploy/local-build/Makefile b/tools/packaging/kata-deploy/local-build/Makefile
+index d6aa51b..ba65eee 100644
+--- a/tools/packaging/kata-deploy/local-build/Makefile
++++ b/tools/packaging/kata-deploy/local-build/Makefile
+@@ -49,6 +49,17 @@ BASE_TARBALLS = serial-targets \
+ 	virtiofsd-tarball
+ BASE_SERIAL_TARBALLS = rootfs-image-tarball \
+ 	rootfs-initrd-tarball
++else ifeq ($(ARCH), aarch64)
++BASE_TARBALLS = serial-targets \
++	kernel-virtcca-confidential-tarball \
++      kernel-tarball \
++	nydus-tarball \
++      shim-v2-tarball \
++      virtiofsd-tarball \
++	qemu-tarball \
++	qemu-virtcca-experimental-tarball
++BASE_SERIAL_TARBALLS = rootfs-image-tarball \
++	rootfs-image-confidential-tarball
+ endif
+ 
+ define BUILD
+@@ -135,6 +146,9 @@ kernel-tarball:
+ kernel-confidential-tarball:
+ 	${MAKE} $@-build
+ 
++kernel-virtcca-confidential-tarball:
++	${MAKE} $@-build
++
+ nydus-tarball:
+ 	${MAKE} $@-build
+ 
+@@ -150,6 +164,9 @@ qemu-snp-experimental-tarball:
+ qemu-tdx-experimental-tarball:
+ 	${MAKE} $@-build
+ 
++qemu-virtcca-experimental-tarball:
++	${MAKE} $@-build
++
+ qemu-tarball:
+ 	${MAKE} $@-build
+ 
+@@ -162,13 +179,13 @@ stratovirt-tarball:
+ rootfs-image-tarball: agent-tarball
+ 	${MAKE} $@-build
+ 
+-rootfs-image-confidential-tarball: agent-tarball pause-image-tarball coco-guest-components-tarball kernel-confidential-tarball
++rootfs-image-confidential-tarball: agent-tarball pause-image-tarball coco-guest-components-tarball kernel-virtcca-confidential-tarball
+ 	${MAKE} $@-build
+ 
+ rootfs-image-mariner-tarball: agent-tarball
+ 	${MAKE} $@-build
+ 
+-rootfs-initrd-confidential-tarball: agent-tarball pause-image-tarball coco-guest-components-tarball kernel-confidential-tarball
++rootfs-initrd-confidential-tarball: agent-tarball pause-image-tarball coco-guest-components-tarball kernel-virtcca-confidential-tarball
+ 	${MAKE} $@-build
+ 
+ rootfs-initrd-tarball: agent-tarball
+diff --git a/tools/packaging/kata-deploy/local-build/kata-deploy-binaries.sh b/tools/packaging/kata-deploy/local-build/kata-deploy-binaries.sh
+index 7cf817e..d27fa7a 100755
+--- a/tools/packaging/kata-deploy/local-build/kata-deploy-binaries.sh
++++ b/tools/packaging/kata-deploy/local-build/kata-deploy-binaries.sh
+@@ -107,6 +107,7 @@ options:
+ 	kata-manager
+ 	kernel
+ 	kernel-confidential
++	kernel-virtcca-confidential
+ 	kernel-dragonball-experimental
+ 	kernel-experimental
+ 	kernel-nvidia-gpu
+@@ -116,6 +117,7 @@ options:
+ 	ovmf
+ 	ovmf-sev
+ 	qemu
++	qemu-virtcca-experimental
+ 	qemu-snp-experimental
+ 	qemu-tdx-experimental
+ 	stratovirt
+@@ -555,7 +557,7 @@ install_cached_kernel_tarball_component() {
+ 		|| return 1
+ 
+ 	case ${kernel_name} in
+-		"kernel-nvidia-gpu"*"")
++		"kernel-nvidia-gpu"*"" | "kernel-virtcca-confidential")
+ 			local kernel_headers_dir=$(get_kernel_headers_dir "${kernel_name}")
+ 			mkdir -p ${kernel_headers_dir} || true
+ 			tar xvf ${workdir}/${kernel_name}/builddir/kata-static-${kernel_name}-headers.tar.xz -C "${kernel_headers_dir}" || return 1
+@@ -579,9 +581,10 @@ install_kernel_helper() {
+ 
+ 	export kernel_version="$(get_from_kata_deps .${kernel_yaml_path}.version)"
+ 	export kernel_url="$(get_from_kata_deps .${kernel_yaml_path}.url)"
++	export kernel_ref="$(get_from_kata_deps .${kernel_yaml_path}.ref)"
+ 	export kernel_kata_config_version="$(cat ${repo_root_dir}/tools/packaging/kernel/kata_config_version)"
+ 
+-	if [[ "${kernel_name}" == "kernel"*"-confidential" ]]; then
++	if [[ "${kernel_name}" == "kernel"*"-confidential" ]] && [[ "${ARCH}" != "aarch64" ]]; then
+ 		kernel_version="$(get_from_kata_deps .assets.kernel.confidential.version)"
+ 		kernel_url="$(get_from_kata_deps .assets.kernel.confidential.url)"
+ 	fi
+@@ -592,7 +595,7 @@ install_kernel_helper() {
+ 		extra_tarballs="${kernel_modules_tarball_name}:${kernel_modules_tarball_path}"
+ 	fi
+ 
+-	if [[ "${kernel_name}" == "kernel-nvidia-gpu*" ]]; then
++	if [[ "${kernel_name}" == "kernel-nvidia-gpu*" ]] || [[ "${kernel_name}" == "kernel-virtcca-confidential" ]]; then
+ 		local kernel_headers_tarball_name="kata-static-${kernel_name}-headers.tar.xz"
+ 		local kernel_headers_tarball_path="${workdir}/${kernel_headers_tarball_name}"
+ 		extra_tarballs+=" ${kernel_headers_tarball_name}:${kernel_headers_tarball_path}"
+@@ -604,6 +607,10 @@ install_kernel_helper() {
+ 
+ 	info "build ${kernel_name}"
+ 	info "Kernel version ${kernel_version}"
++
++	if [ -n "${kernel_ref}" ]; then
++		extra_cmd+=" -r ${kernel_ref}"
++	fi
+ 	DESTDIR="${destdir}" PREFIX="${prefix}" "${kernel_builder}" -v "${kernel_version}" -f -u "${kernel_url}" "${extra_cmd}"
+ }
+ 
+@@ -628,6 +635,15 @@ install_kernel_confidential() {
+ 		"-x"
+ }
+ 
++install_kernel_virtcca_confidential() {
++	export MEASURED_ROOTFS=no
++
++	install_kernel_helper \
++		"assets.kernel-arm-experimental.confidential" \
++		"kernel-confidential" \
++		"-x -H deb"
++}
++
+ install_kernel_dragonball_experimental() {
+ 	install_kernel_helper \
+ 		"assets.kernel-dragonball-experimental" \
+@@ -693,6 +709,17 @@ install_qemu() {
+ 		"${qemu_builder}"
+ }
+ 
++install_qemu_virtcca_experimental() {
++	export qemu_suffix="virtcca-experimental"
++	export qemu_tarball_name="kata-static-qemu-${qemu_suffix}.tar.gz"
++
++	install_qemu_helper \
++		"assets.hypervisor.qemu-${qemu_suffix}.url" \
++		"assets.hypervisor.qemu-${qemu_suffix}.tag" \
++		"qemu-${qemu_suffix}" \
++		"${qemu_experimental_builder}"
++}
++
+ install_qemu_snp_experimental() {
+ 	export qemu_suffix="snp-experimental"
+ 	export qemu_tarball_name="kata-static-qemu-${qemu_suffix}.tar.gz"
+@@ -1131,6 +1158,7 @@ handle_build() {
+ 		install_kata_manager
+ 		install_kernel
+ 		install_kernel_confidential
++		install_kernel_virtcca_confidential
+ 		install_kernel_dragonball_experimental
+ 		install_log_parser_rs
+ 		install_nydus
+@@ -1174,6 +1202,8 @@ handle_build() {
+ 
+ 	kernel-confidential) install_kernel_confidential ;;
+ 
++	kernel-virtcca-confidential) install_kernel_virtcca_confidential ;;
++
+ 	kernel-dragonball-experimental) install_kernel_dragonball_experimental ;;
+ 
+ 	kernel-nvidia-gpu-dragonball-experimental) install_kernel_nvidia_gpu_dragonball_experimental ;;
+@@ -1196,6 +1226,8 @@ handle_build() {
+ 
+ 	qemu-tdx-experimental) install_qemu_tdx_experimental ;;
+ 
++	qemu-virtcca-experimental) install_qemu_virtcca_experimental ;;
++
+ 	stratovirt) install_stratovirt ;;
+ 
+ 	rootfs-image) install_image ;;
+@@ -1240,7 +1272,7 @@ handle_build() {
+ 	tar tvf "${final_tarball_path}"
+ 
+ 	case ${build_target} in
+-		kernel-nvidia-gpu*)
++		kernel-nvidia-gpu* | kernel-virtcca-confidential)
+ 			local kernel_headers_final_tarball_path="${workdir}/kata-static-${build_target}-headers.tar.xz"
+ 			if [ ! -f "${kernel_headers_final_tarball_path}" ]; then
+ 				local kernel_headers_dir
+@@ -1342,7 +1374,7 @@ handle_build() {
+ 					"kata-static-${build_target}-headers.tar.xz"
+ 				)
+ 				;;
+-			kernel-nvidia-gpu-confidential)
++			kernel-nvidia-gpu-confidential | kernel-virtcca-confidential)
+ 				files_to_push+=(
+ 					"kata-static-${build_target}-modules.tar.xz"
+ 					"kata-static-${build_target}-headers.tar.xz"
+diff --git a/tools/packaging/kata-deploy/local-build/kata-deploy-merge-builds.sh b/tools/packaging/kata-deploy/local-build/kata-deploy-merge-builds.sh
+index 4e30b88..e8eac3a 100755
+--- a/tools/packaging/kata-deploy/local-build/kata-deploy-merge-builds.sh
++++ b/tools/packaging/kata-deploy/local-build/kata-deploy-merge-builds.sh
+@@ -33,7 +33,7 @@ pushd ${tarball_content_dir}
+ 	prefix=${shim_path%"bin/${shim}"}
+ 
+ 	echo "$(git describe --tags)" > ${prefix}/VERSION
+-	[[ -n "${kata_versions_yaml_file}" ]] && cp ${kata_versions_yaml_file_path} ${prefix}/
++	[[ -n "${kata_versions_yaml_file}" ]] && cp ${kata_versions_yaml_file} ${prefix}/
+ popd
+ 
+ echo "create ${tar_path}"
+diff --git a/tools/packaging/kata-deploy/runtimeclasses/kata-qemu-virtcca.yaml b/tools/packaging/kata-deploy/runtimeclasses/kata-qemu-virtcca.yaml
+new file mode 100644
+index 0000000..7ecef8c
+--- /dev/null
++++ b/tools/packaging/kata-deploy/runtimeclasses/kata-qemu-virtcca.yaml
+@@ -0,0 +1,13 @@
++---
++kind: RuntimeClass
++apiVersion: node.k8s.io/v1
++metadata:
++    name: kata-qemu-virtcca
++handler: kata-qemu-virtcca
++overhead:
++    podFixed:
++        memory: "2048Mi"
++        cpu: "1.0"
++scheduling:
++  nodeSelector:
++    katacontainers.io/kata-runtime: "true"
+diff --git a/tools/packaging/kata-deploy/runtimeclasses/kata-runtimeClasses.yaml b/tools/packaging/kata-deploy/runtimeclasses/kata-runtimeClasses.yaml
+index 01e13b7..2242b1e 100644
+--- a/tools/packaging/kata-deploy/runtimeclasses/kata-runtimeClasses.yaml
++++ b/tools/packaging/kata-deploy/runtimeclasses/kata-runtimeClasses.yaml
+@@ -219,3 +219,17 @@ overhead:
+ scheduling:
+   nodeSelector:
+     katacontainers.io/kata-runtime: "true"
++---
++kind: RuntimeClass
++apiVersion: node.k8s.io/v1
++metadata:
++    name: kata-qemu-virtcca
++handler: kata-qemu-virtcca
++overhead:
++    podFixed:
++        memory: "2048Mi"
++        cpu: "1.0"
++scheduling:
++  nodeSelector:
++    katacontainers.io/kata-runtime: "true"
++---
+diff --git a/tools/packaging/kernel/build-kernel.sh b/tools/packaging/kernel/build-kernel.sh
+index c887b28..933dbc3 100755
+--- a/tools/packaging/kernel/build-kernel.sh
++++ b/tools/packaging/kernel/build-kernel.sh
+@@ -64,6 +64,8 @@ PREFIX="${PREFIX:-/usr}"
+ kernel_url=""
+ #Linux headers for GPU guest fs module building
+ linux_headers=""
++# Kernel Reference to download using git
++kernel_ref=""
+ # Enable measurement of the guest rootfs at boot.
+ measured_rootfs="false"
+ 
+@@ -108,6 +110,7 @@ Options:
+ 	-m              : Enable measured rootfs.
+ 	-k <path>   	: Path to kernel to build.
+ 	-p <path>   	: Path to a directory with patches to apply to kernel.
++	-r <ref>        : Enable git mode to download kernel using ref.
+ 	-s          	: Skip .config checks
+ 	-t <hypervisor>	: Hypervisor_target.
+ 	-u <url>	: Kernel URL to be used to download the kernel tarball.
+@@ -137,6 +140,26 @@ check_initramfs_or_die() {
+ 		die "Initramfs for measured rootfs not found at ${default_initramfs}"
+ }
+ 
++get_git_kernel() {
++	local kernel_path="${2:-}"
++
++	if [ ! -d "${kernel_path}" ] ; then
++		mkdir -p "${kernel_path}"
++		pushd "${kernel_path}"
++		local kernel_git_url="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git"
++		if [ -n "${kernel_url}" ]; then
++			kernel_git_url="${kernel_url}"
++		fi
++		git init
++		git remote add origin "${kernel_git_url}"
++		popd
++	fi
++	pushd "${kernel_path}"
++	git fetch --depth 1 origin "${kernel_ref}"
++	git checkout "${kernel_ref}"
++	popd
++}
++
+ get_kernel() {
+ 	local version="${1:-}"
+ 
+@@ -420,7 +443,11 @@ setup_kernel() {
+ 		[ -n "$kernel_version" ] || die "failed to get kernel version: Kernel version is emtpy"
+ 
+ 		if [[ ${download_kernel} == "true" ]]; then
+-			get_kernel "${kernel_version}" "${kernel_path}"
++			if [ -z "${kernel_ref}" ]; then
++				get_kernel "${kernel_version}" "${kernel_path}"
++			else
++				get_git_kernel "${kernel_version}" "${kernel_path}"
++			fi
+ 		fi
+ 
+ 		[ -n "$kernel_path" ] || die "failed to find kernel source path"
+@@ -450,7 +477,8 @@ setup_kernel() {
+ 	fi
+ 
+ 	[ -n "${hypervisor_target}" ] || hypervisor_target="kvm"
+-	[ -n "${kernel_config_path}" ] || kernel_config_path=$(get_default_kernel_config "${kernel_version}" "${hypervisor_target}" "${arch_target}" "${kernel_path}")
++	# [ -n "${kernel_config_path}" ] || kernel_config_path=$(get_default_kernel_config "${kernel_version}" "${hypervisor_target}" "${arch_target}" "${kernel_path}")
++	kernel_config_path=${script_dir}/../../../build/virtcca.config
+ 
+ 	if [ "${measured_rootfs}" == "true" ]; then
+ 		check_initramfs_or_die
+@@ -570,7 +598,7 @@ install_kata() {
+ }
+ 
+ main() {
+-	while getopts "a:b:c:dD:eEfg:hH:k:mp:st:u:v:x" opt; do
++	while getopts "a:b:c:dD:eEfg:hH:k:mp:r:st:u:v:x" opt; do
+ 		case "$opt" in
+ 			a)
+ 				arch_target="${OPTARG}"
+@@ -617,6 +645,9 @@ main() {
+ 			p)
+ 				patches_path="${OPTARG}"
+ 				;;
++			r)
++				kernel_ref="${OPTARG}"
++				;;
+ 			s)
+ 				skip_config_checks="true"
+ 				;;
+diff --git a/tools/packaging/static-build/coco-guest-components/build-static-coco-guest-components.sh b/tools/packaging/static-build/coco-guest-components/build-static-coco-guest-components.sh
+index 669773a..d204668 100755
+--- a/tools/packaging/static-build/coco-guest-components/build-static-coco-guest-components.sh
++++ b/tools/packaging/static-build/coco-guest-components/build-static-coco-guest-components.sh
+@@ -18,21 +18,18 @@ source "${script_dir}/../../scripts/lib.sh"
+ [ -d "guest-components" ] && rm -rf  guest-components
+ 
+ build_coco_guest_components_from_source() {
+-	echo "build coco-guest-components from source"
++	# echo "build coco-guest-components from source"
++	echo "build virtcca coco-guest-components from source locally"
+ 
+ 	. /etc/profile.d/rust.sh
+ 
+-	git clone --depth 1 "${coco_guest_components_repo}" guest-components
+-	pushd guest-components
++	pushd ${script_dir}/../../../../build/guest-components
+ 
+-	git fetch --depth=1 origin "${coco_guest_components_version}"
+-	git checkout FETCH_HEAD
+-
+-	DESTDIR="${DESTDIR}/usr/local/bin" TEE_PLATFORM=${TEE_PLATFORM} make build
++	DESTDIR="${DESTDIR}/usr/local/bin" TEE_PLATFORM=virtcca make build
+ 	strip "target/${RUST_ARCH}-unknown-linux-${LIBC}/release/confidential-data-hub"
+ 	strip "target/${RUST_ARCH}-unknown-linux-${LIBC}/release/attestation-agent"
+ 	strip "target/${RUST_ARCH}-unknown-linux-${LIBC}/release/api-server-rest"
+-	DESTDIR="${DESTDIR}/usr/local/bin" TEE_PLATFORM=${TEE_PLATFORM} make install
++	DESTDIR="${DESTDIR}/usr/local/bin" TEE_PLATFORM=virtcca make install
+ 
+ 	install -D -m0755 "confidential-data-hub/hub/src/storage/scripts/luks-encrypt-storage" "${DESTDIR}/usr/local/bin/luks-encrypt-storage"
+ 	popd
+diff --git a/versions.yaml b/versions.yaml
+index 0cc538d..24add5f 100644
+--- a/versions.yaml
++++ b/versions.yaml
+@@ -99,6 +99,11 @@ assets:
+         https://github.com/qemu/qemu/tags
+         .*/v?(\d\S+)\.tar\.gz
+ 
++    qemu-virtcca-experimental:
++      description: "QEMU with experimental VirtCCA support"
++      url: "https://gitee.com/confidential_computing/qemu.git"
++      tag: "qemu-8.2.0"
++
+     qemu-snp-experimental:
+       description: "QEMU with GPU+SNP support"
+       url: "https://github.com/confidential-containers/qemu.git"
+@@ -123,6 +128,9 @@ assets:
+       aarch64:
+         name: "ubuntu"
+         version: "jammy"  # 22.04 LTS
++        confidential:
++          name: "ubuntu"
++          version: "jammy" # 22.04 LTS
+         nvidia-gpu:
+           name: "ubuntu"
+           version: "jammy"  # 22.04 LTS
+@@ -206,6 +214,11 @@ assets:
+     description: "Linux kernel with cpu/mem hotplug support on arm64"
+     url: "https://cdn.kernel.org/pub/linux/kernel/v5.x/"
+     version: "v5.15.138"
++    confidential:
++      description: "OpenEuler kernel with VirtCCA support on arm64"
++      url: "https://gitee.com/confidential_computing/kernel.git"
++      version: "v6.6.0+"
++      ref: "befeef1c91ee7915a328b28788a9ff2f8aa119b4"
+ 
+   kernel-dragonball-experimental:
+     description: "Linux kernel with Dragonball VMM optimizations like upcall"
+@@ -288,7 +301,7 @@ externals:
+ 
+   gperf:
+     description: "GNU gperf is a perfect hash function generator"
+-    url: "http://ftp.gnu.org/pub/gnu/gperf/"
++    url: "https://mirrors.aliyun.com/gnu/gperf"
+     version: "3.1"
+ 
+   hadolint:
+-- 
+1.8.3.1
+

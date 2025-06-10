@@ -1,0 +1,25 @@
+From c77004e9de774035fc8758244c956245d014fede Mon Sep 17 00:00:00 2001
+From: fuju <fuju1@huawei.com>
+Date: Mon, 9 Jun 2025 08:21:42 -0400
+Subject: [PATCH] Support VirtCCA
+
+---
+ src/lib.rs | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/src/lib.rs b/src/lib.rs
+index 272f606..545c42f 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -39,6 +39,8 @@ pub enum Tee {
+     Csv,
+     // IBM Z Secure Execution
+     Se,
++    // A mature virtualized ARM CCA available on existing ARM platforms
++    Virtcca,
+ 
+     // This value is only used for testing an attestation server, and should not
+     // be used in an actual attestation scenario.
+-- 
+1.8.3.1
+
