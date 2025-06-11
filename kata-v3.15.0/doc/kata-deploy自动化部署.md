@@ -32,16 +32,16 @@ git apply ./build/virtCCA_sdk/kata-v3.15.0/kata-deploy.patch
 
 # 应用patch到guest-components
 cd /home/kata-containers/build/guest-components
-git apply ./build/virtCCA_sdk/kata-v3.15.0/guest-components.patch
+git apply ../build/virtCCA_sdk/kata-v3.15.0/guest-components.patch
 
 # 应用patch到trustee
 cd /home/kata-containers/build/trustee
-git apply ./build/virtCCA_sdk/kata-v3.15.0/trustee.patch
+git apply ../build/virtCCA_sdk/kata-v3.15.0/trustee.patch
 
 # 应用patch到kbs-type
 cd /home/kata-containers/build/kbs-types
 git reset --hard 611889d22e5a4e8e57f13a33a1bdf03aa4aa9c70
-git apply ./build/virtCCA_sdk/kata-v3.15.0/kbs-type.patch
+git apply ../build/virtCCA_sdk/kata-v3.15.0/kbs-type.patch
 ```
 
 ## 拷贝`VirtCCA`配置文件到目标路径
@@ -157,7 +157,7 @@ openssl x509 -req -in /home/registry/certs/domain.csr \
    Environment="HTTPS_PROXY=https://proxy.example.com:port/"
    ```
 
-   >![](D:\workspace\c\CoCo\doc\public_sys-resources\icon-note.gif) **说明：** 
+   >![](./public_sys-resources/icon-note.gif) **说明：** 
    >若HTTPS\_PROXY字段没有可用的https代理，可使用http作为替代。
 
 6. 重启docker。
@@ -215,7 +215,7 @@ vim /etc/hosts
 127.0.0.1 registry.hw.com
 ```
 
->![](D:\workspace\c\CoCo\doc\public_sys-resources\icon-note.gif) **说明：** 
+>![](./public_sys-resources/icon-note.gif) **说明：** 
 >外部服务器访问私有仓请配置私有仓所在服务器IP，内网部署请及时取消代理。
 
 4. 将镜像仓证书写入docker本地仓所在服务器根证书。
@@ -225,7 +225,7 @@ cat /home/registry/certs/domain.crt >>/etc/pki/ca-trust/extracted/pem/tls-ca-bun
 cat /home/registry/certs/domain.crt >>/etc/pki/ca-trust/extracted/openssl/ca-bundle.trust.crt
 ```
 
->![](D:\workspace\c\CoCo\doc\public_sys-resources\icon-note.gif) **说明：** 
+>![](./public_sys-resources/icon-note.gif) **说明：** 
 >拷贝domain.crt到机密容器执行服务器，执行下方命令将domain.crt追加到tls-ca-bundle.pem和ca-bundle.trust.crt。
 >
 >```
@@ -239,7 +239,7 @@ cat /home/registry/certs/domain.crt >>/etc/pki/ca-trust/extracted/openssl/ca-bun
 docker ps
 ```
 
-![](D:\workspace\c\CoCo\doc\figures\zh-cn_image_0000002304452258.png)
+![](./figures/zh-cn_image_0000002304452258.png)
 
 ## 添加镜像到镜像仓
 
@@ -263,20 +263,20 @@ kubectl label node node node.kubernetes.io/worker=
 sleep 5s
 ```
 
-![](D:\workspace\c\CoCo\doc\figures\zh-cn_image_0000002304612146.png)
+![](./figures/zh-cn_image_0000002304612146.png)
 
 operator-controller创建成功后集群状态如下：
 
-![](D:\workspace\c\CoCo\doc\figures\zh-cn_image_0000002338371681.png)
+![](./figures/zh-cn_image_0000002338371681.png)
 
 ```shell
-# payloadImage字段指定了kata-deploy镜像路径，例如：registry.hw.com:5000/kata-deploy:latest
+# payloadImage字段指定了kata-deploy镜像路径，例如：registry.hw.com:5000/kata-deploy-test:latest
 kubectl apply -f /home/kata-containers/build/virtCCA_sdk/kata-v3.15.0/conf/virtcca-kata-deploy.yaml
 ```
 
 kata-deploy的operator创建成功后集群状态如下：
 
-![](D:\workspace\c\CoCo\doc\figures\zh-cn_image_0000002304612102.png)
+![](./figures/zh-cn_image_0000002304612102.png)
 
 
 
