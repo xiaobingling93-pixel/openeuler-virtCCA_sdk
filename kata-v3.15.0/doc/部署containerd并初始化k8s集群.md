@@ -204,12 +204,11 @@
         export -n no_proxy
         ```
 
-    2.  创建/etc/resolv.conf。
+    2.  创建/etc/resolv.conf并修改/etc/hosts。
 
         ```
-        touch /etc/resolv.conf
+        touch /etc/resolv.conf && echo "$(hostname -I | awk '{print $1}') node" | sudo tee -a /etc/hosts
         ```
-
     3.  生成初始化配置。
 
         ```

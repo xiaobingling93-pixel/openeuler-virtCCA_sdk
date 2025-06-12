@@ -218,19 +218,19 @@ vim /etc/hosts
 >![](./public_sys-resources/icon-note.gif) **说明：** 
 >外部服务器访问私有仓请配置私有仓所在服务器IP，内网部署请及时取消代理。
 
-4. 将镜像仓证书写入docker本地仓所在服务器根证书。
+4. 将上文用户生成的根证书rootCA.crt写入docker本地仓所在服务器根证书。
 
 ```
-cat /home/registry/certs/domain.crt >>/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
-cat /home/registry/certs/domain.crt >>/etc/pki/ca-trust/extracted/openssl/ca-bundle.trust.crt
+cat /home/registry/certs/rootCA.crt >>/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+cat /home/registry/certs/rootCA.crt >>/etc/pki/ca-trust/extracted/openssl/ca-bundle.trust.crt
 ```
 
 >![](./public_sys-resources/icon-note.gif) **说明：** 
->拷贝domain.crt到机密容器执行服务器，执行下方命令将domain.crt追加到tls-ca-bundle.pem和ca-bundle.trust.crt。
+>拷贝rootCA.crt到机密容器执行服务器，执行下方命令将rootCA.crt追加到tls-ca-bundle.pem和ca-bundle.trust.crt。
 >
 >```
->cat /home/registry/certs/domain.crt >>/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
->cat /home/registry/certs/domain.crt >>/etc/pki/ca-trust/extracted/openssl/ca-bundle.trust.crt
+>cat /home/registry/certs/rootCA.crt >>/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+>cat /home/registry/certs/rootCA.crt >>/etc/pki/ca-trust/extracted/openssl/ca-bundle.trust.crt
 >```
 
 5. 执行下方命令可查看正在运行的registry容器。
@@ -301,7 +301,7 @@ spec:
     imagePullPolicy: Always
     command:
     - sh
-      tty: true
+    tty: true
 ```
 
 > 卸载kata-qemu-virtcca的operator操作：
