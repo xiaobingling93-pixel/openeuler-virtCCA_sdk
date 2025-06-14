@@ -28,6 +28,7 @@ add_executable(client
     src/client.c 
     src/token_parse.c 
     src/token_validate.c 
+    src/platform_verify.c
     src/utils.c
     ${COMMON_SOURCES}
 )

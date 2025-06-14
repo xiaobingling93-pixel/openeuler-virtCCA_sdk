@@ -14,6 +14,7 @@
 
 #include "token_parse.h"
 #include "token_validate.h"
+#include "platform_verify.h"
 #include "utils.h"
 #include "common.h"
 #include "event_log.h"
@@ -48,6 +49,8 @@ bool dump_eventlog = false;
 char* ref_json_file = NULL;
 bool use_fde = false;
 char* rootfs_key_file = NULL;
+bool verify_platform_components = false;
+char* platform_ref_json_file = NULL;
 
 
 /*
@@ -168,6 +171,27 @@ int verify_token(unsigned char *token, size_t token_len)
                                           cca_token.cvm_token.pub_key,
                                           cca_token.platform_token.challenge,
                                           cca_token.cvm_token.pub_key_hash_algo_id);
+        /*
+         * Verify sw-components in Platform token (following rust-ccatoken logic)
+         */
+        if (ret && verify_platform_components && platform_ref_json_file) {
+            platform_ref_values_t ref_values;
+            if (load_platform_ref_values(platform_ref_json_file, &ref_values)) {
+                /* Execute sw-components verification */
+                bool sw_verify_result = verify_platform_sw_components(&cca_token.platform_token, &ref_values);
+                if (sw_verify_result) {
+                    printf("Platform SW-Components verification PASSED\n");
+                } else {
+                    printf("Platform SW-Components verification FAILED\n");
+                    ret = false;
+                }
+                
+                free_platform_ref_values(&ref_values);
+            } else {
+                printf("Failed to load platform reference values from: %s\n", platform_ref_json_file);
+                ret = false;
+            }
+        }
     } else {
         /*
         /* No platform token - use legacy verification logic for CVM-only tokens
@@ -181,6 +205,10 @@ int verify_token(unsigned char *token, size_t token_len)
                                           empty_buf,  /* platform challenge */
                                           cca_token.cvm_token.pub_key_hash_algo_id);
         printf("Using legacy CVM-only token verification mode\n");
+        
+        if (verify_platform_components) {
+            printf("Warning: Platform components verification requested but no platform token found\n");
+        }
     }
     if (!ret) {
         return VERIFY_FAILED;
@@ -614,6 +642,7 @@ void print_usage(char *name)
     printf("\t-f, --firmware <json>              Enable firmware verification with JSON reference file\n");
     printf("\t-e, --eventlog                     Dump event log\n");
     printf("\t-k, --fdekey <key_file>            Enable Full Disk Encryption with rootfs key file\n");
+    printf("\t-P, --platform <json>              Enable platform SW-components verification\n");
     printf("\t-h, --help                         Print Help (this message) and exit\n");
 }
 
@@ -635,12 +664,13 @@ int main(int argc, char *argv[])
         { "firmware", required_argument, NULL, 'f'},
         { "eventlog", no_argument, NULL, 'e'},
         { "fdekey", required_argument, NULL, 'k'},
+        { "platform", required_argument, NULL, 'P'},
         { "help", no_argument, NULL, 'h' },
         { NULL, 0, NULL, 0 }
     };
     while (1) {
         int option_index = 0;
-        option = getopt_long(argc, argv, "i:p:m:f:k:eh", long_options, &option_index);
+        option = getopt_long(argc, argv, "i:p:m:f:k:P:eh", long_options, &option_index);
         if (option == -1) {
             break;
         }
@@ -677,6 +707,11 @@ int main(int argc, char *argv[])
             case 'k':
                 use_fde = true;
                 rootfs_key_file = optarg;
+                break;
+            case 'P':
+                verify_platform_components = true;
+                platform_ref_json_file = optarg;
+                printf("Platform SW-components verification enabled with reference file: %s\n", optarg);
                 break;
             case 'h':
                 print_usage(argv[0]);
