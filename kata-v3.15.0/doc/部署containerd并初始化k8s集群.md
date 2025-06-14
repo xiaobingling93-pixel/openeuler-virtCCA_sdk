@@ -115,14 +115,6 @@
 
             ![](figures/zh-cn_image_0000002338491541.png)
 
-        -   运行一个容器，指定runtime为kata。
-
-            ```
-            ctr run --runtime "io.containerd.kata.v2" --rm -t docker.io/library/busybox:latest test-kata /bin/sh
-            ```
-
-            ![](figures/zh-cn_image_0000002338491525.png)
-
 ## 部署K8s（单节点）
 
 1.  新增yum源。
