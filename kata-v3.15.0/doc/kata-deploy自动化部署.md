@@ -313,3 +313,20 @@ spec:
 > ```
 
 至此，用户已经可以基于`kata-qemu-virtcca`容器运行时运行机密容器（pod)。
+
+## 支持ctr启动机密容器
+```shell
+    mkdir -p /etc/kata-containers
+    cp /opt/kata/share/defaults/kata-containers/configuration-qemu-virtcca.toml /etc/kata-containers/configuration.toml
+    sed -i 's/^\([[:space:]]*shared_fs[[:space:]]*=[[:space:]]*\)"[^"]*"/\1"virtio-fs"/' /etc/kata-containers/configuration.toml
+    cp /opt/kata/bin/containerd-shim-kata-v2 /usr/bin/containerd-shim-kata-v2
+    cp /opt/kata/bin/kata-runtime /usr/bin/kata-runtime
+```
+> 注意：ctr 启动机密容器时，使用的是/etc/kata-containers/configuration.toml配置文件，需要与operator管理的runtime配置文件区分开。
+
+运行一个容器，指定runtime为kata。
+
+```
+ctr run --runtime "io.containerd.kata.v2" --rm -t docker.io/library/busybox:latest test-kata /bin/sh
+```
+![](figures/zh-cn_image_0000002338491525.png)
