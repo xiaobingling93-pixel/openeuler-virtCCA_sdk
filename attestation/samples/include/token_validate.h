@@ -30,8 +30,21 @@ bool validate_aik_cert_chain(X509 *x509_aik, X509 *x509_sub, X509 *x509_root);
 
 bool verify_cvm_cose_sign(qbuf_t signed_cose, qbuf_t pub_key);
 
+/*
+/* Platform token validation functions
+*/
+bool verify_pubkhash_challenge(qbuf_t pub_key, qbuf_t challenge, qbuf_t algorithm);
+
+bool verify_plat_cose_sign(qbuf_t signed_cose, X509 *x509_aik);
+
+/*
+/* Complete CCA token signature verification
+*/
 bool verify_cca_token_signatures(cert_info_t *cert_info,
-                                qbuf_t cvm_cose,
-                                qbuf_t cvm_pub_key);
+                                 qbuf_t plat_cose,
+                                 qbuf_t cvm_cose,
+                                 qbuf_t cvm_pub_key,
+                                 qbuf_t plat_challenge,
+                                 qbuf_t cvm_pub_key_algo);
 
 #endif /* TOKEN_VALIDATE_H */
