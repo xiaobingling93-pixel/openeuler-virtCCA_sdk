@@ -1,13 +1,13 @@
-From 4e4120961fe735dd390b5e654d3d11f08e0deb5c Mon Sep 17 00:00:00 2001
+From aa6fb5a0fddb89863007c14d98da38206950af53 Mon Sep 17 00:00:00 2001
 From: unholyzero <yuanhai4@huawei.com>
-Date: Wed, 28 May 2025 17:31:13 +0800
-Subject: [PATCH] Resolving IMA Verification Conflicts in UEFI Mode
+Date: Sat, 14 Jun 2025 18:19:56 +0800
+Subject: [PATCH] Resolving-IMA-Verification-Conflicts-in-UEFI-Mode
 
 ---
- samples/virtcca-client/ima_measure.c     | 146 ++++++++++++++++-------
- samples/virtcca-client/inc/ima_measure.h |   3 +-
- samples/virtcca-client/rats-client.c     |  94 +++++++++++++--
- 3 files changed, 188 insertions(+), 55 deletions(-)
+ samples/virtcca-client/ima_measure.c     | 146 ++++++++++++++-------
+ samples/virtcca-client/inc/ima_measure.h |   7 +-
+ samples/virtcca-client/rats-client.c     | 153 +++++++++++++++++++++--
+ 3 files changed, 251 insertions(+), 55 deletions(-)
 
 diff --git a/samples/virtcca-client/ima_measure.c b/samples/virtcca-client/ima_measure.c
 index 60d7310..29035de 100644
@@ -249,10 +249,21 @@ index 60d7310..29035de 100644
  }
 \ No newline at end of file
 diff --git a/samples/virtcca-client/inc/ima_measure.h b/samples/virtcca-client/inc/ima_measure.h
-index b113721..6ad6c00 100644
+index b113721..f2662b1 100644
 --- a/samples/virtcca-client/inc/ima_measure.h
 +++ b/samples/virtcca-client/inc/ima_measure.h
-@@ -23,6 +23,7 @@
+@@ -3,6 +3,10 @@
+ 
+ #include <limits.h>
+ 
++#ifndef PATH_MAX
++#define PATH_MAX 4096
++#endif
++
+ #define TCG_EVENT_NAME_LEN_MAX	255
+ #define IMA_TEMPLATE_FIELD_ID_MAX_LEN	16
+ #define IMA_TEMPLATE_NUM_FIELDS_MAX	15
+@@ -23,6 +27,7 @@
  #define IMA_MEASUREMENTS_PATH "binary_runtime_measurements"
  
  
@@ -263,7 +274,7 @@ index b113721..6ad6c00 100644
  #endif
 \ No newline at end of file
 diff --git a/samples/virtcca-client/rats-client.c b/samples/virtcca-client/rats-client.c
-index 1888d81..42636e3 100644
+index 1888d81..6fbd8af 100644
 --- a/samples/virtcca-client/rats-client.c
 +++ b/samples/virtcca-client/rats-client.c
 @@ -37,6 +37,30 @@
@@ -297,7 +308,62 @@ index 1888d81..42636e3 100644
  #define DEFAULT_PORT 1234
  #define DEFAULT_IP   "127.0.0.1"
  #define TOKEN "ATTESTATION_PASS"
-@@ -165,9 +189,15 @@ static int verify_ima_log(rats_tls_handle handle, client_args *args)
+@@ -157,6 +181,54 @@ int user_callback(void *args)
+ 	return true;
+ }
+ 
++/*
++ * Parse IMA measurement file to determine the actual PCR index being used
++ * Returns the PCR index found in the file, or -1 on error
++ */
++static int parse_ima_pcr_index(void)
++{
++	FILE *fp;
++	char line[1024];
++	int pcr_index = -1;
++	int count = 0;
++	
++	fp = fopen(IMA_MEASUREMENTS_PATH, "r");
++	if (!fp) {
++		RTLS_ERR("Unable to open IMA measurements file: %s\n", IMA_MEASUREMENTS_PATH);
++		return -1;
++	}
++	
++	while (fgets(line, sizeof(line), fp) && count < 10) {  /* Check first 10 lines */
++		count++;
++		
++		/* Skip the first line (boot_aggregate) and look at actual measurement entries */
++		if (count == 1) {
++			continue;
++		}
++		
++		/* Parse PCR index from line format: "PCR_INDEX hash ..." */
++		int current_pcr;
++		if (sscanf(line, " %d ", &current_pcr) == 1) {
++			/* Found a measurement entry with PCR index */
++			if (pcr_index == -1) {
++				pcr_index = current_pcr;
++				RTLS_INFO("Detected PCR index %d from IMA measurements\n", pcr_index);
++			} else if (pcr_index != current_pcr) {
++				RTLS_WARN("Multiple PCR indices found in IMA log: %d and %d\n", pcr_index, current_pcr);
++			}
++		}
++	}
++	
++	fclose(fp);
++	
++	if (pcr_index == -1) {
++		RTLS_ERR("Could not determine PCR index from IMA measurements\n");
++		return -1;
++	}
++	
++	return pcr_index;
++}
++
+ static int verify_ima_log(rats_tls_handle handle, client_args *args)
+ {
+ 	size_t len = sizeof(size_t);
+@@ -165,9 +237,15 @@ static int verify_ima_log(rats_tls_handle handle, client_args *args)
  	size_t recv_size = 0;
  	FILE *fp = NULL;
  	int ret = ENCLAVE_VERIFIER_ERR_UNKNOWN;
@@ -315,7 +381,7 @@ index 1888d81..42636e3 100644
  	ret = rats_tls_receive(handle, &ima_log_size, &len);
  	if (ret != RATS_TLS_ERR_NONE || len != sizeof(size_t)) {
  		RTLS_INFO("Failed to receive IMA log size %#x\n", ret);
-@@ -194,7 +224,7 @@ static int verify_ima_log(rats_tls_handle handle, client_args *args)
+@@ -194,7 +272,7 @@ static int verify_ima_log(rats_tls_handle handle, client_args *args)
  		recv_size += len;
  	}
  
@@ -324,7 +390,7 @@ index 1888d81..42636e3 100644
  	if ((fp = fopen(IMA_MEASUREMENTS_PATH, "w")) == NULL) {
  		RTLS_INFO("Filed to open file %s.\n", IMA_MEASUREMENTS_PATH);
  		ret = ENCLAVE_VERIFIER_ERR_UNKNOWN;
-@@ -213,13 +243,59 @@ free:
+@@ -213,13 +291,70 @@ free:
  		return ret;
  
  	rtls_core_context_t *ctx = (rtls_core_context_t *)handle;
@@ -346,32 +412,43 @@ index 1888d81..42636e3 100644
 +		return ENCLAVE_VERIFIER_ERR_CBOR;
 +	}
 +
-+	RTLS_INFO("Attempting to determine IMA validation target (REM[3] for UEFI, REM[0] for Direct Boot)...\n");
++	/*
++	 * Parse IMA measurement file to determine the actual PCR index being used
++	 * Based on the PCR index, determine which REM to use:
++	 * - PCR 4: use REM[3] (UEFI boot mode)
++	 * - PCR 1 or 10: use REM[0] (Direct boot mode)
++	 */
++	int actual_pcr_index = parse_ima_pcr_index();
++	if (actual_pcr_index == -1) {
++		RTLS_ERR("Failed to parse PCR index from IMA measurements\n");
++		return RATS_TLS_ERR_INVALID;
++	}
 +
-+	/* Check REM[3] (for PCR4 - UEFI IMA) */
-+	if (REM_COUNT > 3 && token.cvm_token.rem[3].len == SHA256_SIZE && !is_rem_entry_zero(&token.cvm_token.rem[3])) {
-+		RTLS_INFO("REM[3] is non-zero. Assuming UEFI Boot scenario for IMA.\n");
++	if (actual_pcr_index == 4) {
++		/* UEFI boot mode: PCR 4 -> REM[3] */
++		if (REM_COUNT <= 3 || token.cvm_token.rem[3].len != SHA256_SIZE || is_rem_entry_zero(&token.cvm_token.rem[3])) {
++			RTLS_ERR("REM[3] is invalid or zero for PCR 4 verification\n");
++			return RATS_TLS_ERR_INVALID;
++		}
 +		target_pcr_for_ima = 4;
 +		rem_index_for_ima = 3;
 +		reference_rem_ptr = (const uint8_t *)token.cvm_token.rem[3].ptr;
 +		reference_rem_len = token.cvm_token.rem[3].len;
-+	} 
-+	/* If REM[3] is zero or invalid, check REM[0] (for PCR1 - Direct Boot IMA) */
-+	else if (REM_COUNT > 0 && token.cvm_token.rem[0].len == SHA256_SIZE && !is_rem_entry_zero(&token.cvm_token.rem[0])) {
-+		RTLS_INFO("REM[3] is zero/invalid. REM[0] is non-zero. Assuming Direct Boot scenario for IMA.\n");
-+		target_pcr_for_ima = 1;
++		RTLS_INFO("UEFI boot mode detected: using REM[3] for PCR 4 verification\n");
++	} else if (actual_pcr_index == 1 || actual_pcr_index == 10) {
++		/* Direct boot mode: PCR 1 or 10 -> REM[0] */
++		if (REM_COUNT <= 0 || token.cvm_token.rem[0].len != SHA256_SIZE || is_rem_entry_zero(&token.cvm_token.rem[0])) {
++			RTLS_ERR("REM[0] is invalid or zero for PCR %d verification\n", actual_pcr_index);
++			return RATS_TLS_ERR_INVALID;
++		}
++		target_pcr_for_ima = actual_pcr_index;  /* Use the actual PCR index detected */
 +		rem_index_for_ima = 0;
 +		reference_rem_ptr = (const uint8_t *)token.cvm_token.rem[0].ptr;
 +		reference_rem_len = token.cvm_token.rem[0].len;
++		RTLS_INFO("Direct boot mode detected: using REM[0] for PCR %d verification\n", actual_pcr_index);
 +	} else {
-+		RTLS_ERR("Could not determine a valid non-zero REM slot (REM[3] or REM[0]) for IMA verification. Both appear zero or invalid.\n");
-+		RTLS_INFO("REM[3] status: length %zu, is_zero: %s\n", 
-+				  (REM_COUNT > 3 ? token.cvm_token.rem[3].len : 0), 
-+				  (REM_COUNT > 3 ? (is_rem_entry_zero(&token.cvm_token.rem[3]) ? "true" : "false") : "N/A"));
-+		RTLS_INFO("REM[0] status: length %zu, is_zero: %s\n", 
-+				  (REM_COUNT > 0 ? token.cvm_token.rem[0].len : 0), 
-+				  (REM_COUNT > 0 ? (is_rem_entry_zero(&token.cvm_token.rem[0]) ? "true" : "false") : "N/A"));
-+		return RATS_TLS_ERR_INVALID; 
++		RTLS_ERR("Unsupported PCR index %d found in IMA measurements\n", actual_pcr_index);
++		return RATS_TLS_ERR_INVALID;
 +	}
 +
 +	RTLS_INFO("Using REM[%d] (PCR%d) from CVM token for IMA validation.\n", rem_index_for_ima, target_pcr_for_ima);
@@ -391,5 +468,5 @@ index 1888d81..42636e3 100644
  
  static int deal_ima(rats_tls_handle handle, client_args *args)
 -- 
-2.43.0
+2.33.0
 

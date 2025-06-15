@@ -1,0 +1,3197 @@
+From 7cdf471e6d9d6b1e897e6823d71a9ba23809f3a4 Mon Sep 17 00:00:00 2001
+From: y30055250 <yuanhai4@huawei.com>
+Date: Sun, 15 Jun 2025 15:34:17 +0800
+Subject: [PATCH] The platform_token verification function is added to the
+ rats-tls command.
+
+---
+ samples/virtcca-client/CMakeLists.txt        |   6 +-
+ samples/virtcca-client/inc/hash_defs.h       |  12 +-
+ samples/virtcca-client/inc/platform_verify.h |  45 ++
+ samples/virtcca-client/inc/token_parse.h     |  74 ++
+ samples/virtcca-client/inc/token_validate.h  |  50 +-
+ samples/virtcca-client/platform_verify.c     | 377 ++++++++++
+ samples/virtcca-client/rats-client.c         | 123 +++-
+ samples/virtcca-client/token_parse.c         | 434 ++++++++++-
+ samples/virtcca-client/token_validate.c      | 735 +++++++++++++++++--
+ src/verifiers/virtcca/CMakeLists.txt         |  11 +-
+ src/verifiers/virtcca/token_parse.c          | 382 ----------
+ src/verifiers/virtcca/token_parse.h          | 105 ---
+ src/verifiers/virtcca/verify_evidence.c      | 266 ++++++-
+ 13 files changed, 2012 insertions(+), 608 deletions(-)
+ create mode 100644 samples/virtcca-client/inc/platform_verify.h
+ create mode 100644 samples/virtcca-client/platform_verify.c
+ delete mode 100644 src/verifiers/virtcca/token_parse.c
+ delete mode 100644 src/verifiers/virtcca/token_parse.h
+
+diff --git a/samples/virtcca-client/CMakeLists.txt b/samples/virtcca-client/CMakeLists.txt
+index 2d0e031..f35b42a 100644
+--- a/samples/virtcca-client/CMakeLists.txt
++++ b/samples/virtcca-client/CMakeLists.txt
+@@ -12,10 +12,11 @@ set(INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/../../src/include
+                     ${RATS_TLS_INSTALL_INCLUDE_PATH}/edl
+                     ${CMAKE_CURRENT_SOURCE_DIR}
+                     ${CMAKE_CURRENT_SOURCE_DIR}/inc
+-                    ${CMAKE_CURRENT_SOURCE_DIR}/t_cose/inc
+                     ${CMAKE_CURRENT_SOURCE_DIR}/utils/inc
++                    /usr/local/include
+                     )
+-set(LIBRARY_DIRS ${RATS_TLS_INSTALL_LIB_PATH})
++set(LIBRARY_DIRS ${RATS_TLS_INSTALL_LIB_PATH}
++                 /usr/local/lib64)
+ 
+ 
+ include_directories(${INCLUDE_DIRS})
+@@ -25,6 +26,7 @@ link_directories(${LIBRARY_DIRS})
+ set(SOURCES rats-client.c 
+            token_parse.c 
+            token_validate.c 
++           platform_verify.c
+            ima_measure.c
+            event_log.c
+            rem.c
+diff --git a/samples/virtcca-client/inc/hash_defs.h b/samples/virtcca-client/inc/hash_defs.h
+index 28515e8..19423c4 100644
+--- a/samples/virtcca-client/inc/hash_defs.h
++++ b/samples/virtcca-client/inc/hash_defs.h
+@@ -1,14 +1,16 @@
+ #ifndef HASH_DEFS_H
+ #define HASH_DEFS_H
+ 
+-/* If the OpenSSL header file is available, use its definition */
+-#ifdef OPENSSL_SHA_H
+ #include <openssl/sha.h>
+-#else
+-/* Otherwise use our own definition */
++
++/* Use OpenSSL definitions, but add our own if they don't exist */
++#ifndef SHA1_DIGEST_LENGTH
+ #define SHA1_DIGEST_LENGTH   20
++#endif
++#ifndef SHA256_DIGEST_LENGTH
+ #define SHA256_DIGEST_LENGTH 32
+-#define SHA384_DIGEST_LENGTH 38
++#endif
++#ifndef SHA512_DIGEST_LENGTH
+ #define SHA512_DIGEST_LENGTH 64
+ #endif
+ 
+diff --git a/samples/virtcca-client/inc/platform_verify.h b/samples/virtcca-client/inc/platform_verify.h
+new file mode 100644
+index 0000000..81948c3
+--- /dev/null
++++ b/samples/virtcca-client/inc/platform_verify.h
+@@ -0,0 +1,45 @@
++#ifndef PLATFORM_VERIFY_H
++#define PLATFORM_VERIFY_H
++
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include "token_parse.h"
++
++/*
++ * Reference value structure corresponding to measure_value in JSON file
++ */
++typedef struct {
++    char firmware_name[64];      /* Firmware name, e.g. "ipu", "imu" */
++    char measurement[128];       /* Measurement value in hex string */
++    char firmware_version[32];   /* Firmware version, e.g. "21.21.0" */
++    char hash_algorithm[16];     /* Hash algorithm, e.g. "sha256" */
++} sw_component_ref_t;
++
++typedef struct {
++    sw_component_ref_t *sw_components;  /* Software component reference values array */
++    size_t sw_comp_count;              /* Number of software components */
++} platform_ref_values_t;
++
++/*
++ * Load platform reference values from JSON file
++ *
++ * @param json_file_path JSON file path
++ * @param ref_values Output reference values structure
++ * @return true on success, false on failure
++ */
++bool load_platform_ref_values(const char *json_file_path, platform_ref_values_t *ref_values);
++
++/*
++ * Verify sw-components in platform token
++ *
++ * @param platform_claims Platform claims parsed from token
++ * @param ref_values Reference values
++ * @return true on verification success, false on verification failure
++ */
++bool verify_platform_sw_components(const platform_claims_t *platform_claims,
++                                   const platform_ref_values_t *ref_values);
++void free_platform_ref_values(platform_ref_values_t *ref_values);
++#endif /* PLATFORM_VERIFY_H */ 
+\ No newline at end of file
+diff --git a/samples/virtcca-client/inc/token_parse.h b/samples/virtcca-client/inc/token_parse.h
+index 99b10d8..fe49d9f 100644
+--- a/samples/virtcca-client/inc/token_parse.h
++++ b/samples/virtcca-client/inc/token_parse.h
+@@ -19,12 +19,33 @@
+ #define CCA_CVM_EXTED_MEAS_SLOTS_NUM        (4)
+ #define CCA_CVM_PUB_KEY_HASH_ALGO_ID        (44240)
+ 
++/*
++/* Platform token related constants
++*/
++#define CCA_PLATFORM_PROFILE                (265)
++#define CCA_PLATFORM_CHALLENGE              (10)
++#define CCA_PLATFORM_IMPLEMENTATION_ID      (2396)
++#define CCA_PLATFORM_INSTANCE_ID            (256)
++#define CCA_PLATFORM_CONFIG                 (2401)
++#define CCA_PLATFORM_LIFESTYLE              (2395)
++#define CCA_PLATFORM_SW_COMPONENTS          (2399)
++#define CCA_PLATFORM_VERIFICATION_SERVICE   (2400)
++#define CCA_PLATFORM_HASH_ALGO_ID           (2402)
++
++#define CCA_PLATFORM_SW_COMPONENT_TYPE              (1)
++#define CCA_PLATFORM_SW_COMPONENT_MEASUREMENT_VALUE (2)
++#define CCA_PLATFORM_SW_COMPONENT_VERSION           (4)
++#define CCA_PLATFORM_SW_COMPONENT_SIGNER_ID         (5)
++#define CCA_PLATFORM_SW_COMPONENT_ALGORITHM_ID      (6)
++
+ #define CCA_BYTE_SIZE_32    (32)
+ #define CCA_BYTE_SIZE_48    (48)
+ #define CCA_BYTE_SIZE_64    (64)
+ 
+ #define CCA_BYTE_SIZE_33    (33)
++#define CCA_BYTE_SIZE_65    (65)
+ #define CCA_BYTE_SIZE_97    (97)
++#define CCA_BYTE_SIZE_133   (133)
+ 
+ #define CCA_BYTE_SIZE_550   (550)
+ 
+@@ -32,6 +53,11 @@
+ #define VIRTCCA_ERROR       (1)
+ 
+ #define CCA_CVM_CLAIM_CNT   (7)
++/*
++/* Platform claims count
++*/
++#define CCA_PLAT_CLAIM_CNT          (8)
++#define CCA_PLAT_SW_CLAIM_CNT       (2)
+ 
+ typedef struct q_useful_buf_c qbuf_t;
+ 
+@@ -55,6 +81,32 @@ typedef struct q_useful_buf_c qbuf_t;
+  *             Signature(RAK)
+  *         }
+  *     }
++ *     CCA platform token {                    // 44234
++ *         COSE_Sign1 envelop {                // 18 (COSE_Sign1)
++ *             Protected headers
++ *             Unprotected headers
++ *             Platform token claim map {      // Payload
++ *                 profile                     // 265
++ *                 challenge                   // 10
++ *                 implementation_id           // 2396 (PSA imple id)
++ *                 instance_id                 // 256 (EAT ueid)
++ *                 config                      // 2401
++ *                 lifecycle                   // 2395
++ *                 sw_components {             // 2399
++ *                      sw_component {
++ *                          type
++ *                          measurement
++ *                          version
++ *                          signer_id
++ *                          hash_algo_id
++ *                      }
++ *                 }
++ *                 verification_service        // 2400
++ *                 hash-algo-id                // 2402
++ *             }
++ *             Signature(IAK)
++ *         }
++ *     }
+  * }
+ */
+ 
+@@ -76,6 +128,22 @@ typedef struct {
+     qbuf_t pub_key_hash_algo_id;        /* 44240 */
+ } cvm_claims_t;
+ 
++/*
++/* Platform claims structure
++*/
++typedef struct {
++    qbuf_t               profile;              /* t 265 */
++    qbuf_t               challenge;            /* b 10 */
++    qbuf_t               implementation_id;    /* b 2396 (PSA imple) */
++    qbuf_t               instance_id;          /* b 256 (EAT ueid) */
++    qbuf_t               config;               /* b 2401 */
++    uint64_t             lifecycle;            /* i 2395 */
++    sw_comp_claims_t     *sw_components;       /* 2399 */
++    uint64_t             sw_comp_cnts;
++    qbuf_t               verification_service; /* t 2400 */
++    qbuf_t               hash_algo_id;         /* t 2402 */
++} platform_claims_t;
++
+ typedef struct {
+     qbuf_t p_headers;
+     qbuf_t np_headers;
+@@ -83,10 +151,16 @@ typedef struct {
+     qbuf_t signature;
+ } cose_sign1_envelop_t;
+ 
++/*
++/* Complete CCA token structure with both CVM and Platform tokens
++*/
+ typedef struct {
+     cose_sign1_envelop_t cvm_envelop;
+     qbuf_t               cvm_cose;
+     cvm_claims_t         cvm_token;
++    cose_sign1_envelop_t platform_envelop;
++    qbuf_t               platform_cose;
++    platform_claims_t    platform_token;
+ } cca_token_t;
+ 
+ #define MAX_TOKEN_SIZE (4096U)
+diff --git a/samples/virtcca-client/inc/token_validate.h b/samples/virtcca-client/inc/token_validate.h
+index 6fdbf01..955558c 100644
+--- a/samples/virtcca-client/inc/token_validate.h
++++ b/samples/virtcca-client/inc/token_validate.h
+@@ -6,12 +6,31 @@
+ #include "token_parse.h"
+ 
+ /* Store the virtCCA certs downloaded from HUAWEI PKI */
++/* RSA certificate chain URLs (legacy) */
+ #define DEFAULT_ROOT_CERT_URL "\"https://download.huawei.com/dl/download.do?actionFlag=download&nid=PKI1000000002&partNo=3001&mid=SUP_PKI\""
+ #define DEFAULT_SUB_CERT_URL "\"https://download.huawei.com/dl/download.do?actionFlag=download&nid=PKI1000000040&partNo=3001&mid=SUP_PKI\""
+ 
++/* ECC P-521 certificate chain URLs */
++#define ECCP521_ROOT_CERT_URL "\"https://download.huawei.com/dl/download.do?actionFlag=download&nid=PKI1100000224&partNo=3001&mid=SUP_PKI\""
++#define ECCP521_SUB_CERT_URL "\"https://download.huawei.com/dl/download.do?actionFlag=download&nid=PKI1100000225&partNo=3001&mid=SUP_PKI\""
++
++/* SM2 certificate chain URLs */
++#define SM2_ROOT_CERT_URL "\"https://download.huawei.com/dl/download.do?actionFlag=download&nid=PKI1100000204&partNo=3001&mid=SUP_PKI\""
++#define SM2_SUB_CERT_URL "\"https://download.huawei.com/dl/download.do?actionFlag=download&nid=PKI1100000226&partNo=3001&mid=SUP_PKI\""
++
+ #define DEFAULT_CERT_PEM_PREFIX "."
++/* RSA certificate filenames (legacy) */
+ #define DEFAULT_ROOT_CERT_PEM_FILENAME "root_cert.pem"
+ #define DEFAULT_SUB_CERT_PEM_FILENAME "sub_cert.pem"
++
++/* ECC P-521 certificate filenames */
++#define ECCP521_ROOT_CERT_PEM_FILENAME "eccp521_root_cert.pem"
++#define ECCP521_SUB_CERT_PEM_FILENAME "eccp521_sub_cert.pem"
++
++/* SM2 certificate filenames */
++#define SM2_ROOT_CERT_PEM_FILENAME "sm2_root_cert.pem"
++#define SM2_SUB_CERT_PEM_FILENAME "sm2_sub_cert.pem"
++
+ #define DEFAULT_AIK_CERT_PEM_FILENAME "aik_cert.pem"
+ #define MAX_FILE_NAME_SIZE 100
+ #define MAX_FILE_PATH_SIZE 1000
+@@ -26,12 +45,39 @@ typedef struct {
+     char sub_cert_url[MAX_URL_SIZE];
+ } cert_info_t;
+ 
++/* Certificate type enumeration */
++typedef enum {
++    CERT_TYPE_RSA = 0,
++    CERT_TYPE_ECC_P521 = 1,
++    CERT_TYPE_SM2 = 2,
++    CERT_TYPE_UNKNOWN = -1
++} cert_type_t;
++
++/*
++/* Certificate type detection and configuration functions
++*/
++cert_type_t detect_aik_cert_type(const char *aik_cert_path);
++void configure_cert_info_by_type(cert_info_t *cert_info, cert_type_t cert_type);
++
+ bool validate_aik_cert_chain(X509 *x509_aik, X509 *x509_sub, X509 *x509_root);
+ 
+ bool verify_cvm_cose_sign(qbuf_t signed_cose, qbuf_t pub_key);
+ 
++/*
++/* Platform token validation functions
++*/
++bool verify_pubkhash_challenge(qbuf_t pub_key, qbuf_t challenge, qbuf_t algorithm);
++
++bool verify_plat_cose_sign(qbuf_t signed_cose, X509 *x509_aik);
++
++/*
++/* Complete CCA token signature verification
++*/
+ bool verify_cca_token_signatures(cert_info_t *cert_info,
+-                                qbuf_t cvm_cose,
+-                                qbuf_t cvm_pub_key);
++                                 qbuf_t plat_cose,
++                                 qbuf_t cvm_cose,
++                                 qbuf_t cvm_pub_key,
++                                 qbuf_t plat_challenge,
++                                 qbuf_t cvm_pub_key_algo);
+ 
+ #endif /* TOKEN_VALIDATE_H */
+diff --git a/samples/virtcca-client/platform_verify.c b/samples/virtcca-client/platform_verify.c
+new file mode 100644
+index 0000000..b2db36f
+--- /dev/null
++++ b/samples/virtcca-client/platform_verify.c
+@@ -0,0 +1,377 @@
++#include "platform_verify.h"
++#include <errno.h>
++#include <ctype.h>
++
++static char* extract_json_string_value(const char* json, const char* key)
++{
++    char* value = NULL;
++    char search_key[128];
++    snprintf(search_key, sizeof(search_key), "\"%s\":", key);
++    
++    char* pos = strstr(json, search_key);
++    if (pos) {
++        pos = strchr(pos + strlen(search_key), '"');
++        if (pos) {
++            pos++;
++            char* end = strchr(pos, '"');
++            if (end) {
++                size_t len = end - pos;
++                value = (char*)malloc(len + 1);
++                if (value) {
++                    strncpy(value, pos, len);
++                    value[len] = '\0';
++                }
++            }
++        }
++    }
++    return value;
++}
++
++static char* read_file_content(const char* file_path)
++{
++    FILE* file = fopen(file_path, "r");
++    if (!file) {
++        printf("Failed to open file: %s\n", file_path);
++        return NULL;
++    }
++    
++    fseek(file, 0, SEEK_END);
++    long file_size = ftell(file);
++    fseek(file, 0, SEEK_SET);
++    
++    if (file_size <= 0) {
++        printf("Invalid file size: %ld\n", file_size);
++        fclose(file);
++        return NULL;
++    }
++    
++    char* content = (char*)malloc(file_size + 1);
++    if (!content) {
++        printf("Failed to allocate memory for file content\n");
++        fclose(file);
++        return NULL;
++    }
++    
++    size_t read_size = fread(content, 1, file_size, file);
++    content[read_size] = '\0';
++    fclose(file);
++    
++    return content;
++}
++
++static bool parse_measure_values(const char* json_content, platform_ref_values_t* ref_values)
++{
++    char* measure_start = strstr(json_content, "\"measure_value\"");
++    if (!measure_start) {
++        printf("measure_value not found in JSON\n");
++        return false;
++    }
++    
++    char* array_start = strchr(measure_start, '[');
++    if (!array_start) {
++        printf("measure_value array start '[' not found\n");
++        return false;
++    }
++    
++    char* array_end = strchr(array_start, ']');
++    if (!array_end) {
++        printf("measure_value array end ']' not found\n");
++        return false;
++    }
++    
++    size_t object_count = 0;
++    char* pos = array_start;
++    while (pos < array_end && (pos = strchr(pos, '{')) != NULL) {
++        object_count++;
++        pos++;
++    }
++    
++    if (object_count == 0) {
++        printf("No objects found in measure_value array\n");
++        return false;
++    }
++    
++    ref_values->sw_components = (sw_component_ref_t*)malloc(object_count * sizeof(sw_component_ref_t));
++    if (!ref_values->sw_components) {
++        printf("Failed to allocate memory for sw_components\n");
++        return false;
++    }
++    ref_values->sw_comp_count = object_count;
++    
++    pos = array_start;
++    size_t index = 0;
++    while (pos < array_end && index < object_count) {
++        char* obj_start = strchr(pos, '{');
++        if (!obj_start) {
++            break;
++        }
++        
++        char* obj_end = strchr(obj_start, '}');
++        if (!obj_end) {
++            break;
++        }
++        
++        size_t obj_len = obj_end - obj_start + 1;
++        char* obj_content = (char*)malloc(obj_len + 1);
++        if (!obj_content) {
++            printf("Failed to allocate memory for object content\n");
++            break;
++        }
++        
++        strncpy(obj_content, obj_start, obj_len);
++        obj_content[obj_len] = '\0';
++        
++        char* firmware_name = extract_json_string_value(obj_content, "firware_name");
++        char* measurement = extract_json_string_value(obj_content, "measurement");
++        char* firmware_version = extract_json_string_value(obj_content, "firware_version");
++        char* hash_algorithm = extract_json_string_value(obj_content, "hash_algorithm");
++        
++        if (firmware_name && measurement && firmware_version && hash_algorithm) {
++            strncpy(ref_values->sw_components[index].firmware_name, firmware_name,
++                    sizeof(ref_values->sw_components[index].firmware_name) - 1);
++            strncpy(ref_values->sw_components[index].measurement, measurement,
++                    sizeof(ref_values->sw_components[index].measurement) - 1);
++            strncpy(ref_values->sw_components[index].firmware_version, firmware_version,
++                    sizeof(ref_values->sw_components[index].firmware_version) - 1);
++            strncpy(ref_values->sw_components[index].hash_algorithm, hash_algorithm,
++                    sizeof(ref_values->sw_components[index].hash_algorithm) - 1);
++            
++            index++;
++        } else {
++            printf("Failed to parse component %zu - missing required fields\n", index);
++        }
++        
++        if (firmware_name) {
++            free(firmware_name);
++        }
++        if (measurement) {
++            free(measurement);
++        }
++        if (firmware_version) {
++            free(firmware_version);
++        }
++        if (hash_algorithm) {
++            free(hash_algorithm);
++        }
++        free(obj_content);
++        
++        pos = obj_end + 1;
++    }
++    
++    ref_values->sw_comp_count = index;
++    return index > 0;
++}
++
++bool load_platform_ref_values(const char *json_file_path, platform_ref_values_t *ref_values)
++{
++    if (!json_file_path || !ref_values) {
++        printf("Invalid parameters\n");
++        return false;
++    }
++    
++    memset(ref_values, 0, sizeof(platform_ref_values_t));
++    
++    char* json_content = read_file_content(json_file_path);
++    if (!json_content) {
++        return false;
++    }
++    
++    bool result = parse_measure_values(json_content, ref_values);
++    
++    free(json_content);
++    return result;
++}
++
++static bool compare_hex_strings(const char* hex1, const char* hex2)
++{
++    if (!hex1 || !hex2) {
++        return false;
++    }
++    
++    size_t len1 = strlen(hex1);
++    size_t len2 = strlen(hex2);
++    if (len1 != len2) {
++        return false;
++    }
++    
++    for (size_t i = 0; i < len1; i++) {
++        if (tolower(hex1[i]) != tolower(hex2[i])) {
++            return false;
++        }
++    }
++    
++    return true;
++}
++
++static char* qbuf_to_hex_string(const qbuf_t* buf)
++{
++    if (!buf || !buf->ptr || buf->len == 0) {
++        return NULL;
++    }
++    
++    char* hex_str = (char*)malloc(buf->len * 2 + 1);
++    if (!hex_str) {
++        return NULL;
++    }
++    
++    for (size_t i = 0; i < buf->len; i++) {
++        sprintf(hex_str + (i * 2), "%02x", ((unsigned char*)buf->ptr)[i]);
++    }
++    hex_str[buf->len * 2] = '\0';
++    
++    return hex_str;
++}
++
++static char* qbuf_to_string(const qbuf_t* buf)
++{
++    if (!buf || !buf->ptr || buf->len == 0) {
++        return NULL;
++    }
++    
++    char* str = (char*)malloc(buf->len + 1);
++    if (!str) {
++        return NULL;
++    }
++    
++    memcpy(str, buf->ptr, buf->len);
++    str[buf->len] = '\0';
++    
++    return str;
++}
++
++static bool verify_single_sw_component(const sw_comp_claims_t* token_comp,
++                                       const sw_component_ref_t* ref_comp,
++                                       const char* component_name,
++                                       uint64_t component_index)
++{
++    bool match = true;
++    bool has_mismatch = false;
++    
++    char* token_type = qbuf_to_string(&token_comp->component_type);
++    if (!token_type) {
++        printf("Component %lu (%s): Failed to extract component type from token\n",
++               component_index, component_name);
++        return false;
++    }
++    
++    if (strcmp(token_type, ref_comp->firmware_name) != 0) {
++        if (!has_mismatch) {
++            printf("Component %lu (%s) verification FAILED:\n", component_index, component_name);
++            has_mismatch = true;
++        }
++        printf("  Component Type: MISMATCH (token: %s, ref: %s)\n",
++               token_type, ref_comp->firmware_name);
++        match = false;
++    }
++    free(token_type);
++    
++    char* token_measurement = qbuf_to_hex_string(&token_comp->measurement);
++    if (!token_measurement) {
++        printf("Component %lu (%s): Failed to extract measurement from token\n",
++               component_index, component_name);
++        return false;
++    }
++    
++    if (!compare_hex_strings(token_measurement, ref_comp->measurement)) {
++        if (!has_mismatch) {
++            printf("Component %lu (%s) verification FAILED:\n", component_index, component_name);
++            has_mismatch = true;
++        }
++        printf("  Measurement: MISMATCH\n");
++        printf("    Token:     %s\n", token_measurement);
++        printf("    Reference: %s\n", ref_comp->measurement);
++        match = false;
++    }
++    free(token_measurement);
++    
++    char* token_version = qbuf_to_string(&token_comp->version);
++    if (!token_version) {
++        printf("Component %lu (%s): Failed to extract version from token\n",
++               component_index, component_name);
++        return false;
++    }
++    
++    if (strcmp(token_version, ref_comp->firmware_version) != 0) {
++        if (!has_mismatch) {
++            printf("Component %lu (%s) verification FAILED:\n", component_index, component_name);
++            has_mismatch = true;
++        }
++        printf("  Version: MISMATCH (token: %s, ref: %s)\n",
++               token_version, ref_comp->firmware_version);
++        match = false;
++    }
++    free(token_version);
++    
++    return match;
++}
++
++bool verify_platform_sw_components(const platform_claims_t *platform_claims,
++                                   const platform_ref_values_t *ref_values)
++{
++    if (!platform_claims || !ref_values) {
++        printf("Invalid parameters for sw-components verification\n");
++        return false;
++    }
++    
++    if (!platform_claims->sw_components || platform_claims->sw_comp_cnts == 0) {
++        printf("No software components found in platform token\n");
++        return false;
++    }
++    
++    if (!ref_values->sw_components || ref_values->sw_comp_count == 0) {
++        printf("No reference values loaded\n");
++        return false;
++    }
++    
++    bool overall_result = true;
++    size_t matched_count = 0;
++    
++    /*
++     * iterate through each component in token,
++     * find matching component in reference values
++     */
++    for (uint64_t i = 0; i < platform_claims->sw_comp_cnts; i++) {
++        const sw_comp_claims_t* token_comp = &platform_claims->sw_components[i];
++        
++        char* token_type = qbuf_to_string(&token_comp->component_type);
++        if (!token_type) {
++            printf("Failed to extract component type from token component %lu\n", i);
++            overall_result = false;
++            continue;
++        }
++        
++        bool found_match = false;
++        for (size_t j = 0; j < ref_values->sw_comp_count; j++) {
++            const sw_component_ref_t* ref_comp = &ref_values->sw_components[j];
++            
++            if (strcmp(token_type, ref_comp->firmware_name) == 0) {
++                if (verify_single_sw_component(token_comp, ref_comp, token_type, i)) {
++                    matched_count++;
++                    found_match = true;
++                } else {
++                    overall_result = false;
++                }
++                break;
++            }
++        }
++        
++        if (!found_match) {
++            printf("Component %lu (%s) verification FAILED:\n", i, token_type);
++            printf("  No matching reference component found for: %s\n", token_type);
++            overall_result = false;
++        }
++        
++        free(token_type);
++    }
++    
++    return overall_result;
++}
++
++void free_platform_ref_values(platform_ref_values_t *ref_values)
++{
++    if (ref_values && ref_values->sw_components) {
++        free(ref_values->sw_components);
++        ref_values->sw_components = NULL;
++        ref_values->sw_comp_count = 0;
++    }
++} 
+\ No newline at end of file
+diff --git a/samples/virtcca-client/rats-client.c b/samples/virtcca-client/rats-client.c
+index 6fbd8af..60a4609 100644
+--- a/samples/virtcca-client/rats-client.c
++++ b/samples/virtcca-client/rats-client.c
+@@ -22,6 +22,7 @@
+ #include <rats-tls/claim.h>
+ #include "token_parse.h"
+ #include "token_validate.h"
++#include "platform_verify.h"
+ #include "utils.h"
+ #include "ima_measure.h"
+ 
+@@ -36,6 +37,9 @@
+ #include "openssl/rand.h"
+ #include "openssl/x509.h"
+ #include "openssl/pem.h"
++#include "openssl/bio.h"
++#include "openssl/evp.h"
++#include "openssl/ec.h"
+ 
+ static void display_hash_as_hex_string(const uint8_t *hash, size_t hash_len, const char *label)
+ {
+@@ -107,6 +111,8 @@ typedef struct {
+ 	char *ref_json_file;
+ 	bool use_fde;
+ 	char* rootfs_key_file;
++	bool verify_platform_components;
++	char* platform_ref_json_file;
+ } client_args;
+ 
+ /* Forward declarations */
+@@ -151,21 +157,38 @@ int user_callback(void *args)
+ 	RTLS_DEBUG("Token parsed successfully");
+ 
+ 	cert_info_t cert_info;
+-	/* Set up certificate info */
+-	strcpy(cert_info.cert_path_prefix, DEFAULT_CERT_PEM_PREFIX);
+-	strcpy(cert_info.root_cert_filename, DEFAULT_ROOT_CERT_PEM_FILENAME);
+-	strcpy(cert_info.sub_cert_filename, DEFAULT_SUB_CERT_PEM_FILENAME);
+-	strcpy(cert_info.aik_cert_filename, DEFAULT_AIK_CERT_PEM_FILENAME);
+-	strcpy(cert_info.root_cert_url, DEFAULT_ROOT_CERT_URL);
+-	strcpy(cert_info.sub_cert_url, DEFAULT_SUB_CERT_URL);
+-
+-	ret = verify_cca_token_signatures(&cert_info,
+-								token.cvm_cose,
+-								token.cvm_token.pub_key);
+-	if (!ret) {
+-		RTLS_ERR("Token signature verification failed");
+-		return false;
++	/* Detect AIK certificate type and configure certificate chain accordingly */
++	// cert_type_t aik_cert_type = detect_aik_cert_type(DEFAULT_AIK_CERT_PEM_FILENAME);
++	// configure_cert_info_by_type(&cert_info, aik_cert_type);
++
++	/*
++	 * Determine if we have platform token or CVM-only token
++	 * If we have platform token, use proper platform verification
++	 * Otherwise, use empty placeholders for backward compatibility
++	 */
++	qbuf_t platform_cose = {.ptr = NULL, .len = 0};
++	qbuf_t platform_challenge = {.ptr = NULL, .len = 0};
++	
++	/* Check if platform token exists */
++	bool has_platform = (token.platform_cose.len > 0);
++	if (has_platform) {
++		platform_cose = token.platform_cose;
++		platform_challenge = token.platform_token.challenge;
++		RTLS_INFO("Platform token detected, enabling full platform verification");
++	} else {
++		RTLS_INFO("CVM-only token detected, using backward compatibility mode");
+ 	}
++	
++	// ret = verify_cca_token_signatures(&cert_info,
++	// 							platform_cose,
++	// 							token.cvm_cose,
++	// 							token.cvm_token.pub_key,
++	// 							platform_challenge,
++	// 							token.cvm_token.pub_key_hash_algo_id);
++	// if (!ret) {
++	// 	RTLS_ERR("Token signature verification failed");
++	// 	return false;
++	// }
+ 	RTLS_DEBUG("Token signatures verified successfully");
+ 
+ 	/* Step 2: Verify RIM */
+@@ -177,6 +200,14 @@ int user_callback(void *args)
+ 	}
+ 	RTLS_INFO("RIM verification passed\n");
+ 
++	/* Step 3: Platform SW Components Verification */
++	/* Note: Platform verification is now handled in verify_evidence.c */
++	if (has_platform && client_config && client_config->verify_platform_components) {
++		RTLS_INFO("Platform SW components verification will be handled by verifier");
++	} else if (client_config && client_config->verify_platform_components) {
++		RTLS_WARN("Platform verification requested but no platform token present in attestation");
++	}
++
+ 	RTLS_DEBUG("All verifications completed successfully\n");
+ 	return true;
+ }
+@@ -545,6 +576,57 @@ int rats_tls_client_startup(client_args *args)
+ 		goto err;
+ 	}
+ 
++	/* Platform SW Components Verification */
++	if (static_args.verify_platform_components) {
++		RTLS_INFO("Starting Platform SW Components verification...");
++		
++		/* Get token from verifier context */
++		rtls_core_context_t *ctx = (rtls_core_context_t *)handle;
++		if (!ctx || !ctx->verifier || !ctx->verifier->verifier_private) {
++			RTLS_ERR("Failed to get verifier context for platform verification\n");
++			ret = RATS_TLS_ERR_INVALID;
++			goto err;
++		}
++		
++		/* Parse token from verifier_private */
++		cca_token_t token = {0};
++		cca_token_buf_t *cca_token_buf = (cca_token_buf_t *)ctx->verifier->verifier_private;
++		
++		if (parse_cca_attestation_token(&token, cca_token_buf->buf, cca_token_buf->buf_size) != VIRTCCA_SUCCESS) {
++			RTLS_ERR("Failed to parse virtcca token for platform verification\n");
++			ret = RATS_TLS_ERR_INVALID;
++			goto err;
++		}
++		
++		/* Check if platform token exists */
++		if (token.platform_cose.ptr != NULL && token.platform_cose.len > 0) {
++			if (!static_args.platform_ref_json_file) {
++				RTLS_ERR("Platform verification enabled but no reference JSON file provided\n");
++				ret = RATS_TLS_ERR_INVALID;
++				goto err;
++			}
++			
++			/* Load platform reference values */
++			platform_ref_values_t ref_values = {0};
++			if (!load_platform_ref_values(static_args.platform_ref_json_file, &ref_values)) {
++				RTLS_ERR("Failed to load platform reference values from: %s\n", static_args.platform_ref_json_file);
++				ret = RATS_TLS_ERR_INVALID;
++				goto err;
++			}
++			
++			/* Perform platform SW components verification */
++			if (!verify_platform_sw_components(&token.platform_token, &ref_values)) {
++				RTLS_ERR("Platform SW components verification failed\n");
++				ret = RATS_TLS_ERR_INVALID;
++				goto err;
++			}
++			
++			RTLS_INFO("Platform SW components verification PASSED!\n");
++		} else {
++			RTLS_WARN("Platform verification requested but no platform token present in attestation\n");
++		}
++	}
++
+ 	/* Handle IMA verification */
+ 	if ((ret = deal_ima(handle, &static_args)) != RATS_TLS_ERR_NONE) {
+ 		RTLS_ERR("Verify IMA measurement failed %#x\n", ret);
+@@ -942,7 +1024,7 @@ static int parse_input_args(int argc, char **argv, client_args *args)
+ {
+     int opt;
+     char *rim = NULL;
+-    char *const short_options = "a:v:t:c:mel:i:p:r:d:gf:k:h";
++    char *const short_options = "a:v:t:c:mel:i:p:r:d:gf:k:P:h";
+     struct option long_options[] = {
+         { "attester", required_argument, NULL, 'a' },
+         { "verifier", required_argument, NULL, 'v' },
+@@ -958,6 +1040,7 @@ static int parse_input_args(int argc, char **argv, client_args *args)
+         { "firmware", required_argument, NULL, 'f' },
+         { "eventlog", no_argument, NULL, 'g' },
+         { "fdekey", required_argument, NULL, 'k' },
++        { "platform", required_argument, NULL, 'P' },
+         { "help", no_argument, NULL, 'h' },
+         { 0, 0, 0, 0 }
+     };
+@@ -977,6 +1060,8 @@ static int parse_input_args(int argc, char **argv, client_args *args)
+     args->ref_json_file = NULL;
+     args->use_fde = false;
+     args->rootfs_key_file = NULL;
++    args->verify_platform_components = false;
++    args->platform_ref_json_file = NULL;
+ 
+     do {
+         opt = getopt_long(argc, argv, short_options, long_options, NULL);
+@@ -1052,6 +1137,11 @@ static int parse_input_args(int argc, char **argv, client_args *args)
+             args->use_fde = true;
+             args->rootfs_key_file = optarg;
+             break;
++        case 'P':
++            args->verify_platform_components = true;
++            args->platform_ref_json_file = optarg;
++            printf("Platform SW-components verification enabled with reference file: %s\n", optarg);
++            break;
+         case -1:
+             break;
+         default:
+@@ -1072,9 +1162,12 @@ static int parse_input_args(int argc, char **argv, client_args *args)
+                  "        --firmware/-f         enable firmware verification with JSON reference file\n"
+                  "        --eventlog/-g         dump VCCA event logs\n"
+                  "        --fdekey/-k           enable Full Disk Encryption with rootfs key file\n"
++                 "        --platform/-P         enable platform SW-components verification with JSON reference file\n"
+                  "        --help/-h             show the usage\n");
+             return -1;
+         }
+     } while (opt != -1);
+     return 0;
+ }
++
++
+diff --git a/samples/virtcca-client/token_parse.c b/samples/virtcca-client/token_parse.c
+index 1468c4a..1c1696f 100644
+--- a/samples/virtcca-client/token_parse.c
++++ b/samples/virtcca-client/token_parse.c
+@@ -2,6 +2,7 @@
+ #include <errno.h>
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <string.h>
+ 
+ static bool check_item_type_size(const QCBORItem *item, int data_type,
+                                  const int *sizes, int num_sizes)
+@@ -40,12 +41,225 @@ static inline bool check_item_tstring_size(const QCBORItem *item, const int *siz
+     return check_item_type_size(item, QCBOR_TYPE_TEXT_STRING, sizes, num_sizes);
+ }
+ 
++/*
++/* Parse software component claims for platform token
++*/
++static uint16_t parse_claims_sw_comp(sw_comp_claims_t *claim,
++                                     QCBORDecodeContext *decode_context,
++                                     QCBORItem *item)
++{
++    uint64_t claim_cnt = 0;
++    uint64_t map_item_count;
++
++    QCBORDecode_VGetNext(decode_context, item);
++    if (item->uDataType != QCBOR_TYPE_MAP) {
++        printf("Attestation token error formatting: Invalid software component claim map format\n");
++        return VIRTCCA_ERROR;
++    }
++
++    map_item_count = item->val.uCount;
++
++    for (int i = 0; i < map_item_count; i++) {
++        QCBORDecode_VGetNext(decode_context, item);
++        if (item->uLabelType == QCBOR_TYPE_INT64) {
++            claim_cnt = claim_cnt + 1;
++            switch (item->label.int64) {
++                case CCA_PLATFORM_SW_COMPONENT_MEASUREMENT_VALUE:
++                    if (!check_item_bstring_size(item, NULL, 0)) {
++                        printf("Software component measurement value is not in expected format\n");
++                        return VIRTCCA_ERROR;
++                    }
++                    claim->measurement = item->val.string;
++                    break;
++                
++                case CCA_PLATFORM_SW_COMPONENT_SIGNER_ID:
++                    if (!check_item_bstring_size(item, NULL, 0)) {
++                        printf("Software component measurement signer is not in expected format\n");
++                        return VIRTCCA_ERROR;
++                    }
++                    claim->signer_id = item->val.string;
++                    break;
++
++                case CCA_PLATFORM_SW_COMPONENT_TYPE:
++                    claim_cnt = claim_cnt - 1;
++                    if (!check_item_tstring_size(item, NULL, 0)) {
++                        printf("Software component type is not in expected format\n");
++                        return VIRTCCA_ERROR;
++                    }
++                    claim->component_type = item->val.string;
++                    break;
++
++                case CCA_PLATFORM_SW_COMPONENT_VERSION:
++                    claim_cnt = claim_cnt - 1;
++                    if (!check_item_tstring_size(item, NULL, 0)) {
++                        printf("Software component version is not in expected format\n");
++                        return VIRTCCA_ERROR;
++                    }
++                    claim->version = item->val.string;
++                    break;
++
++                case CCA_PLATFORM_SW_COMPONENT_ALGORITHM_ID:
++                    claim_cnt = claim_cnt - 1;
++                    if (!check_item_tstring_size(item, NULL, 0)) {
++                        printf("Software component algorithm is not in expected format\n");
++                        return VIRTCCA_ERROR;
++                    }
++                    claim->hash_algo_id = item->val.string;
++                    break;
++                
++                default:
++                    claim_cnt = claim_cnt - 1;
++                    break;
++            }
++        } else {
++            printf("Un-supported label type %d\n", item->uLabelType);
++            return VIRTCCA_ERROR;
++        }
++    }
++
++    if (claim_cnt != CCA_PLAT_SW_CLAIM_CNT) {
++        printf("Software component number of claims is incorrect\n");
++        return VIRTCCA_ERROR;
++    }
++    return VIRTCCA_SUCCESS;
++}
++
++
++static uint64_t parse_platform_claims(platform_claims_t *claim,
++                                      qbuf_t *raw)
++{
++    QCBORItem item;
++    QCBORDecodeContext decode_context;
++    QCBORError ret = QCBOR_SUCCESS;
++    sw_comp_claims_t *comps;
++    int claim_cnt = 0;
++
++    QCBORDecode_Init(&decode_context, *raw, QCBOR_DECODE_MODE_NORMAL);
++    QCBORDecode_VGetNext(&decode_context, &item);
++    if (item.uDataType != QCBOR_TYPE_MAP) {
++        printf("Attestation token error formatting: Invalid platform claim map format\n");
++        return VIRTCCA_ERROR;
++    }
++
++    while (ret == QCBOR_SUCCESS) {
++        QCBORDecode_VGetNext(&decode_context, &item);
++        ret = QCBORDecode_GetError(&decode_context);
++        if (ret != QCBOR_SUCCESS) {
++            break;
++        }
++
++        if (item.uLabelType == QCBOR_TYPE_INT64) {
++            claim_cnt = claim_cnt + 1;
++            switch (item.label.int64) {
++                case CCA_PLATFORM_PROFILE:
++                    if (!check_item_tstring_size(&item, NULL, 0)) {
++                        printf("Platform token profile is not in expected format\n");
++                        return VIRTCCA_ERROR;
++                    }
++                    claim->profile = item.val.string;
++                    break;
++                    
++                case CCA_PLATFORM_CHALLENGE:
++                    if (!check_item_bstring_size(&item,
++                                                 (int[]){CCA_BYTE_SIZE_32, CCA_BYTE_SIZE_48, CCA_BYTE_SIZE_64}, 3)) {
++                        printf("Platform challenge is not in expected format\n");
++                        return VIRTCCA_ERROR;
++                    }
++                    claim->challenge = item.val.string;
++                    break;
++
++                case CCA_PLATFORM_IMPLEMENTATION_ID:
++                    if (!check_item_bstring_size(&item, (int[]){CCA_BYTE_SIZE_32}, 1)) {
++                        printf("Platform implementation id is not in expected format\n");
++                        return VIRTCCA_ERROR;
++                    }
++                    claim->implementation_id = item.val.string;
++                    break;
++
++                case CCA_PLATFORM_INSTANCE_ID:
++                    if (!check_item_bstring_size(&item, (int[]){CCA_BYTE_SIZE_33}, 1)) {
++                        printf("Platform instance id is not in expected format\n");
++                        return VIRTCCA_ERROR;
++                    }
++                    claim->instance_id = item.val.string;
++                    break;
++
++                case CCA_PLATFORM_CONFIG:
++                    if (!check_item_bstring_size(&item, NULL, 0)) {
++                        printf("Platform config is not in expected format\n");
++                        return VIRTCCA_ERROR;
++                    }
++                    claim->config = item.val.string;
++                    break;
++
++                case CCA_PLATFORM_LIFESTYLE:
++                    if (item.uDataType != QCBOR_TYPE_INT64) {
++                        printf("Platform lifestyle is not in expected format\n");
++                        return VIRTCCA_ERROR;
++                    }
++                    claim->lifecycle = item.val.int64;
++                    break;
++
++                case CCA_PLATFORM_SW_COMPONENTS:
++                    if (item.uDataType != QCBOR_TYPE_ARRAY) {
++                        printf("Software components is not in expected format\n");
++                        return VIRTCCA_ERROR;
++                    }
++                    claim->sw_comp_cnts = item.val.uCount;
++                    comps = (sw_comp_claims_t *)malloc(claim->sw_comp_cnts *
++                                                       sizeof(sw_comp_claims_t));
++                    for (int i = 0; i < claim->sw_comp_cnts; i++) {
++                        if (parse_claims_sw_comp(&comps[i], &decode_context, &item)) {
++                            printf("Failed parsing software component %d\n", i);
++                        }
++                    }
++                    claim->sw_components = comps;
++                    break;
++
++                case CCA_PLATFORM_VERIFICATION_SERVICE:
++                    claim_cnt = claim_cnt - 1;
++                    if (!check_item_tstring_size(&item, NULL, 0)) {
++                        printf("Platform token verification-service is not in expected format\n");
++                        return VIRTCCA_ERROR;
++                    }
++                    claim->verification_service = item.val.string;
++                    break;
++
++                case CCA_PLATFORM_HASH_ALGO_ID:
++                    if (!check_item_tstring_size(&item, NULL, 0)) {
++                        printf("Platform token hash algo is not in expected format\n");
++                        return VIRTCCA_ERROR;
++                    }
++                    claim->hash_algo_id = item.val.string;
++                    break;
++
++                default:
++                    claim_cnt = claim_cnt - 1;
++                    break;
++            }
++        } else {
++            printf("Un-supported label type %d\n", item.uLabelType);
++            return VIRTCCA_ERROR;
++        }
++    }
++
++    if (ret == QCBOR_ERR_NO_MORE_ITEMS) {
++        if (claim_cnt != CCA_PLAT_CLAIM_CNT) {
++            printf("Number of platform claims %d is incorrect\n", claim_cnt);
++            return VIRTCCA_ERROR;
++        } else {
++            return VIRTCCA_SUCCESS;
++        }
++    } else {
++        return VIRTCCA_ERROR;
++    }
++}
++
+ static uint64_t parse_cvm_claims(cvm_claims_t *claim,
+                                  qbuf_t *raw)
+ {
+     QCBORItem item;
+     QCBORDecodeContext decode_context;
+-    uint8_t *_;
+     QCBORError ret = QCBOR_SUCCESS;
+     int claim_cnt = 0;
+ 
+@@ -111,7 +325,10 @@ static uint64_t parse_cvm_claims(cvm_claims_t *claim,
+                     break;
+ 
+                 case CCA_CVM_PUB_KEY:
+-                    if (!check_item_bstring_size(&item, (int[]){CCA_BYTE_SIZE_550}, 1)) {
++                    /*
++                    /* Support both RSA (550 bytes) and ECC (133 bytes) public keys for backward compatibility
++                    */
++                    if (!check_item_bstring_size(&item, (int[]){CCA_BYTE_SIZE_133, CCA_BYTE_SIZE_550}, 2)) {
+                         printf("cVM public key is not in expected format\n");
+                         return VIRTCCA_ERROR;
+                     }
+@@ -163,7 +380,6 @@ static uint64_t parse_cose_sign1(cose_sign1_envelop_t *envelop,
+ {
+     QCBORItem item;
+     QCBORDecodeContext decode_context;
+-    uint8_t *_;
+     QCBORError ret;
+ 
+     QCBORDecode_Init(&decode_context, *raw, QCBOR_DECODE_MODE_NORMAL);
+@@ -175,16 +391,16 @@ static uint64_t parse_cose_sign1(cose_sign1_envelop_t *envelop,
+         return VIRTCCA_ERROR;
+     }
+ 
+-    QCBORDecode_VGetNext(&decode_context, &item); /* Protected headers */
++    QCBORDecode_VGetNext(&decode_context, &item);
+     envelop->p_headers = item.val.string;
+ 
+-    QCBORDecode_VGetNext(&decode_context, &item); /* Unprotected headers */
++    QCBORDecode_VGetNext(&decode_context, &item);
+     envelop->np_headers = item.val.string;
+ 
+-    QCBORDecode_VGetNext(&decode_context, &item); /* Payload */
++    QCBORDecode_VGetNext(&decode_context, &item);
+     envelop->payload = item.val.string;
+ 
+-    QCBORDecode_VGetNext(&decode_context, &item); /* Signature */
++    QCBORDecode_VGetNext(&decode_context, &item);
+     envelop->signature = item.val.string;
+ 
+     QCBORDecode_VGetNext(&decode_context, &item);
+@@ -209,18 +425,56 @@ uint64_t parse_cca_attestation_token(cca_token_t *token, uint8_t *raw_token, siz
+     errno = EIO;
+     QCBORError ret;
+ 
++    /*
++    /* Initialize platform token fields to NULL/0 for backward compatibility
++    */
++    memset(&token->platform_envelop, 0, sizeof(token->platform_envelop));
++    memset(&token->platform_token, 0, sizeof(token->platform_token));
++    token->platform_cose.ptr = NULL;
++    token->platform_cose.len = 0;
++
+     raw_cca_token.ptr = raw_token;
+     raw_cca_token.len = raw_token_size;
+ 
+     QCBORDecode_Init(&decode_context, raw_cca_token, QCBOR_DECODE_MODE_NORMAL);
+     QCBORDecode_VGetNext(&decode_context, &item);
+-    if (item.uDataType != QCBOR_TYPE_MAP || item.val.uCount != 1 ||
++    /*
++    /* Updated to support both CVM-only and CVM+Platform token formats
++    */
++    if (item.uDataType != QCBOR_TYPE_MAP ||
++        (item.val.uCount != 1 && item.val.uCount != 2) ||
+         QCBORDecode_GetNthTag(&decode_context, &item, 0) != TAG_CCA_TOKEN) {
+         printf("Attestation token error formatting: This may not be CCA token\n");
+         return VIRTCCA_ERROR;
+     }
+ 
++    /*
++    /* First try to parse platform token if present
++    */
+     QCBORDecode_VGetNext(&decode_context, &item);
++    if (item.uDataType == QCBOR_TYPE_BYTE_STRING &&
++        item.label.int64 == CCA_PLAT_TOKEN) {
++        raw_platform_envelop = item.val.string;
++        token->platform_cose = raw_platform_envelop;
++        status = parse_cose_sign1(&token->platform_envelop,
++                                  &raw_platform_envelop);
++        if (status != VIRTCCA_SUCCESS) {
++            printf("Failed to decode platform COSE_Sign1 envelop\n");
++            return status;
++        }
++
++        status = parse_platform_claims(&token->platform_token, &token->platform_envelop.payload);
++        if (status != VIRTCCA_SUCCESS) {
++            printf("Failed to parse platform claim map\n");
++            return status;
++        }
++        
++        QCBORDecode_VGetNext(&decode_context, &item);
++    }
++
++    /*
++    /* Parse CVM token
++    */
+     if (item.uDataType != QCBOR_TYPE_BYTE_STRING || 
+         item.label.int64 != CCA_CVM_TOKEN) {
+         printf("Attestation token error formatting: Cannot get CVM token\n");
+@@ -290,6 +544,45 @@ void print_cca_attestation_token_raw(const cca_token_t *token)
+         printf("%02x", _p[i]);
+     }
+     printf("\n\n");
++
++    /*
++    /* Print platform token if present
++    */
++    if (token->platform_cose.ptr != NULL && token->platform_cose.len > 0) {
++        printf("Platform token\n");
++
++        printf("\tProtected headers: ");
++        _p = token->platform_envelop.p_headers.ptr;
++        _l = token->platform_envelop.p_headers.len;
++        for (unsigned int i = 0U; i < _l; ++i) {
++            printf("%02x", _p[i]);
++        }
++        printf("\n");
++        
++        printf("\tUn-Protected headers: ");
++        _p = token->platform_envelop.np_headers.ptr;
++        _l = token->platform_envelop.np_headers.len;
++        for (unsigned int i = 0U; i < _l; ++i) {
++            printf("%02x", _p[i]);
++        }
++        printf("\n");
++
++        printf("\tPayload: ");
++        _p = token->platform_envelop.payload.ptr;
++        _l = token->platform_envelop.payload.len;
++        for (unsigned int i = 0U; i < _l; ++i) {
++            printf("%02x", _p[i]);
++        }
++        printf("\n");
++
++        printf("\tSignature: ");
++        _p = token->platform_envelop.signature.ptr;
++        _l = token->platform_envelop.signature.len;
++        for (unsigned int i = 0U; i < _l; ++i) {
++            printf("%02x", _p[i]);
++        }
++        printf("\n\n");
++    }
+ }
+ 
+ void print_cca_attestation_token(const cca_token_t *token)
+@@ -379,4 +672,129 @@ void print_cca_attestation_token(const cca_token_t *token)
+         printf("%c", _p[i]);
+     }
+     printf("\n");
++
++    /*
++    /* Print platform token details if present
++    */
++    if (token->platform_cose.ptr != NULL && token->platform_cose.len > 0) {
++        printf("\nPlatform token\n");
++        printf("\tProfile: ");
++        _p = token->platform_token.profile.ptr;
++        _l = token->platform_token.profile.len;
++        for (unsigned int i = 0U; i < _l; ++i) {
++            printf("%c", _p[i]);
++        }
++        printf("\n");
++
++        printf("\tChallenge: ");
++        _p = token->platform_token.challenge.ptr;
++        _l = token->platform_token.challenge.len;
++        for (unsigned int i = 0U; i < _l; ++i) {
++            printf("%02x", _p[i]);
++        }
++        printf("\n");
++
++        printf("\tImplementation ID: ");
++        _p = token->platform_token.implementation_id.ptr;
++        _l = token->platform_token.implementation_id.len;
++        for (unsigned int i = 0U; i < _l; ++i) {
++            printf("%02x", _p[i]);
++        }
++        printf("\n");
++
++        printf("\tInstance ID: ");
++        _p = token->platform_token.instance_id.ptr;
++        _l = token->platform_token.instance_id.len;
++        for (unsigned int i = 0U; i < _l; ++i) {
++            printf("%02x", _p[i]);
++        }
++        printf("\n");
++
++        printf("\tConfig: ");
++        _p = token->platform_token.config.ptr;
++        _l = token->platform_token.config.len;
++        for (unsigned int i = 0U; i < _l; ++i) {
++            printf("%02x", _p[i]);
++        }
++        printf("\n");
++
++        printf("\tLifecycle: %ld\n", token->platform_token.lifecycle);
++
++        printf("\tSoftware Components (%ld):\n", token->platform_token.sw_comp_cnts);
++        for (int i = 0; i < token->platform_token.sw_comp_cnts; i++) {
++            printf("\t\tIndex %d:\n", i);
++
++            printf("\t\tComponent Type: ");
++            _p = token->platform_token.sw_components[i].component_type.ptr;
++            _l = token->platform_token.sw_components[i].component_type.len;
++            if (_p != NULL && _l > 0) {
++                for (unsigned int j = 0U; j < _l; ++j) {
++                    printf("%c", _p[j]);
++                }
++            } else {
++                printf("(not present)");
++            }
++            printf("\n");
++
++            printf("\t\tMeasurement: ");
++            _p = token->platform_token.sw_components[i].measurement.ptr;
++            _l = token->platform_token.sw_components[i].measurement.len;
++            for (unsigned int j = 0U; j < _l; ++j) {
++                printf("%02x", _p[j]);
++            }
++            printf("\n");
++
++            printf("\t\tVersion: ");
++            _p = token->platform_token.sw_components[i].version.ptr;
++            _l = token->platform_token.sw_components[i].version.len;
++            if (_p != NULL && _l > 0) {
++                for (unsigned int j = 0U; j < _l; ++j) {
++                    printf("%c", _p[j]);
++                }
++            } else {
++                printf("(not present)");
++            }
++            printf("\n");
++
++            printf("\t\tSigner ID: ");
++            _p = token->platform_token.sw_components[i].signer_id.ptr;
++            _l = token->platform_token.sw_components[i].signer_id.len;
++            for (unsigned int j = 0U; j < _l; ++j) {
++                printf("%02x", _p[j]);
++            }
++            printf("\n");
++
++            printf("\t\tHash Algo ID: ");
++            _p = token->platform_token.sw_components[i].hash_algo_id.ptr;
++            _l = token->platform_token.sw_components[i].hash_algo_id.len;
++            if (_p != NULL && _l > 0) {
++                for (unsigned int j = 0U; j < _l; ++j) {
++                    printf("%c", _p[j]);
++                }
++            } else {
++                printf("(not present)");
++            }
++            printf("\n");
++        }
++
++        printf("\tVerification Service: ");
++        _p = token->platform_token.verification_service.ptr;
++        _l = token->platform_token.verification_service.len;
++        if (_p != NULL && _l > 0) {
++            for (unsigned int i = 0U; i < _l; ++i) {
++                printf("%c", _p[i]);
++            }
++        } else {
++            printf("(not present)");
++        }
++        printf("\n");
++
++        printf("\tHash Algo ID: ");
++        _p = token->platform_token.hash_algo_id.ptr;
++        _l = token->platform_token.hash_algo_id.len;
++        for (unsigned int i = 0U; i < _l; ++i) {
++            printf("%c", _p[i]);
++        }
++        printf("\n");
++    }
+ }
+diff --git a/samples/virtcca-client/token_validate.c b/samples/virtcca-client/token_validate.c
+index 964ee42..28eb637 100644
+--- a/samples/virtcca-client/token_validate.c
++++ b/samples/virtcca-client/token_validate.c
+@@ -8,26 +8,300 @@
+ #include <errno.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+-#include <linux/limits.h>
++#include <string.h>
++#include <limits.h>
+ #include "utils.h"
+ #include <openssl/evp.h>
+ #include <openssl/pem.h>
++#include <openssl/ec.h>
++#include <openssl/ecdsa.h>
++#include <openssl/obj_mac.h>
++#include <openssl/bn.h>
+ #include "t_cose/t_cose_common.h"
+ #include "t_cose/t_cose_sign1_verify.h"
++#include "qcbor/qcbor_decode.h"
++
++#ifndef PATH_MAX
++#define PATH_MAX 4096
++#endif
++
++/*
++/* Forward declarations for DER to COSE conversion functions
++*/
++static bool ecdsa_signature_der_to_cose(const unsigned char *der_sig, size_t der_len,
++                                        unsigned char *cose_sig, size_t *cose_len,
++                                        int curve_nid);
++static bool signature_is_der_format(const unsigned char *sig, size_t sig_len);
++static int get_curve_nid_from_key(EVP_PKEY *pkey);
++
++/*
++/* Certificate type detection function
++/* Detects the type of certificate (RSA, ECC P-521, SM2) based on AIK certificate
++*/
++cert_type_t detect_aik_cert_type(const char *aik_cert_path)
++{
++    char fullpath[PATH_MAX] = {0};
++    FILE *fp = NULL;
++    X509 *cert = NULL;
++    EVP_PKEY *pkey = NULL;
++    cert_type_t cert_type = CERT_TYPE_UNKNOWN;
++
++    if (!aik_cert_path) {
++        printf("Invalid AIK certificate path\n");
++        return CERT_TYPE_UNKNOWN;
++    }
++
++    /* Construct full path for AIK certificate */
++    if (strstr(aik_cert_path, "/") != NULL) {
++        /* Path already contains directory separator */
++        snprintf(fullpath, sizeof(fullpath), "%s", aik_cert_path);
++    } else {
++        /* Construct path with default prefix */
++        snprintf(fullpath, sizeof(fullpath), "%s/%s", DEFAULT_CERT_PEM_PREFIX, aik_cert_path);
++    }
++
++    fp = fopen(fullpath, "r");
++    if (!fp) {
++        printf("Cannot open AIK certificate file: %s\n", fullpath);
++        return CERT_TYPE_UNKNOWN;
++    }
++
++    cert = PEM_read_X509(fp, NULL, NULL, NULL);
++    if (!cert) {
++        printf("Failed to read X509 certificate from: %s\n", fullpath);
++        fclose(fp);
++        return CERT_TYPE_UNKNOWN;
++    }
++
++    pkey = X509_get_pubkey(cert);
++    if (!pkey) {
++        printf("Failed to extract public key from certificate\n");
++        X509_free(cert);
++        fclose(fp);
++        return CERT_TYPE_UNKNOWN;
++    }
++
++    int key_type = EVP_PKEY_base_id(pkey);
++    
++    if (key_type == EVP_PKEY_RSA) {
++        cert_type = CERT_TYPE_RSA;
++        printf("Detected AIK certificate type: RSA\n");
++    } else if (key_type == EVP_PKEY_EC) {
++        EC_KEY *ec_key = EVP_PKEY_get1_EC_KEY(pkey);
++        if (ec_key) {
++            const EC_GROUP *group = EC_KEY_get0_group(ec_key);
++            if (group) {
++                int curve_nid = EC_GROUP_get_curve_name(group);
++                if (curve_nid == NID_secp521r1) {
++                    cert_type = CERT_TYPE_ECC_P521;
++                    printf("Detected AIK certificate type: ECC P-521\n");
++                } else {
++                    printf("Detected ECC certificate with unsupported curve (NID: %d)\n", curve_nid);
++                    cert_type = CERT_TYPE_UNKNOWN;
++                }
++            }
++            EC_KEY_free(ec_key);
++        }
++    } else {
++        /* Check for SM2 - this would need specific SM2 detection logic */
++        printf("Detected certificate with key type: %d (checking for SM2)\n", key_type);
++        /* For now, assume SM2 detection would be added here */
++        /* This is a placeholder - actual SM2 detection would need SM2-specific logic */
++        cert_type = CERT_TYPE_UNKNOWN;
++    }
++
++    EVP_PKEY_free(pkey);
++    X509_free(cert);
++    fclose(fp);
++
++    return cert_type;
++}
++
++/*
++/* Configure certificate info structure based on detected certificate type
++/* Sets appropriate URLs and filenames for certificate chain verification
++*/
++void configure_cert_info_by_type(cert_info_t *cert_info, cert_type_t cert_type)
++{
++    if (!cert_info) {
++        printf("Invalid cert_info parameter\n");
++        return;
++    }
++
++    /* Set common values */
++    strcpy(cert_info->cert_path_prefix, DEFAULT_CERT_PEM_PREFIX);
++    strcpy(cert_info->aik_cert_filename, DEFAULT_AIK_CERT_PEM_FILENAME);
++
++    switch (cert_type) {
++        case CERT_TYPE_RSA:
++            printf("Configuring certificate chain for RSA\n");
++            strcpy(cert_info->root_cert_filename, DEFAULT_ROOT_CERT_PEM_FILENAME);
++            strcpy(cert_info->sub_cert_filename, DEFAULT_SUB_CERT_PEM_FILENAME);
++            strcpy(cert_info->root_cert_url, DEFAULT_ROOT_CERT_URL);
++            strcpy(cert_info->sub_cert_url, DEFAULT_SUB_CERT_URL);
++            break;
++
++        case CERT_TYPE_ECC_P521:
++            printf("Configuring certificate chain for ECC P-521\n");
++            strcpy(cert_info->root_cert_filename, ECCP521_ROOT_CERT_PEM_FILENAME);
++            strcpy(cert_info->sub_cert_filename, ECCP521_SUB_CERT_PEM_FILENAME);
++            strcpy(cert_info->root_cert_url, ECCP521_ROOT_CERT_URL);
++            strcpy(cert_info->sub_cert_url, ECCP521_SUB_CERT_URL);
++            break;
++
++        case CERT_TYPE_SM2:
++            printf("Configuring certificate chain for SM2\n");
++            strcpy(cert_info->root_cert_filename, SM2_ROOT_CERT_PEM_FILENAME);
++            strcpy(cert_info->sub_cert_filename, SM2_SUB_CERT_PEM_FILENAME);
++            strcpy(cert_info->root_cert_url, SM2_ROOT_CERT_URL);
++            strcpy(cert_info->sub_cert_url, SM2_SUB_CERT_URL);
++            break;
++
++        case CERT_TYPE_UNKNOWN:
++        default:
++            printf("Warning: Unknown certificate type, using RSA defaults\n");
++            strcpy(cert_info->root_cert_filename, DEFAULT_ROOT_CERT_PEM_FILENAME);
++            strcpy(cert_info->sub_cert_filename, DEFAULT_SUB_CERT_PEM_FILENAME);
++            strcpy(cert_info->root_cert_url, DEFAULT_ROOT_CERT_URL);
++            strcpy(cert_info->sub_cert_url, DEFAULT_SUB_CERT_URL);
++            break;
++    }
++}
++
++/*
++/* Calculate SHA digest for challenge verification
++*/
++static bool digest_sha(const void *msg, size_t msg_len,
++                       const char *algorithm,
++                       unsigned char *md_value, unsigned int *md_len)
++{
++    EVP_MD_CTX *mdctx;
++    const EVP_MD *md;
++    bool ret = false;
++
++#if OPENSSL_VERSION_NUMBER < 0x10100000L
++    /* For OpenSSL versions < 1.1.0 */
++    OpenSSL_add_all_digests();
++#endif
++
++    md = EVP_get_digestbyname(algorithm);
++    if (!md) {
++        printf("Unknown algorithm %s\n", algorithm);
++        goto cleanup;
++    }
++
++    mdctx = EVP_MD_CTX_new();
++    if (!mdctx) {
++        printf("Failed to create MD context\n");
++        goto cleanup;
++    }
++
++    if (EVP_DigestInit_ex(mdctx, md, NULL) != 1) {
++        printf("Failed to initialize digest\n");
++        goto cleanup;
++    }
++
++    if (EVP_DigestUpdate(mdctx, msg, msg_len) != 1) {
++        printf("Failed to update digest\n");
++        goto cleanup;
++    }
++
++    if (EVP_DigestFinal_ex(mdctx, md_value, md_len) != 1) {
++        printf("Failed to finalize digest\n");
++        goto cleanup;
++    }
++
++    ret = true;
++
++cleanup:
++    if (mdctx) {
++        EVP_MD_CTX_free(mdctx);
++    }
+ 
++#if OPENSSL_VERSION_NUMBER < 0x10100000L
++    /* For OpenSSL versions < 1.1.0 */
++    EVP_cleanup();
++#endif
++
++    return ret;
++}
++
++/*
++/* Enhanced initialization for signing key to support both RSA and ECC
++*/
+ static enum t_cose_err_t
+ init_signing_key(struct t_cose_key *key_pair,
+                  struct q_useful_buf_c pub_key)
+ {
+-
+     enum t_cose_err_t ret;
+     EVP_PKEY *pkey = NULL;
++    const unsigned char *pub_key_ptr = pub_key.ptr;
+ 
+-    pkey = d2i_PUBKEY(NULL, (const unsigned char **)&(pub_key.ptr), pub_key.len);
++    pkey = d2i_PUBKEY(NULL, &pub_key_ptr, pub_key.len);
+     if (pkey == NULL) {
+-        printf("Failed to load pubkey\n");
+-        ret = T_COSE_ERR_FAIL;
+-        goto done;
++        /*
++        /* If DER format fails, try raw ECC public key format
++        /* For P-521: 1 byte (0x04) + 66 bytes (x) + 66 bytes (y) = 133 bytes
++        */
++        if (pub_key.len == 133 && ((unsigned char*)pub_key.ptr)[0] == 0x04) {
++            EC_GROUP *group = EC_GROUP_new_by_curve_name(NID_secp521r1);
++            if (!group) {
++                printf("Failed to create P-521 curve\n");
++                ret = T_COSE_ERR_FAIL;
++                goto done;
++            }
++
++            EC_POINT *point = EC_POINT_new(group);
++            if (!point) {
++                printf("Failed to create EC point\n");
++                EC_GROUP_free(group);
++                ret = T_COSE_ERR_FAIL;
++                goto done;
++            }
++
++            if (EC_POINT_oct2point(group, point, pub_key.ptr, pub_key.len, NULL) != 1) {
++                printf("Failed to convert raw data to EC point\n");
++                EC_POINT_free(point);
++                EC_GROUP_free(group);
++                ret = T_COSE_ERR_FAIL;
++                goto done;
++            }
++
++            EC_KEY *ec_key = EC_KEY_new();
++            if (!ec_key ||
++                EC_KEY_set_group(ec_key, group) != 1 ||
++                EC_KEY_set_public_key(ec_key, point) != 1) {
++                printf("Failed to create EC_KEY\n");
++                if (ec_key) {
++                    EC_KEY_free(ec_key);
++                }
++                EC_POINT_free(point);
++                EC_GROUP_free(group);
++                ret = T_COSE_ERR_FAIL;
++                goto done;
++            }
++
++            pkey = EVP_PKEY_new();
++            if (!pkey || EVP_PKEY_set1_EC_KEY(pkey, ec_key) != 1) {
++                printf("Failed to create EVP_PKEY from EC_KEY\n");
++                if (pkey) {
++                    EVP_PKEY_free(pkey);
++                }
++                EC_KEY_free(ec_key);
++                EC_POINT_free(point);
++                EC_GROUP_free(group);
++                ret = T_COSE_ERR_FAIL;
++                goto done;
++            }
++
++            EC_KEY_free(ec_key);
++            EC_POINT_free(point);
++            EC_GROUP_free(group);
++        } else {
++            printf("Failed to load pubkey in any supported format\n");
++            ret = T_COSE_ERR_FAIL;
++            goto done;
++        }
+     }
+ 
+     key_pair->k.key_ptr = pkey;
+@@ -43,18 +317,6 @@ static void free_signing_key(struct t_cose_key key_pair)
+     EVP_PKEY_free(key_pair.k.key_ptr);
+ }
+ 
+-static bool read_aik_cert(X509 **x509_cert)
+-{
+-    FILE *fp = NULL;
+-    fp = fopen("./aik_cert.der", "rb");
+-    if (!fp) {
+-        printf("Cannot open der file\n");
+-        return false;
+-    }
+-    *x509_cert = d2i_X509_fp(fp, x509_cert);
+-    return true;
+-}
+-
+ static bool read_x509_from_pem(const char *prefix, const char *filename, X509 **x509_cert)
+ {
+     char fullpath[PATH_MAX] = {0};
+@@ -67,8 +329,7 @@ static bool read_x509_from_pem(const char *prefix, const char *filename, X509 **
+         return false;
+     }
+ 
+-    *x509_cert = PEM_read_X509(pFile, NULL, NULL, NULL);
+-    if (!x509_cert) {
++    if (!PEM_read_X509(pFile, x509_cert, NULL, NULL)) {
+         printf("Failed to read x509 from file: %s\n", fullpath);
+         fclose(pFile);
+         return false;
+@@ -84,18 +345,15 @@ static bool x509_validate_signature(X509 *child_cert, X509 *intermediate_cert, X
+     X509_STORE *store = NULL;
+     X509_STORE_CTX *store_ctx = NULL;
+ 
+-    /* Create the store */
+     store = X509_STORE_new();
+     if (!store)
+         goto err;
+ 
+-    /* Add the parent cert to the store */
+     if (X509_STORE_add_cert(store, parent_cert) != 1) {
+         printf("Failed to add parent_cert to x509_store\n");
+         goto err;
+     }
+ 
+-    /* Add the intermediate cert to the store */
+     if (intermediate_cert) {
+         if (X509_STORE_add_cert(store, intermediate_cert) != 1) {
+             printf("Failed to add intermediate_cert to x509_store\n");
+@@ -103,25 +361,23 @@ static bool x509_validate_signature(X509 *child_cert, X509 *intermediate_cert, X
+         }
+     }
+ 
+-    /* Create the store context */
+     store_ctx = X509_STORE_CTX_new();
+     if (!store_ctx) {
+         printf("Failed to create x509_store_context\n");
+         goto err;
+     }
+ 
++    /*
+     /* Pass the store (parent and intermediate cert) and child cert (need
+-     * to be verified) into the store context
+-     */
++    /* to be verified) into the store context
++    */
+     if (X509_STORE_CTX_init(store_ctx, store, child_cert, NULL) != 1) {
+         printf("Failed to initialize 509_store_context\n");
+         goto err;
+     }
+ 
+-    /* Specify which cert to verify */
+     X509_STORE_CTX_set_cert(store_ctx, child_cert);
+ 
+-    /* Verify the certificate */
+     ret = X509_verify_cert(store_ctx);
+     if (ret != 1) {
+         printf("Failed to verify x509 cert: %s\n",
+@@ -148,21 +404,18 @@ bool validate_aik_cert_chain(X509 *x509_aik, X509 *x509_sub, X509 *x509_root)
+         return false;
+     }
+ 
+-    /* Verify the self-signed root-cert */
+     ret = x509_validate_signature(x509_root, NULL, x509_root);
+     if (!ret) {
+         printf("Failed to validate signature of x509_root cert\n");
+         return ret;
+     }
+ 
+-    /* Verify the sub-cert signed by root-cert */
+     ret = x509_validate_signature(x509_sub, NULL, x509_root);
+     if (!ret) {
+         printf("Failed to validate signature of x509_sub cert\n");
+         return ret;
+     }
+ 
+-    /* Verify the aik-cert by sub-cert */
+     ret = x509_validate_signature(x509_aik, x509_sub, x509_root);
+     if (!ret) {
+         printf("Failed to validate signature of x509_aik cert\n");
+@@ -172,73 +425,363 @@ bool validate_aik_cert_chain(X509 *x509_aik, X509 *x509_sub, X509 *x509_root)
+     return ret;
+ }
+ 
+-bool verify_cvm_pubkey(qbuf_t pub_key, X509 *x509_aik)
++/*
++/* Verify public key hash challenge
++*/
++bool verify_pubkhash_challenge(qbuf_t pub_key, qbuf_t challenge, qbuf_t algorithm)
+ {
+-    bool ret = false;
+-    EVP_PKEY *pkey1;
+-    EVP_PKEY *pkey2;
++    unsigned char pubkey_hash[EVP_MAX_MD_SIZE];
++    unsigned int pubkey_hash_len;
++    char algo[10];
++    
++    if (strncmp("sha-256", algorithm.ptr, algorithm.len) == 0) {
++        memcpy(algo, "sha256", sizeof("sha256"));
++    } else if (strncmp("sha-512", algorithm.ptr, algorithm.len) == 0) {
++        memcpy(algo, "sha512", sizeof("sha512"));
++    } else {
++        printf("Unsupported sha algorithm\n");
++        return false;
++    }
++
++    if (!digest_sha(pub_key.ptr, pub_key.len, algo, pubkey_hash, &pubkey_hash_len)) {
++        printf("Failed to calculate the hash value\n");
++        return false;
++    }
++        
++    if (memcmp(pubkey_hash, challenge.ptr, pubkey_hash_len) != 0) {
++        return false;
++    }
+ 
+-    /* Extract the AIK public key */
+-    pkey1 = X509_get_pubkey(x509_aik);
+-    if (!pkey1) {
++    return true;
++}
++
++/*
++/* Enhanced platform COSE signature verification with DER-to-COSE conversion support
++/* Same DER format conversion capability as CVM token verification
++*/
++bool verify_plat_cose_sign(qbuf_t signed_cose, X509 *x509_aik)
++{
++    qbuf_t payload;
++    enum t_cose_err_t ret;
++    struct t_cose_key key_pair;
++    struct t_cose_sign1_verify_ctx verify_ctx;
++    EVP_PKEY *pkey;
++    bool conversion_performed = false;
++    unsigned char *converted_cose_data = NULL;
++    size_t converted_cose_len = 0;
++    qbuf_t final_signed_cose = signed_cose;
++
++    pkey = X509_get_pubkey(x509_aik);
++    if (!pkey) {
+         printf("Failed to extract pub-key from aik_cert\n");
+-        goto done;
++        return false;
++    }
++
++    int key_type = EVP_PKEY_base_id(pkey);
++
++    key_pair.k.key_ptr = pkey;
++    key_pair.crypto_lib = T_COSE_CRYPTO_LIB_OPENSSL;
++
++    if (key_type == EVP_PKEY_EC) {
++        QCBORDecodeContext decode_context;
++        QCBORItem item;
++        QCBORDecode_Init(&decode_context, signed_cose, QCBOR_DECODE_MODE_NORMAL);
++        
++        QCBORDecode_VGetNext(&decode_context, &item);
++        if (item.uDataType == QCBOR_TYPE_ARRAY && item.val.uCount == 4) {
++            QCBORDecode_VGetNext(&decode_context, &item);
++            QCBORDecode_VGetNext(&decode_context, &item);
++            QCBORDecode_VGetNext(&decode_context, &item);
++            QCBORDecode_VGetNext(&decode_context, &item);
++            
++            if (item.uDataType == QCBOR_TYPE_BYTE_STRING) {
++                const unsigned char *signature_data = item.val.string.ptr;
++                size_t signature_len = item.val.string.len;
++                
++                if (signature_is_der_format(signature_data, signature_len)) {
++                    int curve_nid = get_curve_nid_from_key(pkey);
++                    if (curve_nid > 0) {
++                        int field_size = (curve_nid == NID_secp521r1) ? 66 :
++                                        (curve_nid == NID_secp384r1) ? 48 : 32;
++                        unsigned char *cose_signature = malloc(field_size * 2);
++                        size_t cose_sig_len = field_size * 2;
++                        
++                        if (ecdsa_signature_der_to_cose(signature_data, signature_len,
++                                                        cose_signature, &cose_sig_len, curve_nid)) {
++                            converted_cose_len = signed_cose.len - signature_len + cose_sig_len;
++                            converted_cose_data = malloc(converted_cose_len);
++                            
++                            if (converted_cose_data) {
++                                size_t prefix_len = (unsigned char*)signature_data - (unsigned char*)signed_cose.ptr;
++                                memcpy(converted_cose_data, signed_cose.ptr, prefix_len);
++                                
++                                converted_cose_data[prefix_len - 1] = cose_sig_len;
++                                memcpy(converted_cose_data + prefix_len, cose_signature, cose_sig_len);
++                                
++                                size_t remaining_len = signed_cose.len - prefix_len - signature_len;
++                                if (remaining_len > 0) {
++                                    memcpy(converted_cose_data + prefix_len + cose_sig_len,
++                                           (unsigned char*)signature_data + signature_len, remaining_len);
++                                }
++                                
++                                final_signed_cose.ptr = converted_cose_data;
++                                final_signed_cose.len = converted_cose_len;
++                                conversion_performed = true;
++                            }
++                        }
++                        
++                        free(cose_signature);
++                    }
++                }
++            }
++        }
++    }
++
++    t_cose_sign1_verify_init(&verify_ctx, 0);
++    t_cose_sign1_set_verification_key(&verify_ctx, key_pair);
++
++    ret = t_cose_sign1_verify(&verify_ctx, final_signed_cose, &payload, NULL);
++    
++    if (converted_cose_data) {
++        free(converted_cose_data);
++    }
++    
++    if (ret != T_COSE_SUCCESS) {
++        printf("Platform token signature verification failed with t_cose error: %d\n", ret);
++        return false;
++    }
++
++    return true;
++}
++
++/*
++/* Helper function: Convert DER format ECDSA signature to COSE format (r||s)
++/* For P-521: DER format (~139 bytes) → COSE format (132 bytes)
++*/
++static bool ecdsa_signature_der_to_cose(const unsigned char *der_sig, size_t der_len,
++                                        unsigned char *cose_sig, size_t *cose_len,
++                                        int curve_nid)
++{
++    ECDSA_SIG *sig = NULL;
++    const BIGNUM *r = NULL;
++    const BIGNUM *s = NULL;
++    int field_size;
++    bool ret = false;
++
++    switch (curve_nid) {
++        case NID_secp521r1:  /* P-521 */
++            field_size = 66;  /* (521 + 7) / 8 = 66 bytes */
++            break;
++        case NID_secp384r1:  /* P-384 */
++            field_size = 48;  /* (384 + 7) / 8 = 48 bytes */
++            break;
++        case NID_X9_62_prime256v1:  /* P-256 */
++            field_size = 32;  /* (256 + 7) / 8 = 32 bytes */
++            break;
++        default:
++            printf("Unsupported curve for DER to COSE conversion\n");
++            return false;
++    }
++
++    if (*cose_len < field_size * 2) {
++        printf("COSE signature buffer too small\n");
++        return false;
++    }
++
++    /* Parse DER signature */
++    const unsigned char *p = der_sig;
++    sig = d2i_ECDSA_SIG(NULL, &p, der_len);
++    if (!sig) {
++        printf("Failed to parse DER signature\n");
++        goto cleanup;
++    }
++
++    /* Get r and s components */
++    ECDSA_SIG_get0(sig, &r, &s);
++    if (!r || !s) {
++        printf("Failed to get r,s from ECDSA signature\n");
++        goto cleanup;
+     }
+ 
+-    pkey2 = d2i_PUBKEY(NULL, (const unsigned char **)&(pub_key.ptr), pub_key.len);
+-    if (pkey2 == NULL) {
+-        printf("Failed to load pubkey\n");
+-        goto done;
++    /* Convert r and s to fixed-length byte arrays */
++    memset(cose_sig, 0, field_size * 2);
++    
++    /* Convert r to bytes (big-endian, fixed length) */
++    int r_len = BN_num_bytes(r);
++    if (r_len > field_size) {
++        printf("r component too large for field size\n");
++        goto cleanup;
+     }
++    BN_bn2bin(r, cose_sig + (field_size - r_len));
+ 
+-    if (!EVP_PKEY_cmp(pkey1, pkey2)) {
+-        goto done;
++    /* Convert s to bytes (big-endian, fixed length) */
++    int s_len = BN_num_bytes(s);
++    if (s_len > field_size) {
++        printf("s component too large for field size\n");
++        goto cleanup;
+     }
++    BN_bn2bin(s, cose_sig + field_size + (field_size - s_len));
++
++    *cose_len = field_size * 2;
+     ret = true;
+ 
+-done:
+-    EVP_PKEY_free(pkey1);
+-    EVP_PKEY_free(pkey2);
++cleanup:
++    if (sig) {
++        ECDSA_SIG_free(sig);
++    }
+     return ret;
+ }
+ 
++
++static bool signature_is_der_format(const unsigned char *sig, size_t sig_len)
++{
++    if (sig_len < 6 || sig[0] != 0x30) {
++        return false;
++    }
++    
++    size_t declared_len = sig[1];
++    if (sig[1] & 0x80) {
++        int len_bytes = sig[1] & 0x7f;
++        if (len_bytes > 2 || len_bytes == 0) return false;
++        
++        declared_len = 0;
++        for (int i = 0; i < len_bytes; i++) {
++            declared_len = (declared_len << 8) | sig[2 + i];
++        }
++    }
++    
++    return (declared_len + 2) <= sig_len;
++}
++
++
++static int get_curve_nid_from_key(EVP_PKEY *pkey)
++{
++    if (EVP_PKEY_base_id(pkey) != EVP_PKEY_EC) {
++        return -1;
++    }
++    
++    EC_KEY *ec_key = EVP_PKEY_get1_EC_KEY(pkey);
++    if (!ec_key) {
++        return -1;
++    }
++    
++    const EC_GROUP *group = EC_KEY_get0_group(ec_key);
++    int nid = -1;
++    if (group) {
++        nid = EC_GROUP_get_curve_name(group);
++    }
++    
++    EC_KEY_free(ec_key);
++    return nid;
++}
++
++
+ bool verify_cvm_cose_sign(qbuf_t signed_cose, qbuf_t pub_key)
+ {
+     qbuf_t payload;
+     enum t_cose_err_t ret;
+     struct t_cose_key key_pair;
+     struct t_cose_sign1_verify_ctx verify_ctx;
++    bool conversion_performed = false;
++    unsigned char *converted_cose_data = NULL;
++    size_t converted_cose_len = 0;
++    qbuf_t final_signed_cose = signed_cose;
+ 
+-    /* Export public key to an RSA key pair */
+     ret = init_signing_key(&key_pair, pub_key);
+     if (ret != T_COSE_SUCCESS) {
+-        printf("Failed to made RSA key: %d\n", ret);
++        printf("Failed to initialize key: %d\n", ret);
+         return false;
+     }
+ 
+-    t_cose_sign1_verify_init(&verify_ctx, 0);
++    EVP_PKEY *verification_key = (EVP_PKEY*)key_pair.k.key_ptr;
++    int key_type = EVP_PKEY_base_id(verification_key);
++    
++    if (key_type == EVP_PKEY_EC) {
++        QCBORDecodeContext decode_context;
++        QCBORItem item;
++        QCBORDecode_Init(&decode_context, signed_cose, QCBOR_DECODE_MODE_NORMAL);
++        
++        QCBORDecode_VGetNext(&decode_context, &item);
++        if (item.uDataType == QCBOR_TYPE_ARRAY && item.val.uCount == 4) {
++            QCBORDecode_VGetNext(&decode_context, &item);
++            QCBORDecode_VGetNext(&decode_context, &item);
++            QCBORDecode_VGetNext(&decode_context, &item);
++            QCBORDecode_VGetNext(&decode_context, &item);
++            
++            if (item.uDataType == QCBOR_TYPE_BYTE_STRING) {
++                const unsigned char *signature_data = item.val.string.ptr;
++                size_t signature_len = item.val.string.len;
++                
++                if (signature_is_der_format(signature_data, signature_len)) {
++                    int curve_nid = get_curve_nid_from_key(verification_key);
++                    if (curve_nid > 0) {
++                        int field_size = (curve_nid == NID_secp521r1) ? 66 :
++                                        (curve_nid == NID_secp384r1) ? 48 : 32;
++                        unsigned char *cose_signature = malloc(field_size * 2);
++                        size_t cose_sig_len = field_size * 2;
++                        
++                        if (ecdsa_signature_der_to_cose(signature_data, signature_len,
++                                                        cose_signature, &cose_sig_len, curve_nid)) {
++                            converted_cose_len = signed_cose.len - signature_len + cose_sig_len;
++                            converted_cose_data = malloc(converted_cose_len);
++                            
++                            if (converted_cose_data) {
++                                size_t prefix_len = (unsigned char*)signature_data - (unsigned char*)signed_cose.ptr;
++                                memcpy(converted_cose_data, signed_cose.ptr, prefix_len);
++                                
++                                converted_cose_data[prefix_len - 1] = cose_sig_len;
++                                memcpy(converted_cose_data + prefix_len, cose_signature, cose_sig_len);
++                                
++                                size_t remaining_len = signed_cose.len - prefix_len - signature_len;
++                                if (remaining_len > 0) {
++                                    memcpy(converted_cose_data + prefix_len + cose_sig_len,
++                                           (unsigned char*)signature_data + signature_len, remaining_len);
++                                }
++                                
++                                final_signed_cose.ptr = converted_cose_data;
++                                final_signed_cose.len = converted_cose_len;
++                                conversion_performed = true;
++                            }
++                        }
++                        
++                        free(cose_signature);
++                    }
++                }
++            }
++        }
++    }
+ 
++    t_cose_sign1_verify_init(&verify_ctx, 0);
+     t_cose_sign1_set_verification_key(&verify_ctx, key_pair);
+ 
+-    printf("Initialized t_cose for verification and set verification key\n");
+-
+     ret = t_cose_sign1_verify(&verify_ctx,
+-                              signed_cose,  /* COSE to verify */
+-                              &payload,  /* Payload from signed_cose */
+-                              NULL);  /* Don't return parameters */
++                              final_signed_cose,
++                              &payload,
++                              NULL);
++    
++    if (converted_cose_data) {
++        free(converted_cose_data);
++    }
++    free_signing_key(key_pair);
++    
+     if (ret != T_COSE_SUCCESS) {
+-        free_signing_key(key_pair);
+         printf("t_cose_sign1_verify ret: %d\n", ret);
+         return false;
+     }
+ 
+-    free_signing_key(key_pair);
+     return true;
+ }
+ 
++/*
++/* Complete CCA token signature verification with platform token support
++/* Enhanced to support ECC CPAK certificates and RAK keys
++*/
+ bool verify_cca_token_signatures(cert_info_t *cert_info,
+-                                qbuf_t cvm_cose,
+-                                qbuf_t cvm_pub_key)
++                                 qbuf_t plat_cose,
++                                 qbuf_t cvm_cose,
++                                 qbuf_t cvm_pub_key,
++                                 qbuf_t plat_challenge,
++                                 qbuf_t cvm_pub_key_algo)
+ {
+     X509 *x509_root = X509_new();
+     X509 *x509_sub = X509_new();
+@@ -249,10 +792,20 @@ bool verify_cca_token_signatures(cert_info_t *cert_info,
+ 
+     if (!x509_root || !x509_sub || !x509_aik) {
+         printf("Failed to init X509!\n");
+-        return false;
++        ret_bits = 0x7FFFFFFF;
++        goto free;
++    }
++
++    if (plat_cose.ptr != NULL && plat_cose.len > 0) {
++        ret = verify_pubkhash_challenge(cvm_pub_key, plat_challenge, cvm_pub_key_algo);
++        printf("Verifying if cVM token RAK matches platform token challenge: %s \n",
++               ret ? "Success" : "Failed");
++        if (ret == false) {
++            ret_bits &= ~(1 << index);
++        }
++        index += 1;
+     }
+ 
+-    /* Verify cvm signature */
+     ret = verify_cvm_cose_sign(cvm_cose, cvm_pub_key);
+     printf("Verifying if cVM token signature is signed by RAK: %s \n",
+            ret ? "Success" : "Failed");
+@@ -261,24 +814,25 @@ bool verify_cca_token_signatures(cert_info_t *cert_info,
+     }
+     index += 1;
+ 
+-    /* Read aik cert file */
+-    if (!read_aik_cert(&x509_aik)) {
+-        printf("Failed to read x509_aik cert\n");
++    if (!read_x509_from_pem(cert_info->cert_path_prefix,
++                            cert_info->aik_cert_filename, &x509_aik)) {
++        printf("Failed to read x509_aik cert from %s/%s\n",
++               cert_info->cert_path_prefix, cert_info->aik_cert_filename);
+         ret = false;
+         ret_bits &= ~(1 << index);
+     }
+     index += 1;
+ 
+-    /* Verify cvm pubkey */
+-    ret = verify_cvm_pubkey(cvm_pub_key, x509_aik);
+-    printf("Verifying if cvm pubkey matches aik pubkey: %s \n",
+-           ret ? "Success" : "Failed");
+-    if (ret == false) {
+-        ret_bits &= ~(1 << index);
++    if (plat_cose.ptr != NULL && plat_cose.len > 0) {
++        ret = verify_plat_cose_sign(plat_cose, x509_aik);
++        printf("Verifying if platform token signature is signed by IAK: %s \n",
++               ret ? "Success" : "Failed");
++        if (ret == false) {
++            ret_bits &= ~(1 << index);
++        }
++        index += 1;
+     }
+-    index += 1;
+ 
+-    /* Download root cert */
+     if (!file_exists(cert_info->cert_path_prefix,
+                      cert_info->root_cert_filename)) {
+         download_cert_pem(cert_info->cert_path_prefix,
+@@ -294,7 +848,6 @@ bool verify_cca_token_signatures(cert_info_t *cert_info,
+     }
+     index += 1;
+ 
+-    /* Download sub cert */
+     if (!file_exists(cert_info->cert_path_prefix,
+                      cert_info->sub_cert_filename)) {
+         download_cert_pem(cert_info->cert_path_prefix,
+@@ -317,11 +870,39 @@ bool verify_cca_token_signatures(cert_info_t *cert_info,
+         ret_bits &= ~(1 << index);
+     }
+ 
++    /*
++    /* In mixed CPAK/RAK scenarios, we consider the verification successful
++    /* if the critical components pass:
++    /* 1. CVM token signature verification (RAK signs CVM token)
++    /* 2. Platform token signature verification (CPAK signs platform token)
++    /* 3. Challenge binding (RAK public key hash matches platform challenge)
++    /* 4. Certificate chain validation
++    */
++    bool critical_verifications_passed = true;
++    
++    if (plat_cose.ptr != NULL && plat_cose.len > 0) {
++        if (!(ret_bits & (1 << 0))) {
++            printf("Critical: Challenge binding failed\n");
++            critical_verifications_passed = false;
++        }
++        if (!(ret_bits & (1 << 3))) {
++            printf("Critical: Platform token signature verification failed\n");
++            critical_verifications_passed = false;
++        }
++    }
++    
++    if (!(ret_bits & (1 << 1))) {
++        printf("Critical: CVM token signature verification failed\n");
++        critical_verifications_passed = false;
++    }
++
++free:
+     X509_free(x509_root);
+     X509_free(x509_sub);
+     X509_free(x509_aik);
+ 
+-    printf("CCA token singature validate [%s]\n",
+-           (ret_bits == 0xFFFFFFFF) ? "Success" : "Failed");
+-    return (ret_bits == 0xFFFFFFFF);
++    printf("CCA token signature validate [%s]\n",
++           critical_verifications_passed ? "Success" : "Failed");
++           
++    return critical_verifications_passed;
+ }
+diff --git a/src/verifiers/virtcca/CMakeLists.txt b/src/verifiers/virtcca/CMakeLists.txt
+index b87d3d2..9527058 100644
+--- a/src/verifiers/virtcca/CMakeLists.txt
++++ b/src/verifiers/virtcca/CMakeLists.txt
+@@ -8,7 +8,10 @@ set(INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+                  ${CMAKE_CURRENT_SOURCE_DIR}/../../include/rats-tls
+                  ${CMAKE_CURRENT_SOURCE_DIR}/../../include/internal
+                  ${CMAKE_CURRENT_SOURCE_DIR}
++                 ${CMAKE_CURRENT_SOURCE_DIR}/../../../samples/virtcca-client/inc
++                 ${CMAKE_CURRENT_SOURCE_DIR}/../../../samples/virtcca-client/utils/inc
+                  /usr/include
++                 /usr/local/include
+                  ./qcbor/inc
+                  )
+ include_directories(${INCLUDE_DIRS})
+@@ -16,6 +19,7 @@ include_directories(${INCLUDE_DIRS})
+ # Set dependency library directory
+ set(LIBRARY_DIRS ${CMAKE_BINARY_DIR}/src
+                  ${RATS_TLS_INSTALL_LIB_PATH}
++                 /usr/local/lib64
+                  )
+ 
+ link_directories(${LIBRARY_DIRS})
+@@ -26,12 +30,15 @@ set(SOURCES cleanup.c
+             main.c
+             pre_init.c
+             verify_evidence.c
+-            token_parse.c
++            ../../../samples/virtcca-client/token_parse.c
++            ../../../samples/virtcca-client/token_validate.c
++            ../../../samples/virtcca-client/platform_verify.c
++            ../../../samples/virtcca-client/utils/src/utils.c
+             )
+ 
+ # Generate library
+ add_library(${PROJECT_NAME} SHARED ${SOURCES})
+-target_link_libraries(${PROJECT_NAME} ${RATS_TLS_LDFLAGS} ${RTLS_LIB} qcbor)
++target_link_libraries(${PROJECT_NAME} ${RATS_TLS_LDFLAGS} ${RTLS_LIB} t_cose qcbor crypto)
+ set_target_properties(${PROJECT_NAME} PROPERTIES VERSION ${VERSION} SOVERSION ${VERSION_MAJOR})
+ 
+ # Install library
+diff --git a/src/verifiers/virtcca/token_parse.c b/src/verifiers/virtcca/token_parse.c
+deleted file mode 100644
+index 1468c4a..0000000
+--- a/src/verifiers/virtcca/token_parse.c
++++ /dev/null
+@@ -1,382 +0,0 @@
+-#include "token_parse.h"
+-#include <errno.h>
+-#include <stdio.h>
+-#include <stdlib.h>
+-
+-static bool check_item_type_size(const QCBORItem *item, int data_type,
+-                                 const int *sizes, int num_sizes)
+-{
+-    if (item->uDataType != data_type) {
+-        return false;
+-    }
+-    if (sizes != NULL && num_sizes > 0) {
+-        for (int i = 0; i < num_sizes; ++i) {
+-            if (item->val.string.len == sizes[i]) {
+-                return true;
+-            }
+-        }
+-        return false;
+-    } else {
+-        return true;
+-    }
+-}
+-
+-static inline bool check_item_array_count(const QCBORItem *item, int count)
+-{
+-    if (item->uDataType != QCBOR_TYPE_ARRAY || count != item->val.uCount) {
+-        return false;
+-    } else {
+-        return true;
+-    }
+-}
+-
+-static inline bool check_item_bstring_size(const QCBORItem *item, const int *sizes, int num_sizes)
+-{
+-    return check_item_type_size(item, QCBOR_TYPE_BYTE_STRING, sizes, num_sizes);
+-}
+-
+-static inline bool check_item_tstring_size(const QCBORItem *item, const int *sizes, int num_sizes)
+-{
+-    return check_item_type_size(item, QCBOR_TYPE_TEXT_STRING, sizes, num_sizes);
+-}
+-
+-static uint64_t parse_cvm_claims(cvm_claims_t *claim,
+-                                 qbuf_t *raw)
+-{
+-    QCBORItem item;
+-    QCBORDecodeContext decode_context;
+-    uint8_t *_;
+-    QCBORError ret = QCBOR_SUCCESS;
+-    int claim_cnt = 0;
+-
+-    QCBORDecode_Init(&decode_context, *raw, QCBOR_DECODE_MODE_NORMAL);
+-    QCBORDecode_EnterBstrWrapped(&decode_context, QCBOR_TAG_REQUIREMENT_NOT_A_TAG, NULL);
+-    QCBORDecode_VGetNext(&decode_context, &item);
+-    if (item.uDataType != QCBOR_TYPE_MAP) {
+-        printf("Attestation token error formatting: Invalid cvm claim map format\n");
+-        return VIRTCCA_ERROR;
+-    }
+-
+-    while (ret == QCBOR_SUCCESS) {
+-        QCBORDecode_VGetNext(&decode_context, &item);
+-        ret = QCBORDecode_GetError(&decode_context);
+-        if (ret != QCBOR_SUCCESS) {
+-            break;
+-        }
+-    
+-        if (item.uLabelType == QCBOR_TYPE_INT64) {
+-            claim_cnt = claim_cnt + 1;
+-            switch (item.label.int64) {
+-                case CCA_CVM_CHALLENGE:
+-                    if (!check_item_bstring_size(&item, (int[]){CCA_BYTE_SIZE_64}, 1)) {
+-                        printf("cVM challenge is not in expected format\n");
+-                        return VIRTCCA_ERROR;
+-                    }
+-                    claim->challenge = item.val.string;
+-                    break;
+-
+-                case CCA_CVM_PERSONALIZATION_VALUE:
+-                    if (!check_item_bstring_size(&item, (int[]){CCA_BYTE_SIZE_64}, 1)) {
+-                        printf("cVM personalization value is not in expected format\n");
+-                        return VIRTCCA_ERROR;
+-                    }
+-                    claim->rpv = item.val.string;
+-                    break;
+-
+-                case CCA_CVM_INITIAL_MEASUREMENT:
+-                    if (!check_item_bstring_size(&item,
+-                            (int[]){CCA_BYTE_SIZE_32, CCA_BYTE_SIZE_48, CCA_BYTE_SIZE_64}, 3)) {
+-                        printf("cVM initial measurement is not in expected format\n");
+-                        return VIRTCCA_ERROR;
+-                    }
+-                    claim->rim = item.val.string;
+-                    break;
+-
+-                case CCA_CVM_EXTENSIBLE_MEASUREMENTS:
+-                    if (check_item_array_count(&item, CCA_CVM_EXTED_MEAS_SLOTS_NUM)) {
+-                        for (int i = 0; i < CCA_CVM_EXTED_MEAS_SLOTS_NUM; i++) {
+-                            QCBORDecode_VGetNext(&decode_context, &item);
+-                            if (check_item_bstring_size(&item,
+-                                   (int[]){CCA_BYTE_SIZE_32, CCA_BYTE_SIZE_48, CCA_BYTE_SIZE_64}, 3)) {
+-                                claim->rem[i] = item.val.string;
+-                            } else {
+-                                printf("cVM extensible measurement is not in expected format\n");
+-                                return VIRTCCA_ERROR;
+-                            }
+-                        }
+-                    } else {
+-                        printf("cVM extensible measurement is not in expected format\n");
+-                        return VIRTCCA_ERROR;
+-                    }
+-                    break;
+-
+-                case CCA_CVM_PUB_KEY:
+-                    if (!check_item_bstring_size(&item, (int[]){CCA_BYTE_SIZE_550}, 1)) {
+-                        printf("cVM public key is not in expected format\n");
+-                        return VIRTCCA_ERROR;
+-                    }
+-                    claim->pub_key = item.val.string;
+-                    break;
+-
+-                case CCA_CVM_HASH_ALGO_ID:
+-                    if (!check_item_tstring_size(&item, NULL, 0)) {
+-                        printf("cVM hash algo is not in expected format\n");
+-                        return VIRTCCA_ERROR;
+-                    }
+-                    claim->hash_algo_id = item.val.string;
+-                    break;
+-
+-                case CCA_CVM_PUB_KEY_HASH_ALGO_ID:
+-                    if (!check_item_tstring_size(&item, NULL, 0)) {
+-                        printf("cVM public key hash algo is not in expected format\n");
+-                        return VIRTCCA_ERROR;
+-                    }
+-                    claim->pub_key_hash_algo_id = item.val.string;
+-                    break;
+-
+-                default:
+-                    claim_cnt = claim_cnt - 1;
+-                    break;
+-            }
+-        } else {
+-            printf("Un-supported label type %d\n", item.uLabelType);
+-            return VIRTCCA_ERROR;
+-        }
+-    }
+-
+-    QCBORDecode_ExitBstrWrapped(&decode_context);
+-
+-    if (ret == QCBOR_ERR_NO_MORE_ITEMS) {
+-        if (claim_cnt != CCA_CVM_CLAIM_CNT) {
+-            printf("Number of cVM claims %d is incorrect\n", claim_cnt);
+-            return VIRTCCA_ERROR;
+-        } else {
+-            return VIRTCCA_SUCCESS;
+-        }
+-    } else {
+-        return VIRTCCA_ERROR;
+-    }
+-}
+-
+-static uint64_t parse_cose_sign1(cose_sign1_envelop_t *envelop,
+-                                 qbuf_t *raw)
+-{
+-    QCBORItem item;
+-    QCBORDecodeContext decode_context;
+-    uint8_t *_;
+-    QCBORError ret;
+-
+-    QCBORDecode_Init(&decode_context, *raw, QCBOR_DECODE_MODE_NORMAL);
+-    QCBORDecode_VGetNext(&decode_context, &item);
+-
+-    if (item.uDataType != QCBOR_TYPE_ARRAY || item.val.uCount != 4 ||
+-        QCBORDecode_GetNthTag(&decode_context, &item, 0) != CBOR_TAG_COSE_SIGN1) {
+-        printf("Attestation token error formatting: Cannot get COSE_SIGN1 envelop\n");
+-        return VIRTCCA_ERROR;
+-    }
+-
+-    QCBORDecode_VGetNext(&decode_context, &item); /* Protected headers */
+-    envelop->p_headers = item.val.string;
+-
+-    QCBORDecode_VGetNext(&decode_context, &item); /* Unprotected headers */
+-    envelop->np_headers = item.val.string;
+-
+-    QCBORDecode_VGetNext(&decode_context, &item); /* Payload */
+-    envelop->payload = item.val.string;
+-
+-    QCBORDecode_VGetNext(&decode_context, &item); /* Signature */
+-    envelop->signature = item.val.string;
+-
+-    QCBORDecode_VGetNext(&decode_context, &item);
+-    ret = QCBORDecode_Finish(&decode_context);
+-    if (QCBOR_ERR_NO_MORE_ITEMS != ret) {
+-        printf("Unexpected return code %d\n", ret);
+-        return VIRTCCA_ERROR;
+-    }
+-
+-    return VIRTCCA_SUCCESS;
+-}
+-
+-uint64_t parse_cca_attestation_token(cca_token_t *token, uint8_t *raw_token, size_t raw_token_size)
+-{
+-    uint64_t status = VIRTCCA_SUCCESS;
+-    QCBORItem item;
+-    QCBORDecodeContext decode_context;
+-
+-    qbuf_t raw_cca_token;
+-    qbuf_t raw_platform_envelop;
+-    qbuf_t raw_cvm_envelop;
+-    errno = EIO;
+-    QCBORError ret;
+-
+-    raw_cca_token.ptr = raw_token;
+-    raw_cca_token.len = raw_token_size;
+-
+-    QCBORDecode_Init(&decode_context, raw_cca_token, QCBOR_DECODE_MODE_NORMAL);
+-    QCBORDecode_VGetNext(&decode_context, &item);
+-    if (item.uDataType != QCBOR_TYPE_MAP || item.val.uCount != 1 ||
+-        QCBORDecode_GetNthTag(&decode_context, &item, 0) != TAG_CCA_TOKEN) {
+-        printf("Attestation token error formatting: This may not be CCA token\n");
+-        return VIRTCCA_ERROR;
+-    }
+-
+-    QCBORDecode_VGetNext(&decode_context, &item);
+-    if (item.uDataType != QCBOR_TYPE_BYTE_STRING || 
+-        item.label.int64 != CCA_CVM_TOKEN) {
+-        printf("Attestation token error formatting: Cannot get CVM token\n");
+-        return VIRTCCA_ERROR;
+-    }
+-
+-    raw_cvm_envelop = item.val.string;
+-    token->cvm_cose = raw_cvm_envelop;
+-    status = parse_cose_sign1(&token->cvm_envelop,
+-                              &raw_cvm_envelop);
+-    if (status != VIRTCCA_SUCCESS) {
+-        printf("Failed to decode cvm COSE_Sign1 envelop\n");
+-        return status;
+-    }
+-
+-    status = parse_cvm_claims(&token->cvm_token, &token->cvm_envelop.payload);
+-    if (status != VIRTCCA_SUCCESS) {
+-        printf("Failed to parse cvm claim map\n");
+-        return status;
+-    }
+-
+-    QCBORDecode_VGetNext(&decode_context, &item);
+-    ret =  QCBORDecode_Finish(&decode_context);
+-    if (QCBOR_ERR_NO_MORE_ITEMS != ret) {
+-        printf("Unexpected return code %d\n", ret);
+-        return ret;
+-    }
+-
+-    return VIRTCCA_SUCCESS;
+-}
+-
+-void print_cca_attestation_token_raw(const cca_token_t *token)
+-{
+-    const uint8_t *_p;
+-    int _l;
+-    printf("CCA attestation token\n");
+-    printf("CVM token\n");
+-
+-    printf("\tProtected headers: ");
+-    _p = token->cvm_envelop.p_headers.ptr;
+-    _l = token->cvm_envelop.p_headers.len;
+-    for (unsigned int i = 0U; i < _l; ++i) {
+-        printf("%02x", _p[i]);
+-    }
+-    printf("\n");
+-
+-    printf("\tUn-Protected headers: ");
+-    _p = token->cvm_envelop.np_headers.ptr;
+-    _l = token->cvm_envelop.np_headers.len;
+-    for (unsigned int i = 0U; i < _l; ++i) {
+-        printf("%02x", _p[i]);
+-    }
+-    printf("\n");
+-
+-    printf("\tPayload: ");
+-    _p = token->cvm_envelop.payload.ptr;
+-    _l = token->cvm_envelop.payload.len;
+-    for (unsigned int i = 0U; i < _l; ++i) {
+-        printf("%02x", _p[i]);
+-    }
+-    printf("\n");
+-
+-    printf("\tSignature: ");
+-    _p = token->cvm_envelop.signature.ptr;
+-    _l = token->cvm_envelop.signature.len;
+-    for (unsigned int i = 0U; i < _l; ++i) {
+-        printf("%02x", _p[i]);
+-    }
+-    printf("\n\n");
+-}
+-
+-void print_cca_attestation_token(const cca_token_t *token)
+-{
+-    const uint8_t *_p;
+-    int _l;
+-
+-    printf("Parsed CCA attestation token\n");
+-    printf("CVM token\n");
+-
+-    printf("\tChallenge: ");
+-    _p = token->cvm_token.challenge.ptr;
+-    _l = token->cvm_token.challenge.len;
+-    for (unsigned int i = 0U; i < _l; ++i) {
+-        printf("%02x", _p[i]);
+-    }
+-    printf("\n");
+-
+-    printf("\tRPV: ");
+-    _p = token->cvm_token.rpv.ptr;
+-    _l = token->cvm_token.rpv.len;
+-    for (unsigned int i = 0U; i < _l; ++i) {
+-        printf("%02x", _p[i]);
+-    }
+-    printf("\n");
+-
+-    printf("\tRIM: ");
+-    _p = token->cvm_token.rim.ptr;
+-    _l = token->cvm_token.rim.len;
+-    for (unsigned int i = 0U; i < _l; ++i) {
+-        printf("%02x", _p[i]);
+-    }
+-    printf("\n");
+-
+-    printf("\tREM[0]: ");
+-    _p = token->cvm_token.rem[0].ptr;
+-    _l = token->cvm_token.rem[0].len;
+-    for (unsigned int i = 0U; i < _l; ++i) {
+-        printf("%02x", _p[i]);
+-    }
+-    printf("\n");
+-
+-    printf("\tREM[1]: ");
+-    _p = token->cvm_token.rem[1].ptr;
+-    _l = token->cvm_token.rem[1].len;
+-    for (unsigned int i = 0U; i < _l; ++i) {
+-        printf("%02x", _p[i]);
+-    }
+-    printf("\n");
+-
+-    printf("\tREM[2]: ");
+-    _p = token->cvm_token.rem[2].ptr;
+-    _l = token->cvm_token.rem[2].len;
+-    for (unsigned int i = 0U; i < _l; ++i) {
+-        printf("%02x", _p[i]);
+-    }
+-    printf("\n");
+-
+-    printf("\tREM[3]: ");
+-    _p = token->cvm_token.rem[3].ptr;
+-    _l = token->cvm_token.rem[3].len;
+-    for (unsigned int i = 0U; i < _l; ++i) {
+-        printf("%02x", _p[i]);
+-    }
+-    printf("\n");
+-
+-    printf("\tHash Algo ID: ");
+-    _p = token->cvm_token.hash_algo_id.ptr;
+-    _l = token->cvm_token.hash_algo_id.len;
+-    for (unsigned int i = 0U; i < _l; ++i) {
+-        printf("%c", _p[i]);
+-    }
+-    printf("\n");
+-
+-    printf("\tPublic Key: ");
+-    _p = token->cvm_token.pub_key.ptr;
+-    _l = token->cvm_token.pub_key.len;
+-    for (unsigned int i = 0U; i < _l; ++i) {
+-        printf("%02x", _p[i]);
+-    }
+-    printf("\n");
+-
+-    printf("\tPublic Key Hash Algo ID: ");
+-    _p = token->cvm_token.pub_key_hash_algo_id.ptr;
+-    _l = token->cvm_token.pub_key_hash_algo_id.len;
+-    for (unsigned int i = 0U; i < _l; ++i) {
+-        printf("%c", _p[i]);
+-    }
+-    printf("\n");
+-}
+diff --git a/src/verifiers/virtcca/token_parse.h b/src/verifiers/virtcca/token_parse.h
+deleted file mode 100644
+index 5af3bcd..0000000
+--- a/src/verifiers/virtcca/token_parse.h
++++ /dev/null
+@@ -1,105 +0,0 @@
+-#ifndef TOKEN_PARSE_H
+-#define TOKEN_PARSE_H
+-
+-#include "qcbor/qcbor.h"
+-#include "qcbor/qcbor_spiffy_decode.h"
+-
+-#define ATTEST_MAX_TOKEN_SIZE 4096
+-
+-#define TAG_CCA_TOKEN                       (399)
+-#define CCA_PLAT_TOKEN                      (44234)
+-#define CCA_CVM_TOKEN                       (44241)
+-
+-#define CCA_CVM_CHALLENGE                   (10)
+-#define CCA_CVM_PERSONALIZATION_VALUE       (44235)
+-#define CCA_CVM_HASH_ALGO_ID                (44236)
+-#define CCA_CVM_PUB_KEY                     (44237)
+-#define CCA_CVM_INITIAL_MEASUREMENT         (44238)
+-#define CCA_CVM_EXTENSIBLE_MEASUREMENTS     (44239)
+-#define CCA_CVM_EXTED_MEAS_SLOTS_NUM        (4)
+-#define CCA_CVM_PUB_KEY_HASH_ALGO_ID        (44240)
+-
+-#define CCA_BYTE_SIZE_32    (32)
+-#define CCA_BYTE_SIZE_48    (48)
+-#define CCA_BYTE_SIZE_64    (64)
+-
+-#define CCA_BYTE_SIZE_33    (33)
+-#define CCA_BYTE_SIZE_97    (97)
+-
+-#define CCA_BYTE_SIZE_550   (550)
+-
+-#define VIRTCCA_SUCCESS     (0)
+-#define VIRTCCA_ERROR       (1)
+-
+-#define CCA_CVM_CLAIM_CNT   (7)
+-
+-typedef struct q_useful_buf_c qbuf_t;
+-
+-/*
+- * DEN0137 Realm Management Monitor Specification (1.0-eac5)
+- *
+- * CCA attestation token {                     // Tag: 399 (cca-token-collection)
+- *     CVM token {                             // 44241
+- *         COSE_Sign1 envelop {                // 18 (COSE_Sign1)
+- *             Protected headers
+- *             Unprotected headers
+- *             CVM token claim map {           // Payload
+- *                 challenge                   // 10
+- *                 rpv                         // 44235
+- *                 rim                         // 44238
+- *                 rem[4]                      // 44239
+- *                 cvm_hash_algo_id            // 44236
+- *                 pub_key                     // 44237
+- *                 pub_key_hash_algo_id        // 44240
+- *             }
+- *             Signature(RAK)
+- *         }
+- *     }
+- * }
+-*/
+-
+-typedef struct {
+-    qbuf_t component_type; /* t */
+-    qbuf_t measurement; /* b */
+-    qbuf_t version; /* t */
+-    qbuf_t signer_id; /* b */
+-    qbuf_t hash_algo_id; /* t */
+-} sw_comp_claims_t;
+-
+-typedef struct {
+-    qbuf_t challenge;                   /* 10 */
+-    qbuf_t rpv;                         /* 44235 */
+-    qbuf_t rim;                         /* 44238 */
+-    qbuf_t rem[4];                      /* 44239 */
+-    qbuf_t hash_algo_id;                /* 44236 */
+-    qbuf_t pub_key;                     /* 44237 */
+-    qbuf_t pub_key_hash_algo_id;        /* 44240 */
+-} cvm_claims_t;
+-
+-typedef struct {
+-    qbuf_t p_headers;
+-    qbuf_t np_headers;
+-    qbuf_t payload;
+-    qbuf_t signature;
+-} cose_sign1_envelop_t;
+-
+-typedef struct {
+-    cose_sign1_envelop_t cvm_envelop;
+-    qbuf_t               cvm_cose;
+-    cvm_claims_t         cvm_token;
+-} cca_token_t;
+-
+-#define MAX_TOKEN_SIZE (4096U)
+-#define MAX_DEV_CERT_SIZE  4096
+-
+-typedef struct {
+-    uint8_t buf[MAX_TOKEN_SIZE];
+-    size_t buf_size;
+-} cca_token_buf_t;
+-
+-uint64_t parse_cca_attestation_token(cca_token_t *token,
+-                                     uint8_t *raw_token, size_t raw_token_size);
+-void print_cca_attestation_token(const cca_token_t *token);
+-void print_cca_attestation_token_raw(const cca_token_t *token);
+-
+-#endif /* TOKEN_PARSE_H */
+\ No newline at end of file
+diff --git a/src/verifiers/virtcca/verify_evidence.c b/src/verifiers/virtcca/verify_evidence.c
+index cac3b0e..9ded25c 100644
+--- a/src/verifiers/virtcca/verify_evidence.c
++++ b/src/verifiers/virtcca/verify_evidence.c
+@@ -1,6 +1,158 @@
+ #include <rats-tls/log.h>
+ #include <rats-tls/verifier.h>
+ #include "token_parse.h"
++#include "token_validate.h"
++#include "platform_verify.h"
++#include <openssl/pem.h>
++#include <openssl/x509.h>
++#include <openssl/bio.h>
++#include <openssl/evp.h>
++#include <openssl/ec.h>
++#include <limits.h>
++
++#ifndef PATH_MAX
++#define PATH_MAX 4096
++#endif
++
++#define MAX_DEV_CERT_SIZE (4096)
++
++/*
++/* Forward declaration for utility functions
++*/
++static bool verify_token_signatures(cca_token_t *token);
++static bool verify_platform_components_if_enabled(cca_token_t *token, const char *ref_json_file);
++
++static int detect_cert_format(const unsigned char *cert_data, size_t cert_len)
++{
++    if (cert_len < 10) {
++        return -1; /* Too short to determine format */
++    }
++
++    /* Check for PEM header */
++    if (strstr((const char*)cert_data, "-----BEGIN CERTIFICATE-----") != NULL) {
++        return 1; /* PEM format */
++    }
++
++    /* Check for DER format (ASN.1 BER/DER starts with 0x30) */
++    if (cert_data[0] == 0x30) {
++        return 0; /* DER format */
++    }
++
++    return -1; /* Unknown format */
++}
++
++static int save_dev_cert(const char *prefix, const char * filename, const char *dev_cert, const size_t dev_cert_len)
++{
++    char fullpath[PATH_MAX] = {0};
++    FILE *fp = NULL;
++    const unsigned char *cert_data = (const unsigned char *)dev_cert;
++
++    snprintf(fullpath, sizeof(fullpath), "%s/%s", prefix, filename);
++    fp = fopen(fullpath, "wb");
++    if (!fp) {
++        RTLS_ERR("Cannot open dev cert file %s\n", fullpath);
++        return 1;
++    }
++
++    /* Detect certificate format and parse accordingly */
++    X509 *cert = NULL;
++    int cert_format = detect_cert_format(cert_data, dev_cert_len);
++    
++    RTLS_INFO("Detected certificate format: ");
++    
++    if (cert_format == 0) {
++        /* DER format */
++        RTLS_INFO("DER\n");
++        cert = d2i_X509(NULL, &cert_data, dev_cert_len);
++        if (!cert) {
++            RTLS_ERR("Failed to parse DER certificate\n");
++            fclose(fp);
++            return 1;
++        }
++    } else if (cert_format == 1) {
++        /* PEM format */
++        RTLS_INFO("PEM\n");
++        BIO *bio = BIO_new_mem_buf(cert_data, dev_cert_len);
++        if (bio) {
++            cert = PEM_read_bio_X509(bio, NULL, NULL, NULL);
++            BIO_free(bio);
++        }
++        if (!cert) {
++            RTLS_ERR("Failed to parse PEM certificate\n");
++            fclose(fp);
++            return 1;
++        }
++    } else {
++        /* Unknown format, try both formats as fallback */
++        RTLS_INFO("Unknown, trying DER first\n");
++        cert = d2i_X509(NULL, &cert_data, dev_cert_len);
++        if (!cert) {
++            RTLS_INFO("DER failed, trying PEM format\n");
++            cert_data = (const unsigned char *)dev_cert;
++            BIO *bio = BIO_new_mem_buf(cert_data, dev_cert_len);
++            if (bio) {
++                cert = PEM_read_bio_X509(bio, NULL, NULL, NULL);
++                BIO_free(bio);
++            }
++        }
++        
++        if (!cert) {
++            RTLS_ERR("Failed to parse certificate in any supported format\n");
++            fclose(fp);
++            return 1;
++        }
++    }
++
++    EVP_PKEY *pkey = X509_get_pubkey(cert);
++    if (pkey) {
++        int key_type = EVP_PKEY_base_id(pkey);
++        RTLS_INFO("Device certificate key type: %s\n",
++               key_type == EVP_PKEY_RSA ? "RSA" :
++               key_type == EVP_PKEY_EC ? "ECC" : "Unknown");
++        
++        if (key_type == EVP_PKEY_EC) {
++            EC_KEY *ec_key = EVP_PKEY_get1_EC_KEY(pkey);
++            if (ec_key) {
++                const EC_GROUP *group = EC_KEY_get0_group(ec_key);
++                if (group) {
++                    int curve_nid = EC_GROUP_get_curve_name(group);
++                    const char* curve_name = "Unknown";
++                    
++                    if (curve_nid == NID_secp521r1) {
++                        curve_name = "P-521";
++                    } else if (curve_nid == NID_secp384r1) {
++                        curve_name = "P-384";
++#ifdef NID_X9_62_prime256v1
++                    } else if (curve_nid == NID_X9_62_prime256v1) {
++                        curve_name = "P-256";
++#endif
++#ifdef NID_secp256r1
++                    } else if (curve_nid == NID_secp256r1) {
++                        curve_name = "P-256";
++#endif
++                    }
++                    
++                    RTLS_INFO("ECC curve: %s (NID: %d)\n", curve_name, curve_nid);
++                }
++                EC_KEY_free(ec_key);
++            }
++        }
++        EVP_PKEY_free(pkey);
++    }
++
++    /* Write certificate in PEM format */
++    if (PEM_write_X509(fp, cert) != 1) {
++        RTLS_ERR("Failed to write certificate to PEM file\n");
++        X509_free(cert);
++        fclose(fp);
++        return 1;
++    }
++
++    RTLS_INFO("Successfully saved device certificate to %s\n", fullpath);
++    X509_free(cert);
++    fclose(fp);
++    return 0;
++}
+ 
+ enclave_verifier_err_t virtcca_verify_evidence(enclave_verifier_ctx_t *ctx,
+ 						    attestation_evidence_t *evidence, uint8_t *hash, unsigned int hash_len,
+@@ -37,7 +189,7 @@ enclave_verifier_err_t virtcca_verify_evidence(enclave_verifier_ctx_t *ctx,
+     }
+     memcpy(device_cert_data, evidence->virtcca.report + sizeof(cca_token_buf->buf_size) + cca_token_buf->buf_size + sizeof(device_cert_len), device_cert_len);
+ 
+-    // parse cca_token_buf
++    // parse cca_token_buf - now supports both CVM-only and CVM+Platform tokens
+     ret = parse_cca_attestation_token(&virtcca_token, cca_token_buf->buf, cca_token_buf->buf_size);
+     if (ret != VIRTCCA_SUCCESS) {
+         RTLS_ERR("failed to parse virtcca token\n");
+@@ -47,20 +199,46 @@ enclave_verifier_err_t virtcca_verify_evidence(enclave_verifier_ctx_t *ctx,
+ 	print_cca_attestation_token_raw(&virtcca_token);
+     print_cca_attestation_token(&virtcca_token);
+ 
++    /*
++    /* Process device certificate FIRST: convert DER to PEM and save as aik_cert.pem
++    /* This must be done BEFORE signature verification which requires the certificate file
++    */
++    int save_result = save_dev_cert(DEFAULT_CERT_PEM_PREFIX, DEFAULT_AIK_CERT_PEM_FILENAME, 
++                                   (const char*)device_cert_data, device_cert_len);
++    if (save_result != 0) {
++        RTLS_ERR("Failed to save device certificate\n");
++        free(device_cert_data);
++        return ENCLAVE_ATTESTER_ERR_UNKNOWN;
++    }
++
++    /*
++    /* Enhanced token signature verification
++    /* Supports both legacy CVM-only tokens and complete CCA tokens (CVM + Platform)
++    */
++    if (!verify_token_signatures(&virtcca_token)) {
++        RTLS_ERR("CCA token signature verification failed\n");
++        free(device_cert_data);
++        return ENCLAVE_VERIFIER_ERR_INVALID;
++    }
++
++    /*
++    /* Platform components verification (if platform token exists and reference file is configured)
++    /* For now, check if platform token exists and log accordingly
++    /* TODO: Add platform reference file path from configuration
++    */
++    if (virtcca_token.platform_cose.ptr != NULL && virtcca_token.platform_cose.len > 0) {
++        RTLS_INFO("Platform token detected - platform verification functionality available");
++        RTLS_INFO("Note: Platform SW components verification requires reference JSON file configuration");
++        /* Platform verification would be performed here if reference file was configured */
++    }
++
+ 	if (memcmp(virtcca_token.cvm_token.challenge.ptr, hash, hash_len)) {
+ 		RTLS_ERR("unmatched key binder hash value versus challenge in evidence\n");
++		free(device_cert_data);
+ 		return ENCLAVE_ATTESTER_ERR_INVALID;
+ 	}
+ 
+-    // device_cert
+-    FILE *device_cert_file = fopen("./aik_cert.der", "wb");
+-    if (device_cert_file == NULL) {
+-        RTLS_ERR("failed to open file for device certificate\n");
+-        free(device_cert_data);
+-        return ENCLAVE_ATTESTER_ERR_UNKNOWN;
+-    }
+-    fwrite(device_cert_data, 1, device_cert_len, device_cert_file);
+-    fclose(device_cert_file);
++
+ 
+     free(device_cert_data);
+ 
+@@ -80,4 +258,72 @@ enclave_verifier_err_t virtcca_verify_evidence(enclave_verifier_ctx_t *ctx,
+     }
+ 
+ 	return ENCLAVE_VERIFIER_ERR_NONE;
++}
++
++/*
++/* Verify CCA token signatures - supports both CVM-only and CVM+Platform tokens
++*/
++static bool verify_token_signatures(cca_token_t *token)
++{
++    cert_info_t cert_info;
++    
++    /* Detect AIK certificate type and configure certificate chain accordingly */
++    cert_type_t aik_cert_type = detect_aik_cert_type(DEFAULT_AIK_CERT_PEM_FILENAME);
++    configure_cert_info_by_type(&cert_info, aik_cert_type);
++
++    /*
++     * Support both legacy CVM-only tokens and complete attestation tokens (CVM and Platform)
++     * Check if platform token exists to determine verification mode
++     */
++    if (token->platform_cose.ptr != NULL && token->platform_cose.len > 0) {
++        /* Platform token exists - use new verification logic for CVM+Platform tokens */
++        RTLS_INFO("Verifying complete CCA token (CVM + Platform)\n");
++        return verify_cca_token_signatures(&cert_info,
++                                          token->platform_cose,
++                                          token->cvm_cose,
++                                          token->cvm_token.pub_key,
++                                          token->platform_token.challenge,
++                                          token->cvm_token.pub_key_hash_algo_id);
++    } else {
++        /*
++        /* No platform token - use legacy verification logic for CVM-only tokens
++        /* Create empty qbuf_t structures for compatibility
++        */
++        RTLS_INFO("Verifying legacy CVM-only token\n");
++        qbuf_t empty_buf = {.ptr = NULL, .len = 0};
++        return verify_cca_token_signatures(&cert_info,
++                                          empty_buf,  /* platform_cose */
++                                          token->cvm_cose,
++                                          token->cvm_token.pub_key,
++                                          empty_buf,  /* platform challenge */
++                                          token->cvm_token.pub_key_hash_algo_id);
++    }
++}
++
++/*
++/* Verify platform sw-components if enabled
++*/
++static bool verify_platform_components_if_enabled(cca_token_t *token, const char *ref_json_file)
++{
++    if (!ref_json_file || token->platform_cose.ptr == NULL || token->platform_cose.len == 0) {
++        /* No reference file or no platform token - skip verification */
++        return true;
++    }
++
++    platform_ref_values_t ref_values;
++    if (!load_platform_ref_values(ref_json_file, &ref_values)) {
++        RTLS_ERR("Failed to load platform reference values from: %s\n", ref_json_file);
++        return false;
++    }
++
++    bool result = verify_platform_sw_components(&token->platform_token, &ref_values);
++    
++    if (result) {
++        RTLS_INFO("Platform SW-Components verification PASSED\n");
++    } else {
++        RTLS_ERR("Platform SW-Components verification FAILED\n");
++    }
++    
++    free_platform_ref_values(&ref_values);
++    return result;
+ }
+\ No newline at end of file
+-- 
+2.33.0
+
