@@ -1,9 +1,10 @@
-From b4e5c4b39549d3287547429ffd7d826a42e82315 Mon Sep 17 00:00:00 2001
+From 3dd973067cdc62f38a9513fb5e957eac5b77bd21 Mon Sep 17 00:00:00 2001
 From: fuju <fuju1@huawei.com>
-Date: Mon, 9 Jun 2025 08:20:50 -0400
+Date: Wed, 18 Jun 2025 06:03:36 -0400
 Subject: [PATCH] Support VirtCCA
 
 ---
+ src/agent/Cargo.toml                               |   2 +-
  src/runtime-rs/arch/aarch64-options.mk             |   1 +
  src/runtime/Makefile                               |  22 +
  src/runtime/arch/arm64-options.mk                  |   2 +
@@ -12,9 +13,22 @@ Subject: [PATCH] Support VirtCCA
  src/runtime/virtcontainers/hypervisor.go           |   5 +
  .../virtcontainers/hypervisor_linux_arm64.go       |  60 +-
  src/runtime/virtcontainers/qemu_arm64.go           |  69 ++-
- 8 files changed, 834 insertions(+), 12 deletions(-)
+ 9 files changed, 835 insertions(+), 13 deletions(-)
  create mode 100644 src/runtime/config/configuration-qemu-virtcca.toml.in
 
+diff --git a/src/agent/Cargo.toml b/src/agent/Cargo.toml
+index 60c96e8..aa29848 100644
+--- a/src/agent/Cargo.toml
++++ b/src/agent/Cargo.toml
+@@ -79,7 +79,7 @@ strum = "0.26.2"
+ strum_macros = "0.26.2"
+ 
+ # Image pull/decrypt
+-image-rs = { git = "https://github.com/confidential-containers/guest-components", rev = "1191f8257eb65f42892ab0328cec02e58d40de84", default-features = false, optional = true }
++image-rs = { git = "https://github.com/confidential-containers/guest-components", rev = "1191f8257eb65f42892ab0328cec02e58d40de84", default-features = false, optional = true, features = ["nydus"]}
+ 
+ # Agent Policy
+ cdi = { git = "https://github.com/cncf-tags/container-device-interface-rs", rev = "fba5677a8e7cc962fc6e495fcec98d7d765e332a" }
 diff --git a/src/runtime-rs/arch/aarch64-options.mk b/src/runtime-rs/arch/aarch64-options.mk
 index dc1f4ad..bdcff7e 100644
 --- a/src/runtime-rs/arch/aarch64-options.mk
@@ -80,7 +94,7 @@ index 192bab1..601615b 100644
 +    SYSCONFIG_PATHS_VIRTCCA += $(SYSCONFIG_QEMU_VIRTCCA)
 +
 +    CONFIGS += $(CONFIG_QEMU_VIRTCCA)
-
+ 
      CONFIG_FILE_QEMU_NVIDIA_GPU = configuration-qemu-nvidia-gpu.toml
      CONFIG_QEMU_NVIDIA_GPU = config/$(CONFIG_FILE_QEMU_NVIDIA_GPU)
 @@ -656,6 +673,7 @@ USER_VARS += DEFMACHINETYPE_CLH
@@ -135,7 +149,7 @@ index ca19c8c..9e4f7bc 100644
  FCCMD := firecracker
 diff --git a/src/runtime/config/configuration-qemu-virtcca.toml.in b/src/runtime/config/configuration-qemu-virtcca.toml.in
 new file mode 100644
-index 0000000..a7fa8e5
+index 0000000..e055e34
 --- /dev/null
 +++ b/src/runtime/config/configuration-qemu-virtcca.toml.in
 @@ -0,0 +1,677 @@
@@ -852,7 +866,7 @@ index 4ff4333..46f0e91 100644
  
  	if len(deviceParams) > 0 {
 diff --git a/src/runtime/virtcontainers/hypervisor.go b/src/runtime/virtcontainers/hypervisor.go
-index b6b75d5..c409f82 100644
+index b6b75d5..61ea5fe 100644
 --- a/src/runtime/virtcontainers/hypervisor.go
 +++ b/src/runtime/virtcontainers/hypervisor.go
 @@ -1065,6 +1065,10 @@ const (
@@ -945,7 +959,7 @@ index 9c6a13e..e947f8c 100644
 +	return false, nil
  }
 diff --git a/src/runtime/virtcontainers/qemu_arm64.go b/src/runtime/virtcontainers/qemu_arm64.go
-index a9b803f..86e3acf 100644
+index a9b803f..c9a4e97 100644
 --- a/src/runtime/virtcontainers/qemu_arm64.go
 +++ b/src/runtime/virtcontainers/qemu_arm64.go
 @@ -11,11 +11,12 @@ import (
