@@ -4,7 +4,7 @@
 ## 编译
 ```
 cd src
-rm build && mkdir build
+rm build -rf && mkdir build
 cmake -B build
 cd build
 make

@@ -76,16 +76,6 @@ TeeNodeInfos BuildTeeNodeInfos(short port1, short port2)
 
 int main(int argc, char **argv)
 {
-    if (typeid(uint64_t) == typeid(unsigned long long)) {
-        std::cout << "uint64_t is equivalent to unsigned long long." << std::endl;
-    } else {
-        std::cout << "uint64_t is NOT equivalent to unsigned long long." << std::endl;
-    }
-
-    int sizeUll = sizeof(unsigned long long) * 8;
-
-    std::cout << "Size of unsigned long long: " << sizeUll << " bits" << std::endl;
-    std::cout << "Size of uint64: " << sizeUll << " bits" << std::endl;
     if (argc < 7) {
         printf("params: send port, recv port, current nodeId, inputfileName, firstserver,\n");
         exit(-1);
@@ -227,10 +217,12 @@ int CallMpcTee(int nodeId, std::string inputFileName, std::string sendIp, std::s
         }
     }
 
-    teeOpts.releaseOutput(&output);
+    teeOpts.releaseOutput(&output); // 释放输出
     printf("release output:%d\n", res);
-    teeOpts.releaseTeeCtx(&dgTee);
-    DG_ReleaseConfigOpts(&opts);
+    ReleaseDgString(strings, size);  // 释放输入
+    teeOpts.releaseTeeCtx(&dgTee); // 释放dgTee
+    opts->release(&teeCfg);  // 释放config teeCfg
+    DG_ReleaseConfigOpts(&opts); // 释放dataguard操作集opts
     close(outFp);
     return 0;
 }

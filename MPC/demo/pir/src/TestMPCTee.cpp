@@ -35,7 +35,7 @@
 #define BACKLOG_SIZE 16  // 请求队列最大长度
 #define SLEEP_FIVE 5
 #define NODES_SIZE 2
-#define MAX 65536
+#define MAX 20000000
 int g_sendSockfd = -1;
 int g_recvSockfd = -1;
 
@@ -98,7 +98,6 @@ void ReleaseDgPairList(DG_PairList* pairList)
 // 函数：构建DG_PairList
 void BuildDgPairList(std::vector<std::pair<std::string, std::string>>& data, DG_PairList **pairList)
 {
-    try {
         auto size = data.size();
         if (size > MAX) {
             return;
@@ -110,11 +109,6 @@ void BuildDgPairList(std::vector<std::pair<std::string, std::string>>& data, DG_
             (*pairList)->dgPair[i].value = BuildPairString(data[i].second);
         }
         (*pairList)->size = data.size();
-    } catch (std::bad_alloc &e) {
-        printf("BuildDgPairList  malloc fail==========================\n");
-        ReleaseDgPairList(*pairList);
-        *pairList = nullptr;
-    }
 }
 
 TeeNodeInfos BuildTeeNodeInfos(short port1, short port2)
@@ -130,15 +124,6 @@ TeeNodeInfos BuildTeeNodeInfos(short port1, short port2)
 
 int main(int argc, char **argv)
 {
-    if (typeid(uint64_t) == typeid(unsigned long long)) {
-        std::cout << "uint64_t is equivalent to unsigned long long." << std::endl;
-    } else {
-        std::cout << "uint64_t is NOT equivalent to unsigned long long." << std::endl;
-    }
-    int sizeUll = sizeof(unsigned long long) * 8;
-
-    std::cout << "Size of unsigned long long: " << sizeUll << " bits" << std::endl;
-    std::cout << "Size of uint64: " << sizeUll << " bits" << std::endl;
     if (argc < 7) {
         printf("params: send port, recv port, current nodeId, inputfileName, firstserver,\n");
         exit(-1);
@@ -266,34 +251,39 @@ int CallMpcTee(int nodeId, std::string inputFileName, std::string sendIp, std::s
     unsigned int size;
     if (nodeId == 0) {
         BuildDgPairList(datas, &pairList);
-        rv = pirOpts.offlineCalculate(dgTee, pairList, &bucketMap);
+        std::vector<std::pair<std::string, std::string>>().swap(datas);
+        uint64_t start = GetCurrentTimestampMs();
+        rv = pirOpts.offlineCalculate(dgTee, pairList, &bucketMap); // 线下计算阶段
         if (rv != 0) {
             printf("OfflineCalculate error. %d\n", rv);
             return rv;
         }
+        printf("offline calculate total time:%lu\n", GetCurrentTimestampMs() - start);
+        ReleaseDgPairList(pairList);  // 服务端释放输入
         printf("finish offlineCalculate\n");
     }
     
     //while (getchar() != '\n') {
     //}
-    getchar();
+    getchar(); // 模拟服务器线下计算结束，回车后客户端进行查询过程
 
-    DG_String *strings = nullptr;
-    BuildDgString(dataString, &strings, size);
-    DG_TeeInput teeInput;
-    teeInput.data.strings = strings;
-    teeInput.size = size;
-    teeInput.dataType = MPC_STRING;
-    printf("++++++++++input data size:%lu\n", teeInput.size);
-    DG_TeeOutput* output = nullptr;
     if (nodeId == 0) {
         int res = pirOpts.serverCalculate(dgTee, bucketMap);
         if (res != 0) {
             printf("ServerCalculate error.%d\n", res);
             return res;
         }
+        pirOpts.releaseBucketMap(&bucketMap);  // 如果不需使用pir服务，释放掉服务端的分桶结构
         printf("finish server\n");
     } else {
+        DG_String *strings = nullptr;
+        BuildDgString(dataString, &strings, size);
+        DG_TeeInput teeInput;
+        teeInput.data.strings = strings;
+        teeInput.size = size;
+        teeInput.dataType = MPC_STRING;
+        printf("++++++++++input data size:%lu\n", teeInput.size);
+        DG_TeeOutput* output = nullptr;
         uint64_t start = GetCurrentTimestampMs();
         int res = pirOpts.clientCalculate(dgTee, DUMMY, &teeInput, &output);
         printf("total time:%lu\n", GetCurrentTimestampMs() - start);
@@ -301,7 +291,8 @@ int CallMpcTee(int nodeId, std::string inputFileName, std::string sendIp, std::s
             printf("ClientCalculate error.%d\n", res);
             return res;
         }
-        
+
+        ReleaseDgString(strings, size); // 客户端释放输入
         int randomNumber = std::rand() % 100 + 10;
         auto now = std::chrono::system_clock::now();
         auto duration = now.time_since_epoch();
@@ -315,13 +306,12 @@ int CallMpcTee(int nodeId, std::string inputFileName, std::string sendIp, std::s
             write(outFp, conent.c_str(), conent.size());
         }
         close(outFp);
+        pirOpts.releaseOutput(&output); // 客户端释放输出
         printf("finish client\n");
     }
-
-    ReleaseDgString(strings, size);
-    pirOpts.releaseOutput(&output);
-    ReleaseDgPairList(pairList);
-    pirOpts.releaseBucketMap(&bucketMap);
+    pirOpts.releaseTeeCtx(&dgTee);
+    opts->release(&teeCfg);
+    DG_ReleaseConfigOpts(&opts);
     printf("finish ");
     return 0;
 }
