@@ -32,11 +32,11 @@ git apply ./build/virtCCA_sdk/kata-v3.15.0/kata-deploy.patch
 
 # 应用patch到guest-components
 cd /home/kata-containers/build/guest-components
-git apply ../build/virtCCA_sdk/kata-v3.15.0/guest-components.patch
+git apply ../virtCCA_sdk/kata-v3.15.0/guest-components.patch
 
 # 应用patch到trustee
 cd /home/kata-containers/build/trustee
-git apply ../build/virtCCA_sdk/kata-v3.15.0/trustee.patch
+git apply ../virtCCA_sdk/kata-v3.15.0/trustee.patch
 
 # 应用patch到kbs-type
 cd /home/kata-containers/build/kbs-types
