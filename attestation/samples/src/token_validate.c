@@ -35,6 +35,139 @@ static bool signature_is_der_format(const unsigned char *sig, size_t sig_len);
 static int get_curve_nid_from_key(EVP_PKEY *pkey);
 
 /*
+/* Certificate type detection function
+/* Detects the type of certificate (RSA, ECC P-521, SM2) based on AIK certificate
+*/
+cert_type_t detect_aik_cert_type(const char *aik_cert_path)
+{
+    char fullpath[PATH_MAX] = {0};
+    FILE *fp = NULL;
+    X509 *cert = NULL;
+    EVP_PKEY *pkey = NULL;
+    cert_type_t cert_type = CERT_TYPE_UNKNOWN;
+
+    if (!aik_cert_path) {
+        printf("Invalid AIK certificate path\n");
+        return CERT_TYPE_UNKNOWN;
+    }
+
+    /* Construct full path for AIK certificate */
+    if (strstr(aik_cert_path, "/") != NULL) {
+        /* Path already contains directory separator */
+        snprintf(fullpath, sizeof(fullpath), "%s", aik_cert_path);
+    } else {
+        /* Construct path with default prefix */
+        snprintf(fullpath, sizeof(fullpath), "%s/%s", DEFAULT_CERT_PEM_PREFIX, aik_cert_path);
+    }
+
+    fp = fopen(fullpath, "r");
+    if (!fp) {
+        printf("Cannot open AIK certificate file: %s\n", fullpath);
+        return CERT_TYPE_UNKNOWN;
+    }
+
+    cert = PEM_read_X509(fp, NULL, NULL, NULL);
+    if (!cert) {
+        printf("Failed to read X509 certificate from: %s\n", fullpath);
+        fclose(fp);
+        return CERT_TYPE_UNKNOWN;
+    }
+
+    pkey = X509_get_pubkey(cert);
+    if (!pkey) {
+        printf("Failed to extract public key from certificate\n");
+        X509_free(cert);
+        fclose(fp);
+        return CERT_TYPE_UNKNOWN;
+    }
+
+    int key_type = EVP_PKEY_base_id(pkey);
+    if (key_type == EVP_PKEY_RSA) {
+        cert_type = CERT_TYPE_RSA;
+        printf("Detected AIK certificate type: RSA\n");
+    } else if (key_type == EVP_PKEY_EC) {
+        EC_KEY *ec_key = EVP_PKEY_get1_EC_KEY(pkey);
+        if (ec_key) {
+            const EC_GROUP *group = EC_KEY_get0_group(ec_key);
+            if (group) {
+                int curve_nid = EC_GROUP_get_curve_name(group);
+                if (curve_nid == NID_secp521r1) {
+                    cert_type = CERT_TYPE_ECC_P521;
+                    printf("Detected AIK certificate type: ECC P-521\n");
+                } else {
+                    printf("Detected ECC certificate with unsupported curve (NID: %d)\n", curve_nid);
+                    cert_type = CERT_TYPE_UNKNOWN;
+                }
+            }
+            EC_KEY_free(ec_key);
+        }
+    } else {
+        /* Check for SM2 - this would need specific SM2 detection logic */
+        printf("Detected certificate with key type: %d (checking for SM2)\n", key_type);
+        /* For now, assume SM2 detection would be added here */
+        /* This is a placeholder - actual SM2 detection would need SM2-specific logic */
+        cert_type = CERT_TYPE_UNKNOWN;
+    }
+
+    EVP_PKEY_free(pkey);
+    X509_free(cert);
+    fclose(fp);
+
+    return cert_type;
+}
+
+/*
+/* Configure certificate info structure based on detected certificate type
+/* Sets appropriate URLs and filenames for certificate chain verification
+*/
+void configure_cert_info_by_type(cert_info_t *cert_info, cert_type_t cert_type)
+{
+    if (!cert_info) {
+        printf("Invalid cert_info parameter\n");
+        return;
+    }
+
+    /* Set common values */
+    strcpy(cert_info->cert_path_prefix, DEFAULT_CERT_PEM_PREFIX);
+    strcpy(cert_info->aik_cert_filename, DEFAULT_AIK_CERT_PEM_FILENAME);
+
+    switch (cert_type) {
+        case CERT_TYPE_RSA:
+            printf("Configuring certificate chain for RSA\n");
+            strcpy(cert_info->root_cert_filename, DEFAULT_ROOT_CERT_PEM_FILENAME);
+            strcpy(cert_info->sub_cert_filename, DEFAULT_SUB_CERT_PEM_FILENAME);
+            strcpy(cert_info->root_cert_url, DEFAULT_ROOT_CERT_URL);
+            strcpy(cert_info->sub_cert_url, DEFAULT_SUB_CERT_URL);
+            break;
+
+        case CERT_TYPE_ECC_P521:
+            printf("Configuring certificate chain for ECC P-521\n");
+            strcpy(cert_info->root_cert_filename, ECCP521_ROOT_CERT_PEM_FILENAME);
+            strcpy(cert_info->sub_cert_filename, ECCP521_SUB_CERT_PEM_FILENAME);
+            strcpy(cert_info->root_cert_url, ECCP521_ROOT_CERT_URL);
+            strcpy(cert_info->sub_cert_url, ECCP521_SUB_CERT_URL);
+            break;
+
+        case CERT_TYPE_SM2:
+            printf("Configuring certificate chain for SM2\n");
+            strcpy(cert_info->root_cert_filename, SM2_ROOT_CERT_PEM_FILENAME);
+            strcpy(cert_info->sub_cert_filename, SM2_SUB_CERT_PEM_FILENAME);
+            strcpy(cert_info->root_cert_url, SM2_ROOT_CERT_URL);
+            strcpy(cert_info->sub_cert_url, SM2_SUB_CERT_URL);
+            break;
+
+        case CERT_TYPE_UNKNOWN:
+        default:
+            printf("Warning: Unknown certificate type, using RSA defaults\n");
+            strcpy(cert_info->root_cert_filename, DEFAULT_ROOT_CERT_PEM_FILENAME);
+            strcpy(cert_info->sub_cert_filename, DEFAULT_SUB_CERT_PEM_FILENAME);
+            strcpy(cert_info->root_cert_url, DEFAULT_ROOT_CERT_URL);
+            strcpy(cert_info->sub_cert_url, DEFAULT_SUB_CERT_URL);
+            break;
+    }
+}
+
+/*
 /* Calculate SHA digest for challenge verification
 */
 static bool digest_sha(const void *msg, size_t msg_len,
@@ -869,7 +1002,7 @@ bool verify_cca_token_signatures(cert_info_t *cert_info,
     /* 1. CVM token signature verification (RAK signs CVM token)
     /* 2. Platform token signature verification (CPAK signs platform token)
     /* 3. Challenge binding (RAK public key hash matches platform challenge)
-    /* 4. Certificate chain validation
+    /* 4. Certificate chain validation - THIS IS CRITICAL FOR SECURITY
     */
     bool critical_verifications_passed = true;
     
@@ -886,6 +1019,12 @@ bool verify_cca_token_signatures(cert_info_t *cert_info,
     
     if (!(ret_bits & (1 << 1))) {
         printf("Critical: CVM token signature verification failed\n");
+        critical_verifications_passed = false;
+    }
+    
+    /* SECURITY FIX: Certificate chain validation is CRITICAL and must pass */
+    if (!(ret_bits & (1 << (index - 1)))) {  /* Certificate chain validation bit */
+        printf("Critical: Certificate chain validation failed\n");
         critical_verifications_passed = false;
     }
 

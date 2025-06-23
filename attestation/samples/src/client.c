@@ -152,16 +152,14 @@ int verify_token(unsigned char *token, size_t token_len)
     print_cca_attestation_token_raw(&cca_token);
     print_cca_attestation_token(&cca_token);
 
-    strcpy(cert_info.cert_path_prefix, DEFAULT_CERT_PEM_PREFIX);
-    strcpy(cert_info.root_cert_filename, DEFAULT_ROOT_CERT_PEM_FILENAME);
-    strcpy(cert_info.sub_cert_filename, DEFAULT_SUB_CERT_PEM_FILENAME);
-    strcpy(cert_info.aik_cert_filename, DEFAULT_AIK_CERT_PEM_FILENAME);
-    strcpy(cert_info.root_cert_url, DEFAULT_ROOT_CERT_URL);
-    strcpy(cert_info.sub_cert_url, DEFAULT_SUB_CERT_URL);
+    /* Detect AIK certificate type and configure certificate chain accordingly */
+    cert_type_t aik_cert_type = detect_aik_cert_type(DEFAULT_AIK_CERT_PEM_FILENAME);
+    configure_cert_info_by_type(&cert_info, aik_cert_type);
 
     /*
      * Support both legacy CVM-only tokens and complete attestation tokens (CVM and Platform)
      * Check if platform token exists to determine verification mode
+     * SECURITY: Token signature verification MUST pass for attestation to succeed
      */
     if (cca_token.platform_cose.ptr != NULL && cca_token.platform_cose.len > 0) {
         /* Platform token exists - use new verification logic for CVM+Platform tokens */
@@ -210,7 +208,10 @@ int verify_token(unsigned char *token, size_t token_len)
             printf("Warning: Platform components verification requested but no platform token found\n");
         }
     }
+    
+    /* SECURITY FIX: Signature verification MUST pass */
     if (!ret) {
+        printf("SECURITY CRITICAL: Token signature verification failed\n");
         return VERIFY_FAILED;
     }
 
