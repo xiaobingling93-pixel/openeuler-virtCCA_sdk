@@ -41,7 +41,7 @@ git apply ../virtCCA_sdk/kata-v3.15.0/trustee.patch
 # 应用patch到kbs-type
 cd /home/kata-containers/build/kbs-types
 git reset --hard 611889d22e5a4e8e57f13a33a1bdf03aa4aa9c70
-git apply ../build/virtCCA_sdk/kata-v3.15.0/kbs-type.patch
+git apply ../build/virtCCA_sdk/kata-v3.15.0/kbs-types.patch
 ```
 
 ## 拷贝`VirtCCA`配置文件到目标路径
@@ -64,13 +64,77 @@ cp ./build/virtCCA_sdk/kata-v3.15.0/conf/hosts ./build/
 
 # 编译`kata-deploy`镜像文件
 
+## docker 安装参考
+
+1. 安装docker。
+
+   ```
+   yum install -y docker httpd-tools
+   ```
+
+2. 启动docker服务，并设置开机自启。
+
+   ```
+   systemctl start docker
+   systemctl enable docker
+   ```
+
+3. 配置docker镜像源。
+
+   ```
+   vim /etc/docker/daemon.json
+
+   {
+     "registry-mirrors": [
+           "https://registry.docker-cn.com",
+           "http://hub-mirror.c.163.com"
+     ],
+
+     "dns": [
+       "114.114.114.114",
+       "110.110.110.110",
+       "8.8.8.8"
+     ]
+   }
+   ```
+
+4. 配置docker代理。
+
+   ```
+   mkdir -p /etc/systemd/system/docker.service.d
+   vim /etc/systemd/system/docker.service.d/http-proxy.conf
+   ```
+
+5. 配置代理IP。
+
+   ```
+   [Service]
+   Environment="HTTP_PROXY=http://proxy.example.com:port/"
+   Environment="HTTPS_PROXY=https://proxy.example.com:port/"
+   ```
+
+   >![](./public_sys-resources/icon-note.gif) **说明：**
+   >若HTTPS\_PROXY字段没有可用的https代理，可使用http作为替代。
+
+6. 重启docker。
+
+   ```
+   systemctl daemon-reload
+   systemctl restart docker
+   ```
+
+7. 拉取registry镜像。
+
+   ```
+   docker pull registry:2
+   ```
+
+## 编译`kata-deploy`镜像
 ```shell
 # 编译成功后当前路径下新增kata-static.tar.xz
 cd /home/kata-containers/tools/packaging/kata-deploy/local-build
 make
 ```
-
-
 
 # 添加kata-deploy镜像到本地镜像仓
 
@@ -107,71 +171,6 @@ openssl x509 -req -in /home/registry/certs/domain.csr \
 ```
 
 > 需要将rootCA.crt添加到镜像仓所在环境、执行环境的host和guest文件系统。(kata-deploy将自动化部署安装rootCA.crt到guest文件系统)
-
-## docker 安装参考
-
-1. 安装docker。
-
-   ```
-   yum install -y docker httpd-tools
-   ```
-
-2. 启动docker服务，并设置开机自启。
-
-   ```
-   systemctl start docker
-   systemctl enable docker
-   ```
-
-3. 配置docker镜像源。
-
-   ```
-   vim /etc/docker/daemon.json
-   
-   {
-     "registry-mirrors": [
-           "https://registry.docker-cn.com",
-           "http://hub-mirror.c.163.com"
-     ],
-    
-     "dns": [
-       "114.114.114.114",
-       "110.110.110.110",
-       "8.8.8.8"
-     ]
-   }
-   ```
-
-4. 配置docker代理。
-
-   ```
-   mkdir -p /etc/systemd/system/docker.service.d
-   vim /etc/systemd/system/docker.service.d/http-proxy.conf
-   ```
-
-5. 配置代理IP。
-
-   ```
-   [Service]
-   Environment="HTTP_PROXY=http://proxy.example.com:port/"
-   Environment="HTTPS_PROXY=https://proxy.example.com:port/"
-   ```
-
-   >![](./public_sys-resources/icon-note.gif) **说明：** 
-   >若HTTPS\_PROXY字段没有可用的https代理，可使用http作为替代。
-
-6. 重启docker。
-
-   ```
-   systemctl daemon-reload
-   systemctl restart docker
-   ```
-
-7. 拉取registry镜像。
-
-   ```
-   docker pull registry:2
-   ```
 
 
 ## 启动registry本地镜像仓

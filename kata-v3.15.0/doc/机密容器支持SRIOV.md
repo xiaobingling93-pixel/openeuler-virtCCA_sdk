@@ -95,8 +95,8 @@
         make openeuler_defconfig
         ```
 
-3.  加入NVMe盘和网卡驱动相关的配置。开启BLK\_DEV\_NVME、NVME\_CORE、VXLAN、MLXFW、IOMMUFD、VFIO、MLX5\_VFIO\_PCI和MLX5\_CORE等编译选项。开启CONFIG\_VSOCKETS、CONFIG\_VIRTIO\_VSOCKETS和CONFIG\_9P\_FS以支持启动机密容器。
-    1.  执行以下命令打开menuconfig。'
+3.  加入NVMe盘和网卡驱动相关的配置。开启BLK\_DEV\_NVME、NVME\_CORE、VXLAN、MLXFW、IOMMUFD、VFIO、MLX5\_VFIO\_PCI和MLX5\_CORE等编译选项。开启CONFIG\_VSOCKETS、CONFIG\_VIRTIO\_VSOCKETS、CONFIG\_9P\_FS和CONFIG_VIRTIO_FS以支持启动机密容器。
+    1.  执行以下命令打开menuconfig。
 
         ```
         make menuconfig
@@ -136,8 +136,13 @@
 
 ## 创建vfio设备
 
-1.  参考[使能机密设备直通](zh-cn_topic_0000002304611850.md)的步骤1到步骤2完成直通环境配置。
-2.  参考[使能机密设备直通](zh-cn_topic_0000002304611850.md)的步骤4完成VF创建，当前以网卡为例给出创建VF并绑定vfio驱动操作。
+1.  `VirtCCA`设备直通环境配置。
+    1）修改内核启动参数
+	vim /boot/efi/EFI/openEuler/grub.cfg
+	Host OS内核启动参数添加：`virtcca_cvm_host=1 arm_smmu_v3.disable_ecmdq=1 vfio_pci.disable_idle_d3=1`
+    2）BIOS使能SMMU
+	BIOS用户界面路径：`Advanced > MISC Config > Support Smmu`，设置`Support Smmu`为`Enabled`
+2.  当前以网卡为例给出创建VF并绑定vfio驱动操作。
     1.  查看ConnectX-6网卡的BDF号。
 
         lspci -tv | grep ConnectX-6
@@ -184,7 +189,11 @@
 
         ![](figures/zh-cn_image_0000002304611986.png)
 
-3.  ctr启动机密容器时通过--device透传vfio设备。
+3.  修改ctr容器 配置文件支持vfio设备冷插拔。
+    `vim /etc/kata-containers/configuration-qemu.toml`
+    添加：`cold_plug_vfio = "root-port"`
+
+4.  ctr启动机密容器时通过--device透传vfio设备。
 
     ctr run --runtime "io.containerd.kata.v2" --device /dev/vfio/91 --rm -t docker.io/library/busybox:latest kata-test /bin/sh
 

@@ -83,3 +83,6 @@
     ```
     exit
     ```
+14. 编译产物
+    `guest-components`产物位于：`/home/kata-containers/build/guest-components/target/aarch64-unknown-linux-gnu/release/`
+    `kbs rvps grpc-as`等产物位于：`/home/kata-containers/build/trustee/target/release/`
