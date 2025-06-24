@@ -199,7 +199,7 @@ setup_guest_image() {
 
 set_guest_password() {
     if [[ -z "${GUEST_PASSWORD}" ]]; then
-        GUEST_PASSWORD=openEuler12#$
+        return
     fi
 
     virt-customize -a ${TMP_GUEST_IMG_PATH} \
