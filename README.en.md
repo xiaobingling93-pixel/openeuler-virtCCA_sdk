@@ -1,7 +1,7 @@
 # virtCCA_sdk
 
 ## Description
-The software development kit of virtCCA (virtualized ARM confidential computing architecture with trustzone), such as remote attestation, derived key based on hardware etc.
+The software development kit of virtCCA (virtualized ARM confidential computing architecture with TEE), such as remote attestation, derived key based on hardware etc.
 
 ## Operating System
 Supporting the openEuler series of operating systems under the Kunpeng architecture.
