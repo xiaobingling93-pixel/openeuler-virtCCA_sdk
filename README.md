@@ -1,7 +1,20 @@
 # virtCCA_sdk
 
 ## 介绍
-The software development kit of virtCCA (virtualized ARM confidential computing architecture with trustzone), such as remote attestation, derived key based on hardware etc.
+virtCCA（包含 trustzone 的虚拟化 ARM 机密计算架构）的软件开发工具包，如远程认证、基于硬件的派生密钥等。
+
+## 操作系统
+支持鲲鹏架构下openEuler系列操作系统。
+
+## 使用说明
+- [远程证明](#远程证明)
+- [kata(cc0.8.0版本)](https://gitee.com/openeuler/virtCCA_sdk/blob/master/doc/zh-cn/confidential_container/kata%E6%9C%BA%E5%AF%86%E5%AE%B9%E5%99%A8.md)
+- [kata(v3.15.0版本)](https://gitee.com/openeuler/virtCCA_sdk/blob/master/kata-v3.15.0/doc/kata%E6%9C%BA%E5%AF%86%E5%AE%B9%E5%99%A8.md)
+- mpc使用样例
+  - [arithmetic](https://gitee.com/openeuler/virtCCA_sdk/blob/master/MPC/demo/arithmetic/README.md)
+  - [pir](https://gitee.com/openeuler/virtCCA_sdk/blob/master/MPC/demo/pir/README.md)
+  - [psi](https://gitee.com/openeuler/virtCCA_sdk/blob/master/MPC/demo/psi/README.md)
+- [qcow2镜像制作](https://gitee.com/openeuler/virtCCA_sdk/blob/master/cvm-image-rewriter/README.en.md)
 
 ## 远程证明
 
@@ -87,7 +100,6 @@ The software development kit of virtCCA (virtualized ARM confidential computing 
     bash build.sh
     ```
 
-### 使用说明
 
 #### 远程证明样例代码
 
@@ -124,3 +136,9 @@ The software development kit of virtCCA (virtualized ARM confidential computing 
     export LD_LIBRARY_PATH=/usr/lib/rats-tls:$LD_LIBRARY_PATH
     ./virtcca-client
     ```
+
+## 参与贡献
+```
+如果您想为本仓库贡献代码，请向本仓库任意maintainer发送邮件
+如果您找到产品中的任何Bug，欢迎您提出ISSUE
+```
