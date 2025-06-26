@@ -1,0 +1,175 @@
+From ddeaf1e7a245ee73e189eda2e5b2b0311a76d77b Mon Sep 17 00:00:00 2001
+From: unholyzero <yuanhai4@huawei.com>
+Date: Wed, 25 Jun 2025 17:17:15 +0800
+Subject: [PATCH] Fix parse pcr_index and log format
+
+---
+ samples/virtcca-client/rats-client.c    | 75 ++++++++++++++++---------
+ src/verifiers/virtcca/verify_evidence.c |  4 +-
+ 2 files changed, 50 insertions(+), 29 deletions(-)
+
+diff --git a/samples/virtcca-client/rats-client.c b/samples/virtcca-client/rats-client.c
+index 60a4609..7cc532c 100644
+--- a/samples/virtcca-client/rats-client.c
++++ b/samples/virtcca-client/rats-client.c
+@@ -133,18 +133,18 @@ int user_callback(void *args)
+ 	client_args *client_config = NULL;
+ 	rats_tls_handle handle = ctx;
+ 
+-	RTLS_INFO("Entering user_callback function");
++	RTLS_INFO("Entering user_callback function\n");
+ 	
+ 	/* Try to get client_config from core context */
+ 	if (ctx && ctx->config.custom_claims && ctx->config.custom_claims->value) {
+ 		client_config = (client_args *)ctx->config.custom_claims->value;
+-		RTLS_DEBUG("Got client_config from ctx->config");
++		RTLS_DEBUG("Got client_config from ctx->config\n");
+ 	}
+ 
+-	RTLS_INFO("Context check: ctx=%p, client_config=%p", ctx, client_config);
++	RTLS_INFO("Context check: ctx=%p, client_config=%p\n", ctx, client_config);
+ 	
+ 	/* Step 1: Parse and verify token regardless of client_config */
+-	RTLS_DEBUG("Starting token verification");
++	RTLS_DEBUG("Starting token verification\n");
+ 	cca_token_t token = {0};
+ 	cca_token_buf_t cca_token_buf = {0};
+ 	memcpy(&cca_token_buf, ev->cca.evidence, ev->cca.evidence_sz);
+@@ -154,7 +154,7 @@ int user_callback(void *args)
+ 		RTLS_ERR("failed to parse virtcca token\n");
+ 		return ENCLAVE_VERIFIER_ERR_CBOR;
+ 	}
+-	RTLS_DEBUG("Token parsed successfully");
++	RTLS_DEBUG("Token parsed successfully\n");
+ 
+ 	cert_info_t cert_info;
+ 	/* Detect AIK certificate type and configure certificate chain accordingly */
+@@ -174,9 +174,9 @@ int user_callback(void *args)
+ 	if (has_platform) {
+ 		platform_cose = token.platform_cose;
+ 		platform_challenge = token.platform_token.challenge;
+-		RTLS_INFO("Platform token detected, enabling full platform verification");
++		RTLS_INFO("Platform token detected, enabling full platform verification\n");
+ 	} else {
+-		RTLS_INFO("CVM-only token detected, using backward compatibility mode");
++		RTLS_INFO("CVM-only token detected, using backward compatibility mode\n");
+ 	}
+ 	
+ 	// ret = verify_cca_token_signatures(&cert_info,
+@@ -194,7 +194,7 @@ int user_callback(void *args)
+ 	/* Step 2: Verify RIM */
+ 	if (token.cvm_token.rim.len != g_rim_ref_size || 
+ 		memcmp(g_rim_ref, token.cvm_token.rim.ptr, token.cvm_token.rim.len)) {
+-		RTLS_ERR("RIM verification failed");
++		RTLS_ERR("RIM verification failed\n");
+ 		printf("Verifying if RIM of cVM token matches reference value: Failed\n");
+ 		return false;
+ 	}
+@@ -219,34 +219,53 @@ int user_callback(void *args)
+ static int parse_ima_pcr_index(void)
+ {
+ 	FILE *fp;
+-	char line[1024];
+ 	int pcr_index = -1;
+-	int count = 0;
+ 	
+-	fp = fopen(IMA_MEASUREMENTS_PATH, "r");
++	/*
++	* IMA measurements file is in binary format, not text format
++	* Each entry has a header structure containing PCR index
++	*/
++	struct {
++		u_int32_t pcr;
++		u_int8_t digest[20];  /* SHA1_DIGEST_LENGTH */
++		u_int32_t name_len;
++	} header;
++	
++	fp = fopen(IMA_MEASUREMENTS_PATH, "rb");  /* Open in binary mode */
+ 	if (!fp) {
+ 		RTLS_ERR("Unable to open IMA measurements file: %s\n", IMA_MEASUREMENTS_PATH);
+ 		return -1;
+ 	}
+ 	
+-	while (fgets(line, sizeof(line), fp) && count < 10) {  /* Check first 10 lines */
+-		count++;
+-		
+-		/* Skip the first line (boot_aggregate) and look at actual measurement entries */
+-		if (count == 1) {
+-			continue;
++	/* Skip the first entry (boot_aggregate) and read the second entry */
++	/* which contains the actual PCR index used for file measurements */
++	for (int entry_count = 0; entry_count < 2; entry_count++) {
++		if (fread(&header, sizeof(header), 1, fp) != 1) {
++			RTLS_ERR("Failed to read IMA measurement header for entry %d\n", entry_count);
++			fclose(fp);
++			return -1;
+ 		}
+ 		
+-		/* Parse PCR index from line format: "PCR_INDEX hash ..." */
+-		int current_pcr;
+-		if (sscanf(line, " %d ", &current_pcr) == 1) {
+-			/* Found a measurement entry with PCR index */
+-			if (pcr_index == -1) {
+-				pcr_index = current_pcr;
+-				RTLS_INFO("Detected PCR index %d from IMA measurements\n", pcr_index);
+-			} else if (pcr_index != current_pcr) {
+-				RTLS_WARN("Multiple PCR indices found in IMA log: %d and %d\n", pcr_index, current_pcr);
++		if (entry_count == 0) {
++			/* This is boot_aggregate entry, skip it */
++			RTLS_DEBUG("Skipping boot_aggregate entry with PCR %d\n", header.pcr);
++			
++			/* Skip template name */
++			if (header.name_len > 0 && header.name_len < 1024) {
++				fseek(fp, header.name_len, SEEK_CUR);
+ 			}
++			
++			/* Skip template data for boot_aggregate */
++			/* For ima-ng template: skip template_data_len + template_data */
++			u_int32_t template_data_len;
++			if (fread(&template_data_len, sizeof(u_int32_t), 1, fp) == 1 && template_data_len < 10240) {
++				fseek(fp, template_data_len, SEEK_CUR);
++			}
++		} else {
++			/* This is the actual file measurement entry */
++			pcr_index = header.pcr;
++			RTLS_INFO("Found actual measurement PCR index %d from IMA measurements file (skipped boot_aggregate)\n", pcr_index);
++			break;
+ 		}
+ 	}
+ 	
+@@ -337,14 +356,16 @@ free:
+ 	/*
+ 	 * Parse IMA measurement file to determine the actual PCR index being used
+ 	 * Based on the PCR index, determine which REM to use:
+-	 * - PCR 4: use REM[3] (UEFI boot mode)
++	 * - PCR 4: use REM[3] (UEFI boot mode)  
+ 	 * - PCR 1 or 10: use REM[0] (Direct boot mode)
+ 	 */
++	RTLS_INFO("Attempting to parse PCR index from IMA measurements file...\n");
+ 	int actual_pcr_index = parse_ima_pcr_index();
+ 	if (actual_pcr_index == -1) {
+ 		RTLS_ERR("Failed to parse PCR index from IMA measurements\n");
+ 		return RATS_TLS_ERR_INVALID;
+ 	}
++	RTLS_INFO("Successfully parsed PCR index: %d\n", actual_pcr_index);
+ 
+ 	if (actual_pcr_index == 4) {
+ 		/* UEFI boot mode: PCR 4 -> REM[3] */
+diff --git a/src/verifiers/virtcca/verify_evidence.c b/src/verifiers/virtcca/verify_evidence.c
+index 9ded25c..f0a79b6 100644
+--- a/src/verifiers/virtcca/verify_evidence.c
++++ b/src/verifiers/virtcca/verify_evidence.c
+@@ -227,8 +227,8 @@ enclave_verifier_err_t virtcca_verify_evidence(enclave_verifier_ctx_t *ctx,
+     /* TODO: Add platform reference file path from configuration
+     */
+     if (virtcca_token.platform_cose.ptr != NULL && virtcca_token.platform_cose.len > 0) {
+-        RTLS_INFO("Platform token detected - platform verification functionality available");
+-        RTLS_INFO("Note: Platform SW components verification requires reference JSON file configuration");
++        RTLS_INFO("Platform token detected - platform verification functionality available\n");
++        RTLS_INFO("Note: Platform SW components verification requires reference JSON file configuration\n");
+         /* Platform verification would be performed here if reference file was configured */
+     }
+ 
+-- 
+2.43.0
+
