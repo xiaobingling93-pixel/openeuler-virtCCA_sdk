@@ -40,7 +40,7 @@ Example Commands
 - Create a new CVM image and and measure it:
 
 ```shell
-sh create-oe-image.sh -v 24.03 -s 50 -p Password -o /tmp/virtcca_cvm_image.qcow2
+sh create-oe-image.sh -v 24.03-LTS-SP2 -s 10 -p Password -o /tmp/virtcca_cvm_image.qcow2
 ```
 
 - Measure an existing CVM image only:
