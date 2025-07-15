@@ -81,10 +81,6 @@ process_args() {
         INPUT_IMAGE=${TMP_GUEST_IMG_PATH}
     fi
 
-    if [[ -z "${KERNEL_VERSION}" ]]; then
-        KERNEL_VERSION="6.6.0-72.0.0.76.oe2403sp1.aarch64"
-    fi
-
     if [[ ${CREATE_IMAGE} = "true" && -z "${EULER_VERSION}" ]]; then
         error "Please specify the openEuler release by setting EULER_VERSION or passing it via -v"
     fi
@@ -213,11 +209,17 @@ install_kae_driver() {
     mkdir -p ${TMP_MOUNT_PATH}
     guestmount -a ${target_image} -i ${TMP_MOUNT_PATH} || error "Failed to mount the VM image."
 
+    if [[ -z "${KERNEL_VERSION}" ]]; then
+        KERNEL_VERSION=$(find ${TMP_MOUNT_PATH}/lib/modules \
+            -mindepth 1 -maxdepth 1 -type d | head -n1 | xargs -r basename)
+    fi
+
     info "Downloading and Making KAE driver"
     git clone https://gitee.com/openeuler/virtCCA_driver.git --depth 1
-    cd virtCCA_driver/kae_driver
+    pushd virtCCA_driver/kae_driver
     make
 
+    mkdir -p                ${TMP_MOUNT_PATH}/lib/modules/${KERNEL_VERSION}/extra/
     cp hisi_plat_qm.ko      ${TMP_MOUNT_PATH}/lib/modules/${KERNEL_VERSION}/extra/
     cp hisi_plat_sec.ko     ${TMP_MOUNT_PATH}/lib/modules/${KERNEL_VERSION}/extra/
     cp hisi_plat_hpre.ko    ${TMP_MOUNT_PATH}/lib/modules/${KERNEL_VERSION}/extra/
@@ -240,7 +242,7 @@ EOF
 sh "depmod -a ${KERNEL_VERSION}"
 EOF
 
-    cd $SCRIPT_DIR
+    popd
     ok "Install KAE driver successfully."
 }
 
