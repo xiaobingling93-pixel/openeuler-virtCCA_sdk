@@ -30,6 +30,7 @@ Usage: create-oe-image.sh [OPTION]...
   -s                        Specify the size of guest image
   -v                        openEuler version (24.03, 24.09, ...)
   -p                        Set the password of guest image
+  -k                        Install kae driver
   -o <output file>          Specify the output file, default is openEuler-<version>-aarch64.qcow2.
                             Please make sure the suffix is qcow2. Due to permission consideration,
                             the output file will be put into /tmp/<output file>.
