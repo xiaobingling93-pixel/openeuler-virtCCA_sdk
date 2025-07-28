@@ -9,7 +9,6 @@
  * PURPOSE.
  * See the Mulan PSL v2 for more details.
  */
-#include "gen_rim_ref.h"
 #include <assert.h>
 #include <errno.h>
 #include <getopt.h>
@@ -18,6 +17,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "gen_dtb.h"
+#include "libQemuGen.h"
+#include "gen_rim_ref.h"
 
 #if LOG_PRINT
 int data_measure_cnt = 0;
@@ -623,11 +625,72 @@ free:
     return -1;
 }
 
+static int build_coco_blobs(blob_list *rim_blobs, tools_args *args)
+{
+    uint64_t loader_start = LOADER_START_ADDR;
+    uint64_t kernel_start = loader_start + KERNEL_LOAD_OFFSET;
+    uint64_t initrd_start = loader_start + INITRD_LOAD_OFFSET;
+    uint64_t dtb_start = initrd_start;
+    blob *cur_blob = NULL;
+
+    // generate the qemu instr by qemu instr generator(GOLANGlib)
+    struct GenerateQemuInstr_return result = GenerateQemuInstr(args->kata_config_path, args->pod_config_path);
+    char *qemu_instr = (char *)malloc(MAX_CMD_LENGTH * sizeof(char));
+    char *qemu_bin_path = (char *)malloc(MAX_OPTION_LENGTH * sizeof(char));
+    char *kernel_path = (char *)malloc(MAX_OPTION_LENGTH * sizeof(char));
+
+    (void)snprintf(qemu_instr, MAX_CMD_LENGTH, "%s", result.r2);
+    (void)snprintf(qemu_bin_path, MAX_OPTION_LENGTH, "%s", result.r3);
+    (void)snprintf(kernel_path, MAX_OPTION_LENGTH, "%s", result.r4);
+    if (result.r0) {
+        generate_dtb_with_kata_config(qemu_bin_path, qemu_instr);
+    } else {
+        fprintf(stderr, "kata config load failed.\n");
+    }
+
+    // update vCPU number
+    args->vcpu_num = result.r1;
+
+    cur_blob = load_data_to_blobs(rim_blobs, kernel_path, KERNEL_FILE, kernel_start);
+    if (!cur_blob) {
+        gen_err("load kernel to blobs failed");
+        goto free;
+    }
+
+    cur_blob = load_data_to_blobs(rim_blobs, DEFAULT_DUMPDTB_PATH, DEFAULT_FILE, dtb_start);
+    if (!cur_blob) {
+        gen_err("add dtb to blobs failed");
+        goto free;
+    }
+
+    cur_blob = load_loader_to_blobs(rim_blobs, kernel_start, dtb_start, loader_start);
+    if (!cur_blob) {
+        gen_err("add bootloader to blobs failed");
+        goto free;
+    }
+    return 0;
+
+free:
+    free_rim_blobs(rim_blobs);
+    return -1;
+}
+
 static int build_rim_blobs(blob_list *rim_blobs, tools_args *args)
 {
     int ret = -1;
     bool use_firmware = (strlen(args->firmware_path) != 0);
     bool use_kernel = (strlen(args->kernel_path) != 0);
+    bool use_kata_config = (strlen(args->kata_config_path) != 0);
+    bool use_pod_config = (strlen(args->pod_config_path) != 0);
+
+    if (use_kata_config || use_pod_config) {
+        if (use_kata_config ^ use_pod_config) {
+            gen_err("only supports booting confidential containers when both kata_config and pod_config are provided.");
+            return -1;
+        }
+
+        return build_coco_blobs(rim_blobs, args);
+    }
 
     if (!(use_firmware ^ use_kernel)) {
         gen_err("only support boot with kernel or firmware");
@@ -650,21 +713,24 @@ static void print_help(const char *name)
 {
     printf("\nUsage:\n");
     printf(" %s [options]...\n\n", name);
-    printf("Generate rim reference value, support two boot types:\n");
+    printf("Generate rim reference value, support two three types:\n");
     printf("(a) direct kernel boot without firmware: -k -d [-i] -v\n");
-    printf("(b) firmware-only boot                 : -f -d -v\n\n");
+    printf("(b) firmware-only boot                 : -f -d -v\n");
+    printf("(c) confidential container boot        : -c -p\n\n");
     printf("Options:\n");
     printf("\t-k/--kernel    kernel_path   :     path to kernel image\n");
     printf("\t-d/--dtb       dtb_path      :     path to device tree dtb file\n");
     printf("\t-i/--initrd    initramfs_path:     path to initramfs gzip file (optional)\n");
     printf("\t-f/--firmware  firmware_path :     path to firmware file\n");
-    printf("\t-v/--vzpu      vcpu_num      :     Number of Vcpus (must be a positive integer)\n");
+    printf("\t-v/--vcpu      vcpu_num      :     Number of Vcpus (must be a positive integer)\n");
+    printf("\t-c/--config    config_path   :     path to kata runtime config file (configuration.toml)\n");
+    printf("\t-p/--pod       pod_path      :     path to k8s pod config file (pod.yaml)\n");
 }
 
 static int parse_args(int argc, char *argv[], tools_args *args)
 {
     int opt = 0;
-    char *const short_opts = "k:i:d:f:v:h";
+    char *const short_opts = "k:i:d:f:v:h:c:p:";
     struct option const long_opts[] = {
         {"kernel", required_argument, NULL, 'k'},
         {"initrd", required_argument, NULL, 'i'},
@@ -672,6 +738,8 @@ static int parse_args(int argc, char *argv[], tools_args *args)
         {"firmware", required_argument, NULL, 'f'},
         {"vcpu", required_argument, NULL, 'v'},
         {"help", required_argument, NULL, 'h'},
+        {"config", required_argument, NULL, 'c'},
+        {"pod", required_argument, NULL, 'p'},
         {0, 0, 0, 0}};
 
     if (argc < NO_ARGUMENT) {
@@ -701,6 +769,12 @@ static int parse_args(int argc, char *argv[], tools_args *args)
                     gen_err("invalid vcpu number %lu", args->vcpu_num);
                     return -1;
                 }
+                break;
+            case 'c':
+                strncpy(args->kata_config_path, optarg, PATH_LEN_MAX - 1);
+                break;
+            case 'p':
+                strncpy(args->pod_config_path, optarg, PATH_LEN_MAX - 1);
                 break;
             default:
                 print_help(argv[0]);
