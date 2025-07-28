@@ -179,6 +179,8 @@ typedef struct {
     char dtb_path[PATH_LEN_MAX];
     char initramfs_path[PATH_LEN_MAX];
     char firmware_path[PATH_LEN_MAX];
+    char kata_config_path[PATH_LEN_MAX];
+    char pod_config_path[PATH_LEN_MAX];
     uint64_t vcpu_num;
 } tools_args;
 
