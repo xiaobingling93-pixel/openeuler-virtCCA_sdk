@@ -1,0 +1,60 @@
+/*
+ * Copyright (c) Huawei Technologies Co., Ltd. 2024. All rights reserved.
+ * virtCCA_sdk is licensed under the Mulan PSL v2.
+ * You can use this software according to the terms and conditions of the Mulan PSL v2.
+ * You may obtain a copy of Mulan PSL v2 at:
+ *     http://license.coscl.org.cn/MulanPSL2
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY OR FIT FOR A PARTICULAR
+ * PURPOSE.
+ * See the Mulan PSL v2 for more details.
+ */
+
+#ifndef CONTEXT_H
+#define CONTEXT_H
+
+#include <memory>
+#include "kcal/api/kcal_api.h"
+#include "kcal/enumeration/kcal_enum.h"
+
+namespace kcal {
+
+struct KCAL_Config {
+    int nodeId;
+    int fixBits;
+    int threadCount;
+    int worldSize;
+};
+
+class Context {
+public:
+    Context() = default;
+
+    explicit Context(KCAL_Config config, KCAL_AlgorithmsType type);
+
+    Context(const Context &) = delete;
+    Context &operator=(const Context &) = delete;
+
+    ~Context();
+
+    static std::shared_ptr<Context> Create(KCAL_Config config, TEE_NET_RES *netRes, KCAL_AlgorithmsType type);
+
+    int Init();
+
+    [[nodiscard]] int GetWorldSize() const { return config_.worldSize; }
+
+    void *GetTeeConfig() { return teeCfg_; }
+
+    void SetNetRes(TEE_NET_RES *teeNetRes);
+
+private:
+    KCAL_Config config_;
+    KCAL_AlgorithmsType type_;
+
+    void *teeCfg_ = nullptr;
+    DG_ConfigOpts *cfgOpts_ = nullptr;
+};
+
+}
+
+#endif // CONTEXT_H
