@@ -8,8 +8,9 @@ virtCCA（包含 TEE 虚拟化的 ARM 机密计算架构）的软件开发工具
 
 ## 使用说明
 - [远程证明](#远程证明)
-- [kata(cc0.8.0版本)](https://gitee.com/openeuler/virtCCA_sdk/blob/master/doc/zh-cn/confidential_container/kata%E6%9C%BA%E5%AF%86%E5%AE%B9%E5%99%A8.md)
+- [kata(cc0.8.0版本)](https://gitee.com/openeuler/virtCCA_sdk/blob/master/kata-cc0.8.0/doc/zh-cn/kata%E6%9C%BA%E5%AF%86%E5%AE%B9%E5%99%A8.md)
 - [kata(v3.15.0版本)](https://gitee.com/openeuler/virtCCA_sdk/blob/master/kata-v3.15.0/doc/kata%E6%9C%BA%E5%AF%86%E5%AE%B9%E5%99%A8.md)
+    **机密容器推荐使用此版本**
 - mpc使用样例
   - [arithmetic](https://gitee.com/openeuler/virtCCA_sdk/blob/master/MPC/demo/arithmetic/README.md)
   - [pir](https://gitee.com/openeuler/virtCCA_sdk/blob/master/MPC/demo/pir/README.md)
@@ -26,13 +27,7 @@ virtCCA（包含 TEE 虚拟化的 ARM 机密计算架构）的软件开发工具
     ```
 
 2. 编译安装基线度量值计算工具
-    ```sh
-    cd attestation/rim_ref
-    cmake -S . -B build
-    cmake --build build
-    cp output/gen_rim_ref /usr/local/bin
-    ```
-    **基线度量值计算工具gen_rim_ref会安装到/usr/local/bin目录下**
+    参考 `attestation/rim_ref/README.md`
 
 3. 编译安装远程证明sdk
     ```sh

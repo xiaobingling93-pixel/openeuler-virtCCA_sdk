@@ -41,7 +41,7 @@ git apply ../virtCCA_sdk/kata-v3.15.0/trustee.patch
 # 应用patch到kbs-type
 cd /home/kata-containers/build/kbs-types
 git reset --hard 611889d22e5a4e8e57f13a33a1bdf03aa4aa9c70
-git apply ../build/virtCCA_sdk/kata-v3.15.0/kbs-types.patch
+git apply ../virtCCA_sdk/kata-v3.15.0/kbs-types.patch
 ```
 
 ## 拷贝`VirtCCA`配置文件到目标路径
@@ -133,6 +133,7 @@ cp ./build/virtCCA_sdk/kata-v3.15.0/conf/hosts ./build/
 ```shell
 # 编译成功后当前路径下新增kata-static.tar.xz
 cd /home/kata-containers/tools/packaging/kata-deploy/local-build
+export USE_CACHE="no"
 make
 ```
 
@@ -307,7 +308,7 @@ spec:
 >
 > ```shell
 > kubectl delete -f /home/kata-containers/build/virtCCA_sdk/kata-v3.15.0/conf/virtcca-kata-deploy.yaml
-> sleep5s
+> sleep 5s
 > kubectl delete -k github.com/confidential-containers/operator/config/release?ref=v0.13.0
 > ```
 

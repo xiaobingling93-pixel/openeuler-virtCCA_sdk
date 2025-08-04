@@ -1,6 +1,6 @@
 # 容器化编译CoCo远程证明组件
 
-在使用了kata-deploy自动化部署的前提下，无需手动编译部署guest-componenets和kata-containers，**本章节主要服务于远程证明组件编译。**
+在使用了kata-deploy自动化部署的前提下，无需手动编译部署guest-componenets(步骤5)和kata-containers（步骤11、12），**本章节主要服务于远程证明组件编译（步骤6、7、8、9、10）。**
 
 >  在部署有Docker本地镜像仓环境上搭建容器化编译环境。
 

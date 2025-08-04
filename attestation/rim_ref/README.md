@@ -15,8 +15,11 @@ go mod tidy
 mkdir build && cd build
 cmake ..
 make
+
+# deploy
+cp ./gen_rim_ref /usr/local/bin
 ```
-编译生成的二进制产物：./build/gen_rim_ref
+编译生成的二进制产物gen_rim_ref安装到/usr/local/bin目录下
 
 # 2. 使用
 `gen_rim_ref -h` 可查看帮助信息
