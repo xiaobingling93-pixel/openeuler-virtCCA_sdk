@@ -60,9 +60,6 @@ RUN apt-get update && \
     libmount-dev \
 	libssl-dev
 
-COPY certs/* /usr/local/share/ca-certificates/
-RUN update-ca-certificates
-
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${RUST_TOOLCHAIN}
 
 RUN ARCH=$(uname -m); \
