@@ -494,16 +494,17 @@ static void measure_rim_blobs(cvm_init_measure_t *meas, const blob_list *rim_blo
     }
 }
 
-void generate_rim_reference(uint64_t tec_num, const blob_list *rim_blobs, bool use_firmware)
+void generate_rim_reference(uint64_t tec_num, uint64_t sve_vector_size,
+    uint64_t pmu_counter_num, const blob_list *rim_blobs, bool use_firmware)
 {
     bool lpa2_enable = false;
-    bool sve_enable = use_firmware == false;
-    bool pmu_enable = true;
+    bool sve_enable = (sve_vector_size > 0) ? true : false;
+    bool pmu_enable = (pmu_counter_num > 0) ? true : false;
     uint64_t ipa_width = 40;
-    uint64_t sve_vector_length = sve_enable ? 1 : 0;
+    uint64_t sve_vector_length = sve_enable ? (sve_vector_size / SVE_VECTOR_MIN_LEN) : 0;
     uint64_t num_bps = 0;
     uint64_t num_wps = 0;
-    uint64_t num_pmu = 1;
+    uint64_t num_pmu = pmu_counter_num;
     uint64_t hash_algo = 0;
     uint64_t pc = 0;
 
@@ -714,29 +715,33 @@ static void print_help(const char *name)
     printf("\nUsage:\n");
     printf(" %s [options]...\n\n", name);
     printf("Generate rim reference value, support two three types:\n");
-    printf("(a) direct kernel boot without firmware: -k -d [-i] -v\n");
-    printf("(b) firmware-only boot                 : -f -d -v\n");
+    printf("(a) direct kernel boot without firmware: -k -d [-i] -v -s -m\n");
+    printf("(b) firmware-only boot                 : -f -d -v -s -m\n");
     printf("(c) confidential container boot        : -c -p\n\n");
     printf("Options:\n");
-    printf("\t-k/--kernel    kernel_path   :     path to kernel image\n");
-    printf("\t-d/--dtb       dtb_path      :     path to device tree dtb file\n");
-    printf("\t-i/--initrd    initramfs_path:     path to initramfs gzip file (optional)\n");
-    printf("\t-f/--firmware  firmware_path :     path to firmware file\n");
-    printf("\t-v/--vcpu      vcpu_num      :     Number of Vcpus (must be a positive integer)\n");
-    printf("\t-c/--config    config_path   :     path to kata runtime config file (configuration.toml)\n");
-    printf("\t-p/--pod       pod_path      :     path to k8s pod config file (pod.yaml)\n");
+    printf("\t-k/--kernel    kernel_path            :     path to kernel image\n");
+    printf("\t-d/--dtb       dtb_path               :     path to device tree dtb file\n");
+    printf("\t-i/--initrd    initramfs_path         :     path to initramfs gzip file (optional)\n");
+    printf("\t-f/--firmware  firmware_path          :     path to firmware file\n");
+    printf("\t-v/--vcpu      vcpu_num               :     Number of Vcpus (must be a positive integer)\n");
+    printf("\t-s/--sve       sve_vector_length      :     length of sve vector (must be a multiple of 128)\n");
+    printf("\t-m/--pmu       pmu_counter_num        :     number of pmu counter (must be a positive integer)\n");
+    printf("\t-c/--config    config_path            :     path to kata runtime config file (configuration.toml)\n");
+    printf("\t-p/--pod       pod_path               :     path to k8s pod config file (pod.yaml)\n");
 }
 
 static int parse_args(int argc, char *argv[], tools_args *args)
 {
     int opt = 0;
-    char *const short_opts = "k:i:d:f:v:h:c:p:";
+    char *const short_opts = "k:i:d:f:v:s:m:h:c:p:";
     struct option const long_opts[] = {
         {"kernel", required_argument, NULL, 'k'},
         {"initrd", required_argument, NULL, 'i'},
         {"dtb", required_argument, NULL, 'd'},
         {"firmware", required_argument, NULL, 'f'},
         {"vcpu", required_argument, NULL, 'v'},
+        {"sve", required_argument, NULL, 's'},
+        {"pmu", required_argument, NULL, 'm'},
         {"help", required_argument, NULL, 'h'},
         {"config", required_argument, NULL, 'c'},
         {"pod", required_argument, NULL, 'p'},
@@ -767,6 +772,20 @@ static int parse_args(int argc, char *argv[], tools_args *args)
                 args->vcpu_num = atoi(optarg);
                 if (args->vcpu_num <= 0) {
                     gen_err("invalid vcpu number %lu", args->vcpu_num);
+                    return -1;
+                }
+                break;
+            case 's':
+                args->sve_vector_length = atoi(optarg);
+                if (args->sve_vector_length < 0 || args->sve_vector_length % SVE_VECTOR_MIN_LEN) {
+                    gen_err("invalid sve vector length %d", args->sve_vector_length);
+                    return -1;
+                }
+                break;
+            case 'm':
+                args->pmu_counter_num = atoi(optarg);
+                if (args->pmu_counter_num < 0) {
+                    gen_err("invalid pmu counter number %d", args->pmu_counter_num);
                     return -1;
                 }
                 break;
@@ -804,7 +823,8 @@ int main(int argc, char *argv[])
     print_rim_blobs(&rim_blobs);
 #endif
 
-    generate_rim_reference(args.vcpu_num, &rim_blobs, strlen(args.firmware_path) != 0);
+    generate_rim_reference(args.vcpu_num, args.sve_vector_length,
+                           args.pmu_counter_num, &rim_blobs, strlen(args.firmware_path) != 0);
     free_rim_blobs(&rim_blobs);
     return 0;
 }

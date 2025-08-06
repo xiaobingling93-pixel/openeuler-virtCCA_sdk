@@ -47,6 +47,7 @@
 #define UEFI_LOAD_START				0x0
 #define PATH_LEN_MAX				1000
 #define FILE_SIZE_MAX				(1 * GiB)
+#define SVE_VECTOR_MIN_LEN          128
 
 #define LPA2_BIT					0
 #define SVE_BIT						1
@@ -182,6 +183,8 @@ typedef struct {
     char kata_config_path[PATH_LEN_MAX];
     char pod_config_path[PATH_LEN_MAX];
     uint64_t vcpu_num;
+    int sve_vector_length;
+    int pmu_counter_num;
 } tools_args;
 
 void measure_create_cvm(cvm_init_measure_t *meas,
@@ -206,7 +209,11 @@ void measure_load_data(cvm_init_measure_t *meas,
                        const char *ramdisk_path,
                        const char *dtb_path);
 
-void generate_rim_reference(uint64_t tec_num, const blob_list *rim_blobs, bool use_firmware);
+void generate_rim_reference(uint64_t tec_num,
+                            uint64_t sve_vector_size,
+                            uint64_t pmu_counter_num,
+                            const blob_list *rim_blobs,
+                            bool use_firmware);
 void print_hash(unsigned char *measurement,
                 const enum hash_algo algorithm);
 
