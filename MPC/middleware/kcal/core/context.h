@@ -24,6 +24,7 @@ struct KCAL_Config {
     int fixBits;
     int threadCount;
     int worldSize;
+    bool useSMAlg;
 };
 
 class Context {
