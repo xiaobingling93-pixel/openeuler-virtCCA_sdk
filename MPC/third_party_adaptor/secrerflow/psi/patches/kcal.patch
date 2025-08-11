@@ -123,16 +123,17 @@ index e3e6991..c35b8da 100644
    }
 diff --git a/examples/pir/config/kcal_pir_receiver.json b/examples/pir/config/kcal_pir_receiver.json
 new file mode 100644
-index 0000000..14e97e6
+index 0000000..71010cf
 --- /dev/null
 +++ b/examples/pir/config/kcal_pir_receiver.json
-@@ -0,0 +1,21 @@
+@@ -0,0 +1,22 @@
 +{
 +  "kcal_pir_receiver_config": {
 +    "threads": 16,
 +    "query_file": "/tmp/query.csv",
 +    "output_file": "/tmp/result.csv",
-+    "is_dummy_mode": true
++    "is_dummy_mode": true,
++    "use_sm_alg": false
 +  },
 +  "link_config": {
 +    "parties": [
@@ -151,14 +152,15 @@ index 0000000..14e97e6
 \ No newline at end of file
 diff --git a/examples/pir/config/kcal_pir_sender.json b/examples/pir/config/kcal_pir_sender.json
 new file mode 100644
-index 0000000..c2579cb
+index 0000000..2136262
 --- /dev/null
 +++ b/examples/pir/config/kcal_pir_sender.json
-@@ -0,0 +1,19 @@
+@@ -0,0 +1,20 @@
 +{
 +  "kcal_pir_sender_config": {
 +    "threads": 16,
-+    "db_file": "/tmp/db.csv"
++    "db_file": "/tmp/db.csv",
++    "use_sm_alg": false
 +  },
 +  "link_config": {
 +    "parties": [
@@ -205,16 +207,17 @@ index 9327ec7..42f2a83 100644
  ## 2P UB PSI
 diff --git a/examples/psi/config/kcal_receiver.json b/examples/psi/config/kcal_receiver.json
 new file mode 100644
-index 0000000..72e2694
+index 0000000..5ba6863
 --- /dev/null
 +++ b/examples/psi/config/kcal_receiver.json
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,43 @@
 +{
 +  "psi_config": {
 +    "protocol_config": {
 +      "protocol": "PROTOCOL_KCAL",
 +      "kcal_config": {
-+        "thread_count": 16
++        "thread_count": 16,
++        "use_sm_alg": false
 +      },
 +      "role": "ROLE_RECEIVER",
 +      "broadcast_result": true
@@ -253,16 +256,17 @@ index 0000000..72e2694
 +}
 diff --git a/examples/psi/config/kcal_sender.json b/examples/psi/config/kcal_sender.json
 new file mode 100644
-index 0000000..34abca9
+index 0000000..63bc6c7
 --- /dev/null
 +++ b/examples/psi/config/kcal_sender.json
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,43 @@
 +{
 +  "psi_config": {
 +    "protocol_config": {
 +      "protocol": "PROTOCOL_KCAL",
 +      "kcal_config": {
-+        "thread_count": 16
++        "thread_count": 16,
++        "use_sm_alg": false
 +      },
 +      "role": "ROLE_SENDER",
 +      "broadcast_result": true
@@ -367,10 +371,10 @@ index 0000000..72f2f14
 +)
 diff --git a/psi/algorithm/kcal_pir/pir_receiver.cc b/psi/algorithm/kcal_pir/pir_receiver.cc
 new file mode 100644
-index 0000000..3761e18
+index 0000000..14260e4
 --- /dev/null
 +++ b/psi/algorithm/kcal_pir/pir_receiver.cc
-@@ -0,0 +1,129 @@
+@@ -0,0 +1,130 @@
 +#include "psi/algorithm/kcal_pir/pir_receiver.h"
 +
 +#include <fstream>
@@ -398,6 +402,7 @@ index 0000000..3761e18
 +  kcal_cfg.fixBits = 1;
 +  kcal_cfg.nodeId = lctx_->Rank();
 +  kcal_cfg.threadCount = options_->thread_count;
++  kcal_cfg.useSMAlg = options_->use_sm_alg;
 +  kcal_cfg.worldSize = lctx_->WorldSize();
 +
 +  TEE_NET_RES net_res;
@@ -502,10 +507,10 @@ index 0000000..3761e18
 +}  // namespace psi::kcal::pir
 diff --git a/psi/algorithm/kcal_pir/pir_receiver.h b/psi/algorithm/kcal_pir/pir_receiver.h
 new file mode 100644
-index 0000000..98de787
+index 0000000..25b4ebb
 --- /dev/null
 +++ b/psi/algorithm/kcal_pir/pir_receiver.h
-@@ -0,0 +1,48 @@
+@@ -0,0 +1,49 @@
 +#pragma once
 +
 +#include "kcal/core/context.h"
@@ -521,6 +526,7 @@ index 0000000..98de787
 +  std::string query_file;
 +  std::string result_file;
 +  bool is_dummy_mode = false;
++  bool use_sm_alg = false;
 +};
 +
 +class KcalPirReceiver {
@@ -556,10 +562,10 @@ index 0000000..98de787
 +}  // namespace psi::kcal::pir
 diff --git a/psi/algorithm/kcal_pir/pir_sender.cc b/psi/algorithm/kcal_pir/pir_sender.cc
 new file mode 100644
-index 0000000..3bdd810
+index 0000000..4cca4c9
 --- /dev/null
 +++ b/psi/algorithm/kcal_pir/pir_sender.cc
-@@ -0,0 +1,156 @@
+@@ -0,0 +1,157 @@
 +#include "psi/algorithm/kcal_pir/pir_sender.h"
 +
 +#include "psi/kcal_adaptor/global_manager.h"
@@ -585,6 +591,7 @@ index 0000000..3bdd810
 +  kcal_cfg.fixBits = 1;
 +  kcal_cfg.nodeId = lctx_->Rank();
 +  kcal_cfg.threadCount = options_->thread_count;
++  kcal_cfg.useSMAlg = options_->use_sm_alg;
 +  kcal_cfg.worldSize = lctx_->WorldSize();
 +
 +  TEE_NET_RES net_res;
@@ -718,10 +725,10 @@ index 0000000..3bdd810
 +}  // namespace psi::kcal::pir
 diff --git a/psi/algorithm/kcal_pir/pir_sender.h b/psi/algorithm/kcal_pir/pir_sender.h
 new file mode 100644
-index 0000000..f44bd39
+index 0000000..f43f903
 --- /dev/null
 +++ b/psi/algorithm/kcal_pir/pir_sender.h
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,56 @@
 +#pragma once
 +
 +#include "kcal/core/context.h"
@@ -733,6 +740,7 @@ index 0000000..f44bd39
 +struct SenderOptions {
 +  int thread_count = 1;
 +  std::string db_file;
++  bool use_sm_alg = false;
 +};
 +
 +class KcalPirSender {
@@ -812,10 +820,10 @@ index 0000000..14dd8df
 +)
 diff --git a/psi/algorithm/kcal_psi/receiver.cc b/psi/algorithm/kcal_psi/receiver.cc
 new file mode 100644
-index 0000000..5a6bd69
+index 0000000..077f659
 --- /dev/null
 +++ b/psi/algorithm/kcal_psi/receiver.cc
-@@ -0,0 +1,62 @@
+@@ -0,0 +1,63 @@
 +#include "psi/algorithm/kcal_psi/receiver.h"
 +
 +#include <chrono>
@@ -841,6 +849,7 @@ index 0000000..5a6bd69
 +  kcal_cfg.fixBits = 1;
 +  kcal_cfg.nodeId = lctx_->Rank();
 +  kcal_cfg.threadCount = config_.protocol_config().kcal_config().thread_count();
++  kcal_cfg.useSMAlg = config_.protocol_config().kcal_config().use_sm_alg();
 +  kcal_cfg.worldSize = lctx_->WorldSize();
 +  // 网络接口
 +  TEE_NET_RES net_res;
@@ -921,10 +930,10 @@ index 0000000..247e2cb
 +}  // namespace psi::kcal
 diff --git a/psi/algorithm/kcal_psi/sender.cc b/psi/algorithm/kcal_psi/sender.cc
 new file mode 100644
-index 0000000..551b0ff
+index 0000000..0a529a2
 --- /dev/null
 +++ b/psi/algorithm/kcal_psi/sender.cc
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,61 @@
 +#include "psi/algorithm/kcal_psi/sender.h"
 +
 +#include "kcal/operator/kcal_psi.h"
@@ -948,6 +957,7 @@ index 0000000..551b0ff
 +  kcal_cfg.fixBits = 1;
 +  kcal_cfg.nodeId = lctx_->Rank();
 +  kcal_cfg.threadCount = config_.protocol_config().kcal_config().thread_count();
++  kcal_cfg.useSMAlg = config_.protocol_config().kcal_config().use_sm_alg();
 +  kcal_cfg.worldSize = lctx_->WorldSize();
 +  // 网络接口
 +  TEE_NET_RES net_res;
@@ -1087,10 +1097,10 @@ index f57f1eb..a96a8ea 100644
        YACL_THROW("Protocol is unspecified.");
    }
 diff --git a/psi/apps/psi_launcher/launch.cc b/psi/apps/psi_launcher/launch.cc
-index 31deab7..6c6780f 100644
+index 31deab7..8585a46 100644
 --- a/psi/apps/psi_launcher/launch.cc
 +++ b/psi/apps/psi_launcher/launch.cc
-@@ -320,6 +320,30 @@ PirResultReport RunDkPir(const DkPirSenderConfig& dk_pir_sender_config,
+@@ -320,6 +320,38 @@ PirResultReport RunDkPir(const DkPirSenderConfig& dk_pir_sender_config,
    return PirResultReport();
  }
  
@@ -1102,6 +1112,10 @@ index 31deab7..6c6780f 100644
 +  options.is_dummy_mode = kcal_pir_receiver_config.is_dummy_mode();
 +  options.query_file = kcal_pir_receiver_config.query_file();
 +  options.result_file = kcal_pir_receiver_config.output_file();
++  options.use_sm_alg = kcal_pir_receiver_config.use_sm_alg();
++  if (options.use_sm_alg) {
++    SPDLOG_INFO("KCAL is using SM algorithms");
++  }
 +  int match_cnt = 0;
 +  kcal::pir::RunKcalReceiver(options, lctx, &match_cnt);
 +  PirResultReport report;
@@ -1114,6 +1128,10 @@ index 31deab7..6c6780f 100644
 +  kcal::pir::SenderOptions options;
 +  options.thread_count = kcal_pir_sender_config.threads();
 +  options.db_file = kcal_pir_sender_config.db_file();
++  options.use_sm_alg = kcal_pir_sender_config.use_sm_alg();
++  if (options.use_sm_alg) {
++    SPDLOG_INFO("KCAL is using SM algorithms");
++  }
 +  kcal::pir::RunKcalSender(options, lctx);
 +  return {};
 +}
@@ -1452,10 +1470,10 @@ index 265ebaa..76b2881 100644
    }
  }
 diff --git a/psi/proto/pir.proto b/psi/proto/pir.proto
-index 094ecba..4fc74c8 100644
+index 094ecba..91f77da 100644
 --- a/psi/proto/pir.proto
 +++ b/psi/proto/pir.proto
-@@ -127,6 +127,33 @@ message ApsiReceiverConfig {
+@@ -127,6 +127,37 @@ message ApsiReceiverConfig {
    uint32 query_batch_size = 10;
  }
  
@@ -1472,6 +1490,8 @@ index 094ecba..4fc74c8 100644
 +  // COLS ARE IGNORED.
 +  // 2. NO HEADERS ARE ALLOWED
 +  string db_file = 2;
++
++  bool use_sm_alg = 3;
 +}
 +
 +message KcalPirReceiverConfig {
@@ -1484,13 +1504,15 @@ index 094ecba..4fc74c8 100644
 +  string output_file = 3;
 +
 +  bool is_dummy_mode = 4;
++
++  bool use_sm_alg = 5;
 +}
 +
  message DkPirSenderConfig {
    enum Mode {
      MODE_UNSPECIFIED = 0;
 diff --git a/psi/proto/psi_v2.proto b/psi/proto/psi_v2.proto
-index 5682ef7..c56b575 100644
+index 5682ef7..4a5b52f 100644
 --- a/psi/proto/psi_v2.proto
 +++ b/psi/proto/psi_v2.proto
 @@ -60,6 +60,8 @@ enum Protocol {
@@ -1502,18 +1524,19 @@ index 5682ef7..c56b575 100644
  }
  
  // Configs for ECDH protocol.
-@@ -92,6 +94,10 @@ message Rr22Config {
+@@ -92,6 +94,11 @@ message Rr22Config {
    bool low_comm_mode = 2;
  }
  
 +message KcalConfig {
 +  uint32 thread_count = 1;
++  bool use_sm_alg = 2;
 +}
 +
  // Any items related to PSI protocols.
  message ProtocolConfig {
    Protocol protocol = 1;
-@@ -109,6 +115,8 @@ message ProtocolConfig {
+@@ -109,6 +116,8 @@ message ProtocolConfig {
  
    // For RR22 protocol.
    Rr22Config rr22_config = 6;

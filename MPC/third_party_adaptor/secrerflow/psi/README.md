@@ -181,7 +181,8 @@ scp /tmp/receiver_input.csv \
     "protocol_config": {
       "protocol": "PROTOCOL_KCAL",
       "kcal_config": {
-        "thread_count": 16								// 线程数按需修改，目前固定 16 线程
+        "thread_count": 16,								// 线程数按需修改，目前固定 16 线程
+		"use_sm_alg": false								// 是否启用国密算法
       },
       "role": "ROLE_SENDER",
       "broadcast_result": true							
@@ -265,7 +266,8 @@ cd /home/admin/dev/psi
     "threads": 16,									// 多线程处理，按需修改
     "query_file": "/tmp/query.csv",					// 要查询的 key 的集合文件位置，按需修改
     "output_file": "/tmp/result.csv",				// 查询结果 value 的保存位置，按需修改
-    "is_dummy_mode": true							// 查询的 key 是否进行 dummy，按需修改
+    "is_dummy_mode": true,							// 查询的 key 是否进行 dummy，按需修改
+	"use_sm_alg": false								// 是否启用国密算法
   },
   "link_config": {									// 两个参与方的通信 ip 和 端口，按需修改
     "parties": [
@@ -286,7 +288,8 @@ cd /home/admin/dev/psi
 {
   "kcal_pir_sender_config": {
     "threads": 16,									// 多线程处理，按需修改
-    "db_file": "/tmp/db.csv"						// 数据库文件位置
+    "db_file": "/tmp/db.csv",						// 数据库文件位置
+	"use_sm_alg": false								// 是否启用国密算法
   },
   "link_config": {									// 两个参与方的通信 ip 和 端口，按需修改
     "parties": [
