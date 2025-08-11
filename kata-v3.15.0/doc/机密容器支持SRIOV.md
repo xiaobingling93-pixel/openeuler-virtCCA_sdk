@@ -54,14 +54,119 @@
 
         ![](figures/zh-cn_image_0000002304611986.png)
 
-3.  修改ctr容器 配置文件支持vfio设备冷插拔。
+> 前提条件：已参照**kata-deploy自动化部署**章节完成机密容器环境部署
+## ctr命令启动使能SRIOV的机密容器
+1.  修改ctr默认容器运行时配置文件支持vfio设备冷插拔。
     `vim /etc/kata-containers/configuration.toml`
-    添加：`cold_plug_vfio = "root-port"`
+    在`hypervisor.qemu`标签下添加：`cold_plug_vfio = "root-port"`
 
-4.  ctr启动机密容器时通过--device透传vfio设备。
+2.  ctr启动机密容器时通过--device透传vfio设备。
 
     ctr run --runtime "io.containerd.kata.v2" --device /dev/vfio/91 --rm -t docker.io/library/busybox:latest kata-test /bin/sh
 
     ![](figures/zh-cn_image_0000002338371509.png)
 
     容器中可以看到直通的VF设备ID。
+
+
+## k8s启动使能SRIOV的机密容器
+1. 修改`kata-qemu-virtcca`容器运行时配置文件支持vfio设备冷插拔。
+    `vim /opt/kata/share/defaults/kata-containers/configuration-qemu-virtcca.toml`
+    在`hypervisor.qemu`标签下添加：`cold_plug_vfio = "root-port"`
+
+2. 修改containerd配置文件以支持cdi设备注入的注解。
+    `vim /etc/containerd/config.toml`
+    在`.containerd.runtimes.kata-qemu-virtcca`标签下作如下修改：
+    - 新增：`privileged_without_host_devices_all_devices_allowed = true`
+    - pod_annotations中新增：`"cdi.k8s.io/vfio*"`
+
+    完成修改后的内容如下：
+```shell
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.kata-qemu-virtcca]
+runtime_type = "io.containerd.kata-qemu.v2"
+runtime_path = "/opt/kata/bin/containerd-shim-kata-v2"
+privileged_without_host_devices = true
+privileged_without_host_devices_all_devices_allowed = true
+pod_annotations = ["io.katacontainers.*", "cdi.k8s.io/vfio*"]
+```
+`systemctl daemon-reload && systemctl restart containerd` 使配置生效。
+
+3. 新增cdi设备注入配置文件
+```shell
+mkdir -p /etc/cdi
+cp ./virtCCA_sdk/kata-v3.15.0/conf/pcipc-nic.json ./virtCCA_sdk/kata-v3.15.0/conf/pcipc-nvme.json /etc/cdi
+```
+/etc/cdi下网卡和磁盘设备配置文件中用户需要关注并针对性修改的是：
+- name：该设备的唯一标志，不同设备name彼此不同，容器配置中通过指定name来注入对应设备。
+- path：该设备对应的vfio路径，参考上文**创建vfio设备**小节创建该路径。
+（devices数组支持添加多个设备的描述）
+
+4. k8s启动机密容器并直通网卡
+步骤：
+- 1）完成vfio设备创建。
+- 2）修改`/etc/cdi/pcipc-nic.json`完成待直通的vfio设备配置（name和path）。
+- 3）容器配置文件.yaml中新增`cdi.k8s.io/vfio-pcipc`注解和initContainer预配网（可选），示例配置如下：
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-kata-qemu-virtcca
+  annotations:
+    io.containerd.cri.runtime-handler: "kata-qemu-virtcca"
+    cdi.k8s.io/vfio-pcipc: "pcipc/nic=1" # 1即/etc/cdi/pcipc-nic.json中的name字段内容
+spec:
+  runtimeClassName: kata-qemu-virtcca
+  terminationGracePeriodSeconds: 5
+  initContainers: # 用于使用直通的网卡预配置网络（可选）
+  - name: network-setup
+    image: registry.hw.com:5000/ubuntu-net:latest
+    imagePullPolicy: Always
+    securityContext:
+      privileged: true
+    command: ["sh", "-c"]
+    args: ["ip link set eth1 up && ip addr add 192.168.100.90/24 dev eth1 && ip route replace default via 192.168.100.1"]
+  containers:
+  - name: box-1
+    image: registry.hw.com:5000/busybox:latest
+    imagePullPolicy: Always
+    command:
+    - sh
+    tty: true
+```
+- 4）启动机密容器，进到容器中ip a可以看到直通的网卡。
+
+5. k8s启动机密容器并直通nvme磁盘
+步骤：
+- 1）完成vfio设备创建。
+- 2）修改`/etc/cdi/pcipc-nvme.json`完成待直通的vfio设备配置（name和path）。
+- 3）修改`kata-qemu-virtcca`容器运行时配置文件打开guest_hook_path注释：
+    `vim /opt/kata/share/defaults/kata-containers/configuration-qemu-virtcca.toml`，确保`hypervisor.qemu`标签下：`guest_hook_path = "/usr/share/oci/hooks"`。
+- 4）部署磁盘挂载hook脚本到文件系统：
+```shell
+# 确定待直通的nvme磁盘名（需支持SRIOV），针对性修改`./virtCCA_sdk/kata-v3.15.0/conf/pcipc-nvme-hook.sh`中的`$DEVICE`宏定义值
+mount -o loop,offset=3145728 /opt/kata/share/kata-containers/kata-containers-confidential.img /mnt
+mkdir -p /mnt/usr/share/oci/hooks/prestart
+cd virtCCA_sdk && cp ./kata-v3.15.0/conf/pcipc-nvme-hook.sh /mnt/usr/share/oci/hooks/prestart
+umount /mnt
+```
+- 5）容器配置文件.yaml中新增`cdi.k8s.io/vfio-pcipc`注解，示例配置如下：
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-kata-qemu-virtcca
+  annotations:
+    io.containerd.cri.runtime-handler: "kata-qemu-virtcca"
+    cdi.k8s.io/vfio-pcipc: "pcipc/nvme=1" # 1即/etc/cdi/pcipc-nvme.json中的name字段内容
+spec:
+  runtimeClassName: kata-qemu-virtcca
+  terminationGracePeriodSeconds: 5
+  containers:
+  - name: box-1
+    image: registry.hw.com:5000/busybox:latest
+    imagePullPolicy: Always
+    command:
+    - sh
+    tty: true
+```
+6）启动机密容器，容器根目录下新增`pcipci_disk`目录，即直通磁盘的挂载点，可直接读写。
