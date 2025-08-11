@@ -1,19 +1,20 @@
-From 3dd973067cdc62f38a9513fb5e957eac5b77bd21 Mon Sep 17 00:00:00 2001
+From 27012c4c79c4b1ff09e86a324955ce241fd32b48 Mon Sep 17 00:00:00 2001
 From: fuju <fuju1@huawei.com>
-Date: Wed, 18 Jun 2025 06:03:36 -0400
-Subject: [PATCH] Support VirtCCA
+Date: Mon, 11 Aug 2025 09:57:42 -0400
+Subject: [PATCH 1/2] Support VirtCCA
 
 ---
  src/agent/Cargo.toml                               |   2 +-
+ src/agent/src/device/mod.rs                        |   5 +-
  src/runtime-rs/arch/aarch64-options.mk             |   1 +
  src/runtime/Makefile                               |  22 +
  src/runtime/arch/arm64-options.mk                  |   2 +
- .../config/configuration-qemu-virtcca.toml.in      | 677 +++++++++++++++++++++
+ .../config/configuration-qemu-virtcca.toml.in      | 684 +++++++++++++++++++++
  src/runtime/pkg/govmm/qemu/qemu.go                 |  10 +
  src/runtime/virtcontainers/hypervisor.go           |   5 +
  .../virtcontainers/hypervisor_linux_arm64.go       |  60 +-
  src/runtime/virtcontainers/qemu_arm64.go           |  69 ++-
- 9 files changed, 835 insertions(+), 13 deletions(-)
+ 10 files changed, 846 insertions(+), 14 deletions(-)
  create mode 100644 src/runtime/config/configuration-qemu-virtcca.toml.in
 
 diff --git a/src/agent/Cargo.toml b/src/agent/Cargo.toml
@@ -29,6 +30,22 @@ index 60c96e8..aa29848 100644
  
  # Agent Policy
  cdi = { git = "https://github.com/cncf-tags/container-device-interface-rs", rev = "fba5677a8e7cc962fc6e495fcec98d7d765e332a" }
+diff --git a/src/agent/src/device/mod.rs b/src/agent/src/device/mod.rs
+index eb07e0b..ca07b36 100644
+--- a/src/agent/src/device/mod.rs
++++ b/src/agent/src/device/mod.rs
+@@ -266,7 +266,10 @@ pub async fn handle_cdi_devices(
+         }
+     }
+ 
+-    let (_, devices) = parse_annotations(spec.annotations().as_ref().unwrap())?;
++    let (_, mut devices) = parse_annotations(spec.annotations().as_ref().unwrap())?;
++
++    // filter out cdi device injection for pcipc/vfiodevs during container creation
++    devices.retain(|device| !device.starts_with("pcipc/"));
+ 
+     if devices.is_empty() {
+         info!(logger, "no CDI annotations, no devices to inject");
 diff --git a/src/runtime-rs/arch/aarch64-options.mk b/src/runtime-rs/arch/aarch64-options.mk
 index dc1f4ad..bdcff7e 100644
 --- a/src/runtime-rs/arch/aarch64-options.mk
@@ -149,10 +166,10 @@ index ca19c8c..9e4f7bc 100644
  FCCMD := firecracker
 diff --git a/src/runtime/config/configuration-qemu-virtcca.toml.in b/src/runtime/config/configuration-qemu-virtcca.toml.in
 new file mode 100644
-index 0000000..e055e34
+index 0000000..24c025d
 --- /dev/null
 +++ b/src/runtime/config/configuration-qemu-virtcca.toml.in
-@@ -0,0 +1,677 @@
+@@ -0,0 +1,684 @@
 +# Copyright (c) 2017-2019 Intel Corporation
 +# Copyright (c) 2021 Adobe Inc.
 +#
@@ -501,6 +518,13 @@ index 0000000..e055e34
 +# a bridge.
 +# Default false
 +#hotplug_vfio_on_root_bus = true
++
++# In a confidential compute environment hot-plugging can compromise
++# security.
++# Enable cold-plugging of VFIO devices to a bridge-port,
++# root-port or switch-port.
++# The default setting is  "no-port", which means disabled.
++#cold_plug_vfio = "root-port"
 +
 +# Before hot plugging a PCIe device, you need to add a pcie_root_port device.
 +# Use this parameter when using some large PCI bar devices, such as Nvidia GPU

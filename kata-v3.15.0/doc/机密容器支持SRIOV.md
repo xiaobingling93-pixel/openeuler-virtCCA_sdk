@@ -124,7 +124,7 @@ spec:
     securityContext:
       privileged: true
     command: ["sh", "-c"]
-    args: ["ip link set eth1 up && ip addr add 192.168.100.90/24 dev eth1 && ip route replace default via 192.168.100.1"]
+    args: ["ip link set eth1 up && ip addr add 192.168.100.90/24 dev eth1"]
   containers:
   - name: box-1
     image: registry.hw.com:5000/busybox:latest
