@@ -8,7 +8,7 @@ virtCCA（包含 TEE 虚拟化的 ARM 机密计算架构）的软件开发工具
 
 ## 使用说明
 - [远程证明](#远程证明)
-- [kata(cc0.8.0版本)](https://gitee.com/openeuler/virtCCA_sdk/blob/master/kata-cc0.8.0/doc/zh-cn/kata%E6%9C%BA%E5%AF%86%E5%AE%B9%E5%99%A8.md)
+- [kata(cc0.8.0版本)](https://gitee.com/openeuler/virtCCA_sdk/blob/master/kata-cc0.8.0/doc/zh-cn/confidential_container/kata%E6%9C%BA%E5%AF%86%E5%AE%B9%E5%99%A8.md)
 - [kata(v3.15.0版本)](https://gitee.com/openeuler/virtCCA_sdk/blob/master/kata-v3.15.0/doc/kata%E6%9C%BA%E5%AF%86%E5%AE%B9%E5%99%A8.md)
     **机密容器推荐使用此版本**
 - mpc使用样例

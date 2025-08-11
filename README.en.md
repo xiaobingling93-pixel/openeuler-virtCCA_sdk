@@ -9,7 +9,7 @@ Supporting the openEuler series of operating systems under the Kunpeng architect
 ## Instructions
 - [Remote attestation](https://gitee.com/openeuler/virtCCA_sdk/blob/master/README.md#%E8%BF%9C%E7%A8%8B%E8%AF%81%E6%98%8E)
 
-- [Kata(cc0.8.0 version)](https://gitee.com/openeuler/virtCCA_sdk/blob/master/kata-cc0.8.0/doc/en-us/kata-confidential-containers.md)
+- [Kata(cc0.8.0 version)](https://gitee.com/openeuler/virtCCA_sdk/blob/master/kata-cc0.8.0/doc/en-us/confidential_container/kata-confidential-containers.md)
 
 - [Kata(v3.15.0 version)](https://gitee.com/openeuler/virtCCA_sdk/blob/master/kata-v3.15.0/doc/kata%E6%9C%BA%E5%AF%86%E5%AE%B9%E5%99%A8.md)
 

@@ -1,0 +1,16 @@
+{
+  "cdiVersion": "0.6.0",
+  "kind": "pcipc/nic",
+  "devices": [
+    {
+      "name": "1",
+      "containerEdits": {
+        "deviceNodes": [
+          {
+            "path": "/dev/vfio/77"
+          }
+        ]
+      }
+    }
+  ]
+}
