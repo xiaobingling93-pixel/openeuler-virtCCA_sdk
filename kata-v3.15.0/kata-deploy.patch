@@ -1,7 +1,7 @@
-From 6ba0f3d40854d9abe7e1b66100d77426046e69a8 Mon Sep 17 00:00:00 2001
+From 4b8948afdec7dea9e1b1031833b937006e54ec25 Mon Sep 17 00:00:00 2001
 From: fuju <fuju1@huawei.com>
-Date: Tue, 10 Jun 2025 05:04:29 -0400
-Subject: [PATCH] kata-deploy
+Date: Mon, 11 Aug 2025 09:59:34 -0400
+Subject: [PATCH 2/2] kata-deploy
 
 ---
  .../osbuilder/rootfs-builder/ubuntu/Dockerfile.in  |  9 +++--
@@ -14,10 +14,12 @@ Subject: [PATCH] kata-deploy
  .../runtimeclasses/kata-qemu-virtcca.yaml          | 13 +++++++
  .../runtimeclasses/kata-runtimeClasses.yaml        | 14 ++++++++
  tools/packaging/kernel/build-kernel.sh             | 37 +++++++++++++++++--
+ .../packaging/kernel/patches/6.6.x/no_patches.txt  |  0
  .../build-static-coco-guest-components.sh          | 13 +++----
  versions.yaml                                      | 15 +++++++-
- 12 files changed, 149 insertions(+), 24 deletions(-)
+ 13 files changed, 149 insertions(+), 24 deletions(-)
  create mode 100644 tools/packaging/kata-deploy/runtimeclasses/kata-qemu-virtcca.yaml
+ create mode 100644 tools/packaging/kernel/patches/6.6.x/no_patches.txt
 
 diff --git a/tools/osbuilder/rootfs-builder/ubuntu/Dockerfile.in b/tools/osbuilder/rootfs-builder/ubuntu/Dockerfile.in
 index 16fa213..813ff3f 100644
@@ -87,7 +89,7 @@ index 9225dec..fe04ac0 100644
                value: "qemu"
              - name: CREATE_RUNTIMECLASSES
 diff --git a/tools/packaging/kata-deploy/local-build/Makefile b/tools/packaging/kata-deploy/local-build/Makefile
-index d6aa51b..ba65eee 100644
+index d6aa51b..25cb0cb 100644
 --- a/tools/packaging/kata-deploy/local-build/Makefile
 +++ b/tools/packaging/kata-deploy/local-build/Makefile
 @@ -49,6 +49,17 @@ BASE_TARBALLS = serial-targets \
@@ -338,7 +340,7 @@ index 01e13b7..2242b1e 100644
 +    katacontainers.io/kata-runtime: "true"
 +---
 diff --git a/tools/packaging/kernel/build-kernel.sh b/tools/packaging/kernel/build-kernel.sh
-index c887b28..933dbc3 100755
+index c887b28..53b7483 100755
 --- a/tools/packaging/kernel/build-kernel.sh
 +++ b/tools/packaging/kernel/build-kernel.sh
 @@ -64,6 +64,8 @@ PREFIX="${PREFIX:-/usr}"
@@ -427,8 +429,11 @@ index c887b28..933dbc3 100755
  			s)
  				skip_config_checks="true"
  				;;
+diff --git a/tools/packaging/kernel/patches/6.6.x/no_patches.txt b/tools/packaging/kernel/patches/6.6.x/no_patches.txt
+new file mode 100644
+index 0000000..e69de29
 diff --git a/tools/packaging/static-build/coco-guest-components/build-static-coco-guest-components.sh b/tools/packaging/static-build/coco-guest-components/build-static-coco-guest-components.sh
-index 669773a..d204668 100755
+index 669773a..87e27a9 100755
 --- a/tools/packaging/static-build/coco-guest-components/build-static-coco-guest-components.sh
 +++ b/tools/packaging/static-build/coco-guest-components/build-static-coco-guest-components.sh
 @@ -18,21 +18,18 @@ source "${script_dir}/../../scripts/lib.sh"

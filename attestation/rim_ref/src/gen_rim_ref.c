@@ -717,7 +717,7 @@ static void print_help(const char *name)
     printf("Generate rim reference value, support two three types:\n");
     printf("(a) direct kernel boot without firmware: -k -d [-i] -v -s -m\n");
     printf("(b) firmware-only boot                 : -f -d -v -s -m\n");
-    printf("(c) confidential container boot        : -c -p\n\n");
+    printf("(c) confidential container boot        : -c -p -s -m\n\n");
     printf("Options:\n");
     printf("\t-k/--kernel    kernel_path            :     path to kernel image\n");
     printf("\t-d/--dtb       dtb_path               :     path to device tree dtb file\n");
