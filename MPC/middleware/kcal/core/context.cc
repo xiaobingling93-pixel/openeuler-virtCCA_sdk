@@ -43,8 +43,8 @@ int Context::Init()
     if (config_.useSMAlg) {
         cfgOpts_->setIntValue(teeCfg_, DG_CON_MPC_TEE_INT_IS_SM_ALGORITHM, 1);
     } else {
-		cfgOpts_->setIntValue(teeCfg_, DG_CON_MPC_TEE_INT_IS_SM_ALGORITHM, 0);
-	}
+        cfgOpts_->setIntValue(teeCfg_, DG_CON_MPC_TEE_INT_IS_SM_ALGORITHM, 0);
+    }
 
     return DG_SUCCESS;
 }
