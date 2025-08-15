@@ -42,7 +42,9 @@ int Context::Init()
     cfgOpts_->setIntValue(teeCfg_, DG_CON_MPC_TEE_INT_THREAD_COUNT, config_.threadCount);
     if (config_.useSMAlg) {
         cfgOpts_->setIntValue(teeCfg_, DG_CON_MPC_TEE_INT_IS_SM_ALGORITHM, 1);
-    }
+    } else {
+		cfgOpts_->setIntValue(teeCfg_, DG_CON_MPC_TEE_INT_IS_SM_ALGORITHM, 0);
+	}
 
     return DG_SUCCESS;
 }
