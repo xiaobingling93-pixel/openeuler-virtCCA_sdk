@@ -31,10 +31,12 @@
 
     # clone 仓库，并创建一个本地分支
     git clone --branch "v0.6.0.dev250507" https://github.com/secretflow/psi.git
+    
+    # 进到蚂蚁 psi 目录下
+    cd /home/admin/dev/psi
     git switch -c kcal-on-v0.6.0
 
     # 应用 virtCCA_sdk 下面的 patch
-    cd /home/admin/dev/psi  # 进到蚂蚁 psi 目录下
     git apply /home/admin/dev/virtCCA_sdk/MPC/third_party_adaptor/secrerflow/psi/patches/kcal.patch
     ```
 
