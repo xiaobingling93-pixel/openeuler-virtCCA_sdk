@@ -1,0 +1,389 @@
+From b8bbfb53705f9b3cba86e1a6c4f7bf0af60f04b7 Mon Sep 17 00:00:00 2001
+From: pdhahaha <8511168+pdhahaha@user.noreply.gitee.com>
+Date: Sat, 16 Aug 2025 17:20:31 +0800
+Subject: [PATCH] update resolve net proxy
+
+---
+ tools/osbuilder/image-builder/Dockerfile           |  8 ++++++--
+ tools/packaging/kata-deploy/Dockerfile             |  4 ++++
+ .../kata-deploy/local-build/dockerbuild/Dockerfile | 14 +++++++++++---
+ .../local-build/kata-deploy-binaries-in-docker.sh  |  2 +-
+ tools/packaging/static-build/agent/Dockerfile      | 12 ++++++++++--
+ tools/packaging/static-build/agent/build.sh        |  2 +-
+ .../static-build/coco-guest-components/Dockerfile  | 11 +++++++++--
+ .../static-build/coco-guest-components/build.sh    |  2 +-
+ tools/packaging/static-build/initramfs/Dockerfile  |  8 ++++++++
+ tools/packaging/static-build/initramfs/build.sh    |  1 +
+ tools/packaging/static-build/kernel/Dockerfile     |  6 ++++++
+ tools/packaging/static-build/kernel/build.sh       |  2 +-
+ .../packaging/static-build/pause-image/Dockerfile  |  6 ++++++
+ tools/packaging/static-build/pause-image/build.sh  |  2 +-
+ tools/packaging/static-build/qemu/Dockerfile       |  6 ++++++
+ .../packaging/static-build/qemu/build-base-qemu.sh |  1 +
+ tools/packaging/static-build/qemu/build-qemu.sh    |  2 +-
+ tools/packaging/static-build/shim-v2/Dockerfile    |  8 ++++++++
+ tools/packaging/static-build/shim-v2/build.sh      |  1 +
+ tools/packaging/static-build/virtiofsd/build.sh    |  2 +-
+ .../static-build/virtiofsd/musl/Dockerfile         | 13 +++++++++++--
+ 21 files changed, 95 insertions(+), 18 deletions(-)
+
+diff --git a/tools/osbuilder/image-builder/Dockerfile b/tools/osbuilder/image-builder/Dockerfile
+index ab0a7d006..7c13dfcf9 100644
+--- a/tools/osbuilder/image-builder/Dockerfile
++++ b/tools/osbuilder/image-builder/Dockerfile
+@@ -6,8 +6,12 @@ ARG IMAGE_REGISTRY=registry.fedoraproject.org
+ FROM ${IMAGE_REGISTRY}/fedora:40
+
+ RUN ([ -n "$http_proxy" ] && \
+-    sed -i '$ a proxy='$http_proxy /etc/dnf/dnf.conf ; true) && \
+-    dnf install -y \
++    sed -i '$ a proxy='$http_proxy /etc/dnf/dnf.conf ; true)
++
++COPY certs/* /etc/pki/ca-trust/source/anchors/
++RUN update-ca-trust extract
++
++RUN dnf install -y \
+         e2fsprogs \
+         findutils \
+         gcc \
+diff --git a/tools/packaging/kata-deploy/Dockerfile b/tools/packaging/kata-deploy/Dockerfile
+index 6fbcf578c..fad2c71ab 100644
+--- a/tools/packaging/kata-deploy/Dockerfile
++++ b/tools/packaging/kata-deploy/Dockerfile
+@@ -10,6 +10,10 @@ ARG DESTINATION=/opt/kata-artifacts
+
+ COPY ${KATA_ARTIFACTS} ${WORKDIR}
+
++RUN apk --no-cache add ca-certificates
++COPY certs/* /usr/local/share/ca-certificates/
++RUN update-ca-certificates
++
+ # I understand that in order to be on the safer side, it'd
+ # be good to have the alpine packages pointing to a very
+ # specific version, but this may break anyone else trying
+diff --git a/tools/packaging/kata-deploy/local-build/dockerbuild/Dockerfile b/tools/packaging/kata-deploy/local-build/dockerbuild/Dockerfile
+index eb617c89b..369d484e0 100644
+--- a/tools/packaging/kata-deploy/local-build/dockerbuild/Dockerfile
++++ b/tools/packaging/kata-deploy/local-build/dockerbuild/Dockerfile
+@@ -7,6 +7,10 @@ ENV DEBIAN_FRONTEND=noninteractive
+ ENV INSTALL_IN_GOPATH=false
+ # Required for libxml2-dev
+ ENV TZ=Etc/UTC
++ARG http_proxy
++ARG https_proxy
++ENV http_proxy=$http_proxy https_proxy=$https_proxy
++
+ ARG ARCH
+
+ COPY install_yq.sh /usr/bin/install_yq.sh
+@@ -24,9 +28,13 @@ RUN apt-get update && \
+         git \
+         wget \
+         sudo && \
+-    apt-get clean && rm -rf /var/lib/apt/lists/ && \
+-    install_yq.sh && \
+-    install_oras.sh
++    apt-get clean && rm -rf /var/lib/apt/lists/
++
++COPY certs/* /usr/local/share/ca-certificates/
++RUN update-ca-certificates
++
++RUN install_yq.sh
++RUN install_oras.sh
+
+ ARG IMG_USER=kata-builder
+ ARG UID=1000
+diff --git a/tools/packaging/kata-deploy/local-build/kata-deploy-binaries-in-docker.sh b/tools/packaging/kata-deploy/local-build/kata-deploy-binaries-in-docker.sh
+index 64c46f72d..08300279c 100755
+--- a/tools/packaging/kata-deploy/local-build/kata-deploy-binaries-in-docker.sh
++++ b/tools/packaging/kata-deploy/local-build/kata-deploy-binaries-in-docker.sh
+@@ -69,7 +69,7 @@ if [ ! -d "$HOME/.docker" ]; then
+ fi
+
+ "${script_dir}"/kata-deploy-copy-yq-installer.sh
+-docker build -q -t build-kata-deploy \
++docker build -t build-kata-deploy \
+ 	--build-arg IMG_USER="${USER}" \
+ 	--build-arg UID=${uid} \
+ 	--build-arg GID=${gid} \
+diff --git a/tools/packaging/static-build/agent/Dockerfile b/tools/packaging/static-build/agent/Dockerfile
+index 1eef3dc2f..b49baf044 100644
+--- a/tools/packaging/static-build/agent/Dockerfile
++++ b/tools/packaging/static-build/agent/Dockerfile
+@@ -37,8 +37,12 @@ RUN apt-get update && \
+ 		openssl \
+ 		perl \
+ 		protobuf-compiler && \
+-	apt-get clean && rm -rf /var/lib/apt/lists/ && \
+-	curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${RUST_TOOLCHAIN}
++	apt-get clean && rm -rf /var/lib/apt/lists/
++
++COPY certs/* /usr/local/share/ca-certificates/
++RUN update-ca-certificates
++
++RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${RUST_TOOLCHAIN}
+
+ RUN ARCH=$(uname -m); \
+ 	rust_arch=""; \
+@@ -51,3 +55,7 @@ RUN ARCH=$(uname -m); \
+ 	        *) echo "Unsupported architecture: ${ARCH}" && exit 1 ;; \
+     	esac; \
+ 	rustup target add "${rust_arch}-unknown-linux-${libc}"
++
++ARG http_proxy
++ARG https_proxy
++ENV http_proxy=$http_proxy https_proxy=$https_proxy
+\ No newline at end of file
+diff --git a/tools/packaging/static-build/agent/build.sh b/tools/packaging/static-build/agent/build.sh
+index 6482b9680..e5eed7f69 100755
+--- a/tools/packaging/static-build/agent/build.sh
++++ b/tools/packaging/static-build/agent/build.sh
+@@ -18,7 +18,7 @@ container_image="${AGENT_CONTAINER_BUILDER:-$(get_agent_image_name)}"
+
+ docker pull ${container_image} || \
+ 	(docker $BUILDX build $PLATFORM \
+-	    	--build-arg RUST_TOOLCHAIN="$(get_from_kata_deps ".languages.rust.meta.newest-version")" \
++		--build-arg http_proxy="${https_proxy}" --build-arg https_proxy="${https_proxy}" --build-arg RUST_TOOLCHAIN="$(get_from_kata_deps ".languages.rust.meta.newest-version")" \
+ 		-t "${container_image}" "${script_dir}" && \
+ 	 # No-op unless PUSH_TO_REGISTRY is exported as "yes"
+ 	 push_to_registry "${container_image}")
+diff --git a/tools/packaging/static-build/coco-guest-components/Dockerfile b/tools/packaging/static-build/coco-guest-components/Dockerfile
+index 962d1f27c..c25c53a01 100644
+--- a/tools/packaging/static-build/coco-guest-components/Dockerfile
++++ b/tools/packaging/static-build/coco-guest-components/Dockerfile
+@@ -40,8 +40,15 @@ RUN apt-get update && \
+ 	perl \
+ 	pkg-config \
+ 	protobuf-compiler && \
+-	apt-get clean && rm -rf /var/lib/apt/lists/ && \
+-	curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${RUST_TOOLCHAIN}
++	apt-get clean && rm -rf /var/lib/apt/lists/
++
++COPY certs/* /usr/local/share/ca-certificates/
++RUN update-ca-certificates
++ARG http_proxy
++ARG https_proxy
++ENV http_proxy=$http_proxy https_proxy=$https_proxy
++
++RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${RUST_TOOLCHAIN}
+
+ ENV LIBC="gnu"
+ RUN ARCH=$(uname -m); \
+diff --git a/tools/packaging/static-build/coco-guest-components/build.sh b/tools/packaging/static-build/coco-guest-components/build.sh
+index ff7143c54..ac04d74a5 100755
+--- a/tools/packaging/static-build/coco-guest-components/build.sh
++++ b/tools/packaging/static-build/coco-guest-components/build.sh
+@@ -33,7 +33,7 @@ container_image="${COCO_GUEST_COMPONENTS_CONTAINER_BUILDER:-$(get_coco_guest_com
+
+ docker pull ${container_image} || \
+ 	(docker $BUILDX build $PLATFORM \
+-	    	--build-arg RUST_TOOLCHAIN="${coco_guest_components_toolchain}" \
++		--build-arg http_proxy="${https_proxy}" --build-arg https_proxy="${https_proxy}" --build-arg RUST_TOOLCHAIN="${coco_guest_components_toolchain}" \
+ 		-t "${container_image}" "${script_dir}" && \
+ 	 # No-op unless PUSH_TO_REGISTRY is exported as "yes"
+ 	 push_to_registry "${container_image}")
+diff --git a/tools/packaging/static-build/initramfs/Dockerfile b/tools/packaging/static-build/initramfs/Dockerfile
+index 8ef27be59..3c4bb84e7 100644
+--- a/tools/packaging/static-build/initramfs/Dockerfile
++++ b/tools/packaging/static-build/initramfs/Dockerfile
+@@ -9,6 +9,14 @@ ARG cryptsetup_version=${cryptsetup_version}
+ ARG lvm2_repo=${lvm2_repo}
+ ARG lvm2_version=${lvm2_version}
+
++RUN apt-get update && apt-get upgrade -y && \
++    apt-get --no-install-recommends install -y ca-certificates
++COPY certs/* /usr/local/share/ca-certificates/
++RUN update-ca-certificates
++ARG http_proxy
++ARG https_proxy
++ENV http_proxy=$http_proxy https_proxy=$https_proxy
++
+ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+ ENV TZ=UTC
+diff --git a/tools/packaging/static-build/initramfs/build.sh b/tools/packaging/static-build/initramfs/build.sh
+index a57e40034..dbe0b9672 100755
+--- a/tools/packaging/static-build/initramfs/build.sh
++++ b/tools/packaging/static-build/initramfs/build.sh
+@@ -39,6 +39,7 @@ docker pull ${container_image} || (docker build \
+ 	--build-arg cryptsetup_version="${cryptsetup_version}" \
+ 	--build-arg lvm2_repo="${lvm2_repo}" \
+ 	--build-arg lvm2_version="${lvm2_version}" \
++	--build-arg http_proxy="${https_proxy}" --build-arg https_proxy="${https_proxy}" \
+ 	-t "${container_image}" "${script_dir}" && \
+ 	# No-op unless PUSH_TO_REGISTRY is exported as "yes"
+ 	push_to_registry "${container_image}")
+diff --git a/tools/packaging/static-build/kernel/Dockerfile b/tools/packaging/static-build/kernel/Dockerfile
+index d5eba7b2d..603c8c84d 100644
+--- a/tools/packaging/static-build/kernel/Dockerfile
++++ b/tools/packaging/static-build/kernel/Dockerfile
+@@ -28,3 +28,9 @@ RUN apt-get update && \
+ 	    patch && \
+     if [ "${ARCH}" != "$(uname -m)" ]; then apt-get install --no-install-recommends -y gcc-"${ARCH}"-linux-gnu binutils-"${ARCH}"-linux-gnu; fi && \
+     apt-get clean && apt-get autoclean && rm -rf /var/lib/apt/lists/*
++
++COPY certs/* /usr/local/share/ca-certificates/
++RUN update-ca-certificates
++ARG http_proxy
++ARG https_proxy
++ENV http_proxy=$http_proxy https_proxy=$https_proxy
+\ No newline at end of file
+diff --git a/tools/packaging/static-build/kernel/build.sh b/tools/packaging/static-build/kernel/build.sh
+index 889283663..236b88df1 100755
+--- a/tools/packaging/static-build/kernel/build.sh
++++ b/tools/packaging/static-build/kernel/build.sh
+@@ -45,7 +45,7 @@ fi
+
+ docker pull ${container_image} || \
+ 	(docker ${BUILDX} build ${PLATFORM} \
+-	--build-arg ARCH=${ARCH} -t "${container_image}" "${script_dir}" && \
++	--build-arg ARCH=${ARCH} --build-arg http_proxy="${https_proxy}" --build-arg https_proxy="${https_proxy}" -t "${container_image}" "${script_dir}" && \
+ 	 # No-op unless PUSH_TO_REGISTRY is exported as "yes"
+ 	 push_to_registry "${container_image}")
+
+diff --git a/tools/packaging/static-build/pause-image/Dockerfile b/tools/packaging/static-build/pause-image/Dockerfile
+index acb9df79c..749a3606d 100644
+--- a/tools/packaging/static-build/pause-image/Dockerfile
++++ b/tools/packaging/static-build/pause-image/Dockerfile
+@@ -12,3 +12,9 @@ RUN apt-get update && \
+     curl \
+     umoci \
+     skopeo
++
++COPY certs/* /usr/local/share/ca-certificates/
++RUN update-ca-certificates
++ARG http_proxy
++ARG https_proxy
++ENV http_proxy=$http_proxy https_proxy=$https_proxy
+\ No newline at end of file
+diff --git a/tools/packaging/static-build/pause-image/build.sh b/tools/packaging/static-build/pause-image/build.sh
+index c5be92b18..cf8b2a236 100755
+--- a/tools/packaging/static-build/pause-image/build.sh
++++ b/tools/packaging/static-build/pause-image/build.sh
+@@ -30,7 +30,7 @@ container_image="${PAUSE_IMAGE_CONTAINER_BUILDER:-$(get_pause_image_name)}"
+
+ docker pull ${container_image} || \
+ 	(docker $BUILDX build $PLATFORM \
+-		-t "${container_image}" "${script_dir}" && \
++		-t "${container_image}" --build-arg http_proxy="${https_proxy}" --build-arg https_proxy="${https_proxy}" "${script_dir}" && \
+ 	 # No-op unless PUSH_TO_REGISTRY is exported as "yes"
+ 	 push_to_registry "${container_image}")
+
+diff --git a/tools/packaging/static-build/qemu/Dockerfile b/tools/packaging/static-build/qemu/Dockerfile
+index a6d79f77b..3cb6a8711 100644
+--- a/tools/packaging/static-build/qemu/Dockerfile
++++ b/tools/packaging/static-build/qemu/Dockerfile
+@@ -70,3 +70,9 @@ RUN apt-get update && apt-get upgrade -y && \
+     GCC_ARCH="${ARCH}" && if [ "${ARCH}" = "ppc64le" ]; then GCC_ARCH="powerpc64le"; fi && \
+     if [ "${ARCH}" != "$(uname -m)" ]; then apt-get install --no-install-recommends -y gcc-"${GCC_ARCH}"-linux-gnu; fi && \
+     apt-get clean && rm -rf /var/lib/apt/lists/
++
++COPY certs/* /usr/local/share/ca-certificates/
++RUN update-ca-certificates
++ARG http_proxy
++ARG https_proxy
++ENV http_proxy=$http_proxy https_proxy=$https_proxy
+\ No newline at end of file
+diff --git a/tools/packaging/static-build/qemu/build-base-qemu.sh b/tools/packaging/static-build/qemu/build-base-qemu.sh
+index 727189494..fcbc2084f 100755
+--- a/tools/packaging/static-build/qemu/build-base-qemu.sh
++++ b/tools/packaging/static-build/qemu/build-base-qemu.sh
+@@ -47,6 +47,7 @@ CACHE_TIMEOUT=$(date +"%Y-%m-%d")
+ container_image="${QEMU_CONTAINER_BUILDER:-$(get_qemu_image_name)}"
+ [ "${CROSS_BUILD}" == "true" ] && container_image="${container_image}-cross-build"
+
++cp -r ${script_dir}/certs ${packaging_dir}/
+ ${container_engine} pull ${container_image} || ("${container_engine}" build \
+ 	--build-arg CACHE_TIMEOUT="${CACHE_TIMEOUT}" \
+ 	--build-arg http_proxy="${http_proxy}" \
+diff --git a/tools/packaging/static-build/qemu/build-qemu.sh b/tools/packaging/static-build/qemu/build-qemu.sh
+index 15d60a6bb..47eecafdf 100755
+--- a/tools/packaging/static-build/qemu/build-qemu.sh
++++ b/tools/packaging/static-build/qemu/build-qemu.sh
+@@ -23,7 +23,7 @@ pushd qemu
+ git fetch --depth=1 origin "${QEMU_VERSION_NUM}"
+ git checkout FETCH_HEAD
+ scripts/git-submodule.sh update meson capstone
+-${kata_packaging_scripts}/patch_qemu.sh "${QEMU_VERSION_NUM}" "${kata_packaging_dir}/qemu/patches"
++#${kata_packaging_scripts}/patch_qemu.sh "${QEMU_VERSION_NUM}" "${kata_packaging_dir}/qemu/patches"
+ if [ "$(uname -m)" != "${ARCH}" ] && [ "${ARCH}" == "s390x" ]; then
+        PREFIX="${PREFIX}" ${kata_packaging_scripts}/configure-hypervisor.sh -s "${HYPERVISOR_NAME}" "${ARCH}" | xargs ./configure  --with-pkgversion="${PKGVERSION}" --cc=s390x-linux-gnu-gcc --cross-prefix=s390x-linux-gnu- --prefix="${PREFIX}" --target-list=s390x-softmmu
+ else
+diff --git a/tools/packaging/static-build/shim-v2/Dockerfile b/tools/packaging/static-build/shim-v2/Dockerfile
+index 90d3181c8..65b19da1b 100644
+--- a/tools/packaging/static-build/shim-v2/Dockerfile
++++ b/tools/packaging/static-build/shim-v2/Dockerfile
+@@ -19,6 +19,14 @@ RUN mkdir ${RUSTUP_HOME} ${CARGO_HOME} ${GOCACHE} && \
+ ARG GO_VERSION
+ ARG RUST_VERSION
+
++RUN apt-get update && \
++    apt-get --no-install-recommends install -y ca-certificates
++COPY certs/* /usr/local/share/ca-certificates/
++RUN update-ca-certificates
++ARG http_proxy
++ARG https_proxy
++ENV http_proxy=$http_proxy https_proxy=$https_proxy
++
+ RUN apt-get update && \
+     apt-get install -y --no-install-recommends \
+         build-essential \
+diff --git a/tools/packaging/static-build/shim-v2/build.sh b/tools/packaging/static-build/shim-v2/build.sh
+index 3944b0928..3a596ae69 100755
+--- a/tools/packaging/static-build/shim-v2/build.sh
++++ b/tools/packaging/static-build/shim-v2/build.sh
+@@ -42,6 +42,7 @@ docker pull ${container_image} || \
+ 	(docker ${BUILDX} build ${PLATFORM}  \
+ 		--build-arg GO_VERSION="${GO_VERSION}" \
+ 		--build-arg RUST_VERSION="${RUST_VERSION}" \
++		--build-arg http_proxy="${https_proxy}" --build-arg https_proxy="${https_proxy}" \
+ 		-t "${container_image}" \
+ 		"${script_dir}" && \
+ 	 push_to_registry "${container_image}")
+diff --git a/tools/packaging/static-build/virtiofsd/build.sh b/tools/packaging/static-build/virtiofsd/build.sh
+index fb8ec00b9..f0b40d6a8 100755
+--- a/tools/packaging/static-build/virtiofsd/build.sh
++++ b/tools/packaging/static-build/virtiofsd/build.sh
+@@ -55,7 +55,7 @@ container_image="${VIRTIOFSD_CONTAINER_BUILDER:-$(get_virtiofsd_image_name)}"
+
+ docker pull ${container_image} || \
+ 	(docker $BUILDX build $PLATFORM \
+-		--build-arg RUST_TOOLCHAIN="${virtiofsd_toolchain}" \
++		--build-arg http_proxy="${https_proxy}" --build-arg https_proxy="${https_proxy}" --build-arg RUST_TOOLCHAIN="${virtiofsd_toolchain}" \
+ 		-t "${container_image}" "${script_dir}/${libc}" && \
+ 	 # No-op unless PUSH_TO_REGISTRY is exported as "yes"
+ 	 push_to_registry "${container_image}")
+diff --git a/tools/packaging/static-build/virtiofsd/musl/Dockerfile b/tools/packaging/static-build/virtiofsd/musl/Dockerfile
+index 270aadf52..b1b34fcdc 100644
+--- a/tools/packaging/static-build/virtiofsd/musl/Dockerfile
++++ b/tools/packaging/static-build/virtiofsd/musl/Dockerfile
+@@ -13,6 +13,11 @@ SHELL ["/bin/ash", "-o", "pipefail", "-c"]
+
+ RUN mkdir ${RUSTUP_HOME} ${CARGO_HOME} && chmod -R a+rwX ${RUSTUP_HOME} ${CARGO_HOME}
+
++ARG http_proxy
++ARG https_proxy
++ENV http_proxy=$http_proxy https_proxy=$https_proxy
++COPY certs/* /usr/local/share/ca-certificates/
++
+ RUN apk --no-cache add \
+         bash \
+         curl \
+@@ -20,8 +25,12 @@ RUN apk --no-cache add \
+         git \
+         libcap-ng-static \
+         libseccomp-static \
+-        musl-dev && \
+-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${RUST_TOOLCHAIN}
++        musl-dev \
++	ca-certificates
++
++RUN update-ca-certificates
++
++RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${RUST_TOOLCHAIN}
+
+ RUN ARCH=$(uname -m); \
+     	rust_arch=""; \
+--
+2.46.0
+
