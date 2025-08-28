@@ -1,4 +1,7 @@
 # 机密容器支持SRIOV
+## 规格约束
+kata项目约定了`maxPCIeRootPort=16`，且kata容器的两个网口（lo、eth0）固定占用2个`PCIeRootPort`，故单个pod最大支持cdi注入14个vfio设备。
+
 ## 创建vfio设备
 
 1.  `VirtCCA`设备直通环境配置。
@@ -90,16 +93,57 @@ privileged_without_host_devices_all_devices_allowed = true
 pod_annotations = ["io.katacontainers.*", "cdi.k8s.io/vfio*"]
 ```
 `systemctl daemon-reload && systemctl restart containerd` 使配置生效。
+**注意：系统reboot后，containerd的配置会恢复到初始状态，上述修改需要重新配置。**
 
 3. 新增cdi设备注入配置文件
 ```shell
 mkdir -p /etc/cdi
 cp ./virtCCA_sdk/kata-v3.15.0/conf/pcipc-nic.json ./virtCCA_sdk/kata-v3.15.0/conf/pcipc-nvme.json /etc/cdi
 ```
-/etc/cdi下网卡和磁盘设备配置文件中用户需要关注并针对性修改的是：
+1）/etc/cdi下网卡和磁盘设备配置文件中用户需要关注并针对性修改的是：
 - name：该设备的唯一标志，不同设备name彼此不同，容器配置中通过指定name来注入对应设备。
 - path：该设备对应的vfio路径，参考上文**创建vfio设备**小节创建该路径。
-（devices数组支持添加多个设备的描述）
+
+2）cdi配置文件中的devices数组支持添加多个设备的描述，多设备配置参考如下：
+```json
+{
+  "cdiVersion": "0.6.0",
+  "kind": "pcipc/nic",
+  "devices": [
+    {
+      "name": "1",
+      "containerEdits": {
+        "deviceNodes": [
+          {
+            "path": "/dev/vfio/77"
+          }
+        ]
+      }
+    },
+    {
+      "name": "2",
+      "containerEdits": {
+        "deviceNodes": [
+          {
+            "path": "/dev/vfio/78"
+          }
+        ]
+      }
+    },
+    {
+      "name": "3",
+      "containerEdits": {
+        "deviceNodes": [
+          {
+            "path": "/dev/vfio/79"
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+对应的容器配置文件.yaml中`cdi.k8s.io/vfio-pcipc`注解写法为：`cdi.k8s.io/vfio-pcipc: "pcipc/nic=1,pcipc/nic=2,pcipc/nic=3"`
 
 4. k8s启动机密容器并直通网卡
 步骤：
@@ -135,8 +179,7 @@ spec:
 ```
 - 4）启动机密容器，进到容器中ip a可以看到直通的网卡。
 
-5. k8s启动机密容器并直通nvme磁盘
-步骤：
+5. k8s启动机密容器并直通nvme磁盘步骤：
 - 1）完成vfio设备创建。
 - 2）修改`/etc/cdi/pcipc-nvme.json`完成待直通的vfio设备配置（name和path）。
 - 3）修改`kata-qemu-virtcca`容器运行时配置文件打开guest_hook_path注释：
@@ -146,7 +189,8 @@ spec:
 # 确定待直通的nvme磁盘名（需支持SRIOV），针对性修改`./virtCCA_sdk/kata-v3.15.0/conf/pcipc-nvme-hook.sh`中的`$DEVICE`宏定义值
 mount -o loop,offset=3145728 /opt/kata/share/kata-containers/kata-containers-confidential.img /mnt
 mkdir -p /mnt/usr/share/oci/hooks/prestart
-cd virtCCA_sdk && cp ./kata-v3.15.0/conf/pcipc-nvme-hook.sh /mnt/usr/share/oci/hooks/prestart
+cd virtCCA_sdk
+chmod 755 ./kata-v3.15.0/conf/pcipc-nvme-hook.sh && cp ./kata-v3.15.0/conf/pcipc-nvme-hook.sh /mnt/usr/share/oci/hooks/prestart
 umount /mnt
 ```
 - 5）容器配置文件.yaml中新增`cdi.k8s.io/vfio-pcipc`注解，示例配置如下：

@@ -20,6 +20,7 @@ KATA_SRC_DIR="$WORK_DIR/kata-containers"
 DOCKERFILE_DIR="$KATA_SRC_DIR/build/virtCCA_sdk/kata-v3.15.0/conf"
 CONTAINER_NAME="coco-build-env"
 IMAGE_NAME="coco-builder:latest"
+KATA_DEPLOY_IMAGE_NAME="kata-deploy-test:latest"
 TEST_CONTAINER_IMAGE="docker.io/library/busybox:latest"
 REMOTE_ATTESTATION_DIR="$WORK_DIR/coco/remote_attestation"
 COCO_LOG_DIR="$REMOTE_ATTESTATION_DIR/logs"
@@ -30,9 +31,11 @@ EULER_CERTS_PATH="/etc/pki/ca-trust/source/anchors"
 if [ -n "$HTTP_PROXY" ]; then
     DOCKER_BUILD_ARGS="--build-arg http_proxy="$HTTP_PROXY" --build-arg https_proxy="$HTTP_PROXY""
     DOCKER_RUN_ENV="-e http_proxy="$HTTP_PROXY" -e https_proxy="$HTTP_PROXY""
+    MOUNT_GATEWAY_CA="-v ${EULER_CERTS_PATH}/Huawei_Web_Secure_Internet_Gateway_CA.crt:/etc/ssl/certs/proxy-ca.crt"
 else
     DOCKER_BUILD_ARGS=""
     DOCKER_RUN_ENV=""
+    MOUNT_GATEWAY_CA=""
 fi
 
 # install cosign-linux-arm64
@@ -55,7 +58,7 @@ ENC_KEY_NAME="enc_key_1"
 KBS_ENC_KEY_PATH="/opt/confidential-containers/kbs/repository/default/image_key"
 KBS_SECURITY_POLICY="/opt/confidential-containers/kbs/repository/default/security-policy/test"
 ENC_CONTAINER_IMAGE="ghcr.io/confidential-containers/staged-images/coco-keyprovider:latest"
-PLAIN_IMAGE="${PLAIN_IMAGE:-"busybox:latest"}"
+PLAIN_IMAGE="${PLAIN_IMAGE:-"busybox"}"
 
 # install nydus
 NYDUS_VERSION="v2.3.0"
@@ -106,9 +109,25 @@ EOF
     systemctl daemon-reload
 }
 
+function env_cleanup()
+{
+    systemctl stop containerd
+    rm -rf /etc/containerd/*
+    rm -rf /opt/containerd
+    rm -rf /var/lib/containerd
+    rm -rf /var/lib/containerd-nydus
+
+    systemctl stop kubelet
+    rm -rf /etc/kubernetes/*
+    rm -rf /root/.kube
+    rm -rf /var/lib/etcd
+    rm -rf /var/lib/kubelet/*
+}
+
 # Install and configure Containerd
 function install_containerd()
 {
+    env_cleanup
     source_profile
     echo "===== Starting Containerd installation ====="
 
@@ -188,6 +207,13 @@ function install_containerd()
     echo "Pulling test image..."
     ctr image rm $TEST_CONTAINER_IMAGE
     ctr image pull --skip-verify $TEST_CONTAINER_IMAGE
+    if ctr image ls --quiet | grep -Fe "${TEST_CONTAINER_IMAGE}"; then
+        echo "Success: image ${TEST_CONTAINER_IMAGE} exist"
+    else
+        echo "Error: image ${TEST_CONTAINER_IMAGE} pull failed"
+        echo "Please try to manually pull the image"
+        exit 1
+    fi
 
     echo "Running container test..."
     ctr run --rm \
@@ -255,6 +281,15 @@ EOF
     export -n no_proxy
     unset http_proxy
     unset https_proxy
+
+    # Create /etc/resolv.conf
+    rm -rf /etc/resolv.conf
+cat > /etc/resolv.conf <<EOF
+{
+nameserver 8.8.8.8
+nameserver 114.114.114.114
+}
+EOF
 
     # Create /etc/resolv.conf and modify /etc/hosts
     touch /etc/resolv.conf && echo "$(hostname -I | awk '{print $1}') node" | sudo tee -a /etc/hosts
@@ -367,6 +402,7 @@ EOF
 # Deploy Kata Confidential Containers environment
 function kata_deploy()
 {
+source_profile
 
 # 1. Install dependencies
 echo "===== Installing system dependencies ====="
@@ -497,7 +533,8 @@ cp -v rootCA.crt /etc/pki/ca-trust/source/anchors/
 update-ca-trust extract
 
 # Set local DNS resolution
-grep -q "$REGISTRY_DOMAIN" /etc/hosts || echo "127.0.0.1 $REGISTRY_DOMAIN" >> /etc/hosts
+sudo sed -i "/\b${REGISTRY_DOMAIN}\b/d" /etc/hosts
+echo "127.0.0.1 $REGISTRY_DOMAIN" | sudo tee -a /etc/hosts >/dev/null
 
 # 8. Start private registry
 echo "===== Starting local Registry ($REGISTRY_DOMAIN:$REGISTRY_PORT) ====="
@@ -598,7 +635,7 @@ docker build $DOCKER_BUILD_ARGS \
 }
 
 # Tag image
-docker tag kata-deploy:latest $REGISTRY_DOMAIN:$REGISTRY_PORT/kata-deploy:latest
+docker tag kata-deploy:latest $REGISTRY_DOMAIN:$REGISTRY_PORT/$KATA_DEPLOY_IMAGE_NAME
 
 # Verify registry health before pushing
 echo "> Verifying registry health status..."
@@ -621,7 +658,7 @@ echo "> Pushing image to local Registry (bypassing proxies)..."
     unset https_proxy
 
     # Set timeout
-    timeout 300 docker push "$REGISTRY_DOMAIN:$REGISTRY_PORT/kata-deploy:latest"
+    timeout 300 docker push "$REGISTRY_DOMAIN:$REGISTRY_PORT/$KATA_DEPLOY_IMAGE_NAME"
 ) && {
     echo "> Image pushed successfully"
 } || {
@@ -634,7 +671,7 @@ echo "> Pushing image to local Registry (bypassing proxies)..."
     echo "> Check Registry logs: docker logs $REGISTRY_DOMAIN"
     echo "> Attempt manual push:"
     echo "    unset HTTP_PROXY HTTPS_PROXY"
-    echo "    docker push $REGISTRY_DOMAIN:$REGISTRY_PORT/kata-deploy:latest"
+    echo "    docker push $REGISTRY_DOMAIN:$REGISTRY_PORT/$KATA_DEPLOY_IMAGE_NAME"
     exit 1
 }
 
@@ -699,7 +736,14 @@ echo "Waiting for test Pod startup (15 seconds)..."
 sleep 15
 kubectl get pods
 
-# 15. Completion notice
+# 15. Launching pod with ctr
+mkdir -p /etc/kata-containers
+cp -f /opt/kata/share/defaults/kata-containers/configuration-qemu-virtcca.toml /etc/kata-containers/configuration.toml
+sed -i 's/^\([[:space:]]*shared_fs[[:space:]]*=[[:space:]]*\)"[^"]*"/\1"virtio-fs"/' /etc/kata-containers/configuration.toml
+cp -f /opt/kata/bin/containerd-shim-kata-v2 /usr/bin/containerd-shim-kata-v2
+cp -f /opt/kata/bin/kata-runtime /usr/bin/kata-runtime
+
+# 16. Completion notice
 echo -e "\n===== Deployment successful! ====="
 echo "Test commands:"
 echo "  kubectl logs test-kata-qemu-virtcca"
@@ -988,7 +1032,7 @@ fi
 
 # Finally start AS
 if ! start_service_with_logging "as" \
-    "$REMOTE_ATTESTATION_DIR/grpc-as -c $COCO_CONFIG_DIR/as-config.json"
+    "$REMOTE_ATTESTATION_DIR/grpc-as -s 127.0.0.1:50004 -c $COCO_CONFIG_DIR/as-config.json"
 then
     echo "AS startup failed! Check logs: $COCO_LOG_DIR/as.log"
     tail -n 20 "$COCO_LOG_DIR/as.log"
@@ -1023,7 +1067,8 @@ KEY_FILE="image_key"
 head -c 32 /dev/urandom | openssl enc > "$KEY_FILE"
 
 # Create a container and use the generated key to encrypt the plaintext image within the container.
-docker run -v "$PWD/output:/output" $DOCKER_RUN_ENV $ENC_CONTAINER_IMAGE /encrypt.sh -k "$(base64 < image_key)" -i "kbs:///default/image_key/$ENC_KEY_NAME" -s "docker://$PLAIN_IMAGE" -d -d dir:/output
+echo "If using a proxy, please ensure the ${EULER_CERTS_PATH}/Huawei_Web_Secure_Internet_Gateway_CA.crt exists"
+docker run $MOUNT_GATEWAY_CA -v "$PWD/output:/output" $DOCKER_RUN_ENV $ENC_CONTAINER_IMAGE /encrypt.sh -k "$(base64 < image_key)" -i "kbs:///default/image_key/$ENC_KEY_NAME" -s "docker://$PLAIN_IMAGE:latest" -d dir:/output
 
 # Push encrypted image to local image repository
 skopeo copy dir:output "docker://$REGISTRY_DOMAIN:$REGISTRY_PORT/$PLAIN_IMAGE:encrypted"
@@ -1040,6 +1085,7 @@ cp "$KEY_FILE" "$KBS_ENC_KEY_PATH/$ENC_KEY_NAME"
 
 # Configure the KBS policy
 echo "===== Configure the KBS policy ====="
+mkdir -p "$KBS_SECURITY_POLICY"
 cat > "$KBS_SECURITY_POLICY" <<EOF
 {
     "default": [
@@ -1067,7 +1113,7 @@ metadata:
   name: test-enc
   annotations:
     io.containerd.cri.runtime-handler: "kata-qemu-virtcca"
-    io.katacontainers.config.hypervisor.kernel_params: "agent.debug_console agent.log=debug agent.image_policy_file=kbs:///default/security-policy/test agent.enable_signature_verification=true agent.guest_components_rest_api=all agent.aa_kbc_params=cc_kbc::http:$IP_ADDR:8080""
+    io.katacontainers.config.hypervisor.kernel_params: "agent.debug_console agent.log=debug agent.image_policy_file=kbs:///default/security-policy/test agent.enable_signature_verification=true agent.guest_components_rest_api=all agent.aa_kbc_params=cc_kbc::http:$IP_ADDR:8080"
 spec:
   runtimeClassName: kata-qemu-virtcca
   terminationGracePeriodSeconds: 5
@@ -1091,6 +1137,8 @@ echo    "kubectl apply -f $PWD/test-enc.yaml"
 
 function install_cosign()
 {
+source_profile
+
 # Check if cosign is installed
 if command -v cosign &> /dev/null; then
     echo "cosign installed: $(cosign version | head -n 1)"
@@ -1135,6 +1183,8 @@ fi
 
 function install_skopeo()
 {
+source_profile
+
 # If installed, return directly
 if command -v skopeo &>/dev/null; then
     echo "[INFO]: Skopeo is already installed" >&2
@@ -1210,6 +1260,8 @@ echo "[INFO] Building Skopeo..."
         exit 1
     }
     sudo cp -f bin/skopeo /usr/local/bin/
+    sudo mkdir -p /etc/containers
+    sudo cp -f default-policy.json /etc/containers/policy.json
 ) || exit 1
 
 # Verify installation
@@ -1223,6 +1275,7 @@ echo "[SUCCESS] Installation completed: $(skopeo --version)"
 
 function configurate_nydus()
 {
+source_profile
 mkdir nydus && cd nydus
 
 # Create working directory
@@ -1317,6 +1370,8 @@ if [ ! -f /etc/containerd/config.toml ]; then
 fi
 
 # Add nydus configuration to containerd
+sed -i '/^[[:space:]]*\[proxy_plugins\][[:space:]]*$/d' /etc/containerd/config.toml
+
 if ! grep -q "proxy_plugins.nydus" /etc/containerd/config.toml; then
   sudo tee -a /etc/containerd/config.toml > /dev/null <<'EOF'
 

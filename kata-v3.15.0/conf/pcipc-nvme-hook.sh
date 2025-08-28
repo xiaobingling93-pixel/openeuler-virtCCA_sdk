@@ -27,8 +27,8 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $symbol [$level] $message" | tee -a "$LOG_FILE"
 }
 
-if [ -e "/dev/nvme0n1" ]; then
-    log "INFO" "Found NVMe block device /dev/nvme0n1!"
+if [ -e "$DEVICE" ]; then
+    log "INFO" "Found NVMe block device $DEVICE!"
 
     # step1 Global Mounting of NVMe Devices (Idempotent Operation)
     if ! is_device_mounted; then
@@ -90,6 +90,6 @@ if [ -e "/dev/nvme0n1" ]; then
         fi
     done
 else
-    log "INFO" "NVMe block device /dev/nvme0n1 not found!"
+    log "INFO" "NVMe block device $DEVICE not found!"
     exit 1
 fi

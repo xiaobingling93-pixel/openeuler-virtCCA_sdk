@@ -1,7 +1,7 @@
-From 27012c4c79c4b1ff09e86a324955ce241fd32b48 Mon Sep 17 00:00:00 2001
+From cce1b78775e17756d29459cd8795076ef6dd8eb2 Mon Sep 17 00:00:00 2001
 From: fuju <fuju1@huawei.com>
-Date: Mon, 11 Aug 2025 09:57:42 -0400
-Subject: [PATCH 1/2] Support VirtCCA
+Date: Wed, 27 Aug 2025 08:03:56 -0400
+Subject: [PATCH] Support VirtCCA
 
 ---
  src/agent/Cargo.toml                               |   2 +-
@@ -10,11 +10,12 @@ Subject: [PATCH 1/2] Support VirtCCA
  src/runtime/Makefile                               |  22 +
  src/runtime/arch/arm64-options.mk                  |   2 +
  .../config/configuration-qemu-virtcca.toml.in      | 684 +++++++++++++++++++++
- src/runtime/pkg/govmm/qemu/qemu.go                 |  10 +
+ src/runtime/pkg/govmm/qemu/qemu.go                 |  22 +-
  src/runtime/virtcontainers/hypervisor.go           |   5 +
  .../virtcontainers/hypervisor_linux_arm64.go       |  60 +-
- src/runtime/virtcontainers/qemu_arm64.go           |  69 ++-
- 10 files changed, 846 insertions(+), 14 deletions(-)
+ src/runtime/virtcontainers/qemu.go                 |   1 +
+ src/runtime/virtcontainers/qemu_arm64.go           |  90 ++-
+ 11 files changed, 874 insertions(+), 20 deletions(-)
  create mode 100644 src/runtime/config/configuration-qemu-virtcca.toml.in
 
 diff --git a/src/agent/Cargo.toml b/src/agent/Cargo.toml
@@ -855,7 +856,7 @@ index 0000000..24c025d
 +# (default: /run/kata-containers/dans)
 +dan_conf = "@DEFDANCONF@"
 diff --git a/src/runtime/pkg/govmm/qemu/qemu.go b/src/runtime/pkg/govmm/qemu/qemu.go
-index 4ff4333..46f0e91 100644
+index 4ff4333..66bd278 100644
 --- a/src/runtime/pkg/govmm/qemu/qemu.go
 +++ b/src/runtime/pkg/govmm/qemu/qemu.go
 @@ -267,6 +267,9 @@ const (
@@ -889,6 +890,26 @@ index 4ff4333..46f0e91 100644
  	}
  
  	if len(deviceParams) > 0 {
+@@ -2989,13 +2999,13 @@ func (config *Config) appendMemory() {
+ 
+ 		memoryParams = append(memoryParams, config.Memory.Size)
+ 
+-		if config.Memory.Slots > 0 {
+-			memoryParams = append(memoryParams, fmt.Sprintf("slots=%d", config.Memory.Slots))
+-		}
++		// if config.Memory.Slots > 0 {
++		// 	memoryParams = append(memoryParams, fmt.Sprintf("slots=%d", config.Memory.Slots))
++		// }
+ 
+-		if config.Memory.MaxMem != "" {
+-			memoryParams = append(memoryParams, fmt.Sprintf("maxmem=%s", config.Memory.MaxMem))
+-		}
++		// if config.Memory.MaxMem != "" {
++		// 	memoryParams = append(memoryParams, fmt.Sprintf("maxmem=%s", config.Memory.MaxMem))
++		// }
+ 
+ 		config.qemuParams = append(config.qemuParams, "-m")
+ 		config.qemuParams = append(config.qemuParams, strings.Join(memoryParams, ","))
 diff --git a/src/runtime/virtcontainers/hypervisor.go b/src/runtime/virtcontainers/hypervisor.go
 index b6b75d5..61ea5fe 100644
 --- a/src/runtime/virtcontainers/hypervisor.go
@@ -982,8 +1003,20 @@ index 9c6a13e..e947f8c 100644
 +	}
 +	return false, nil
  }
+diff --git a/src/runtime/virtcontainers/qemu.go b/src/runtime/virtcontainers/qemu.go
+index 9072170..267e53d 100644
+--- a/src/runtime/virtcontainers/qemu.go
++++ b/src/runtime/virtcontainers/qemu.go
+@@ -816,6 +816,7 @@ func (q *qemu) createPCIeTopology(qemuConfig *govmmQemu.Config, hypervisorConfig
+ 			}
+ 		}
+ 	}
++
+ 	vfioOnRootPort := (q.state.HotPlugVFIO == config.RootPort || q.state.ColdPlugVFIO == config.RootPort)
+ 	vfioOnSwitchPort := (q.state.HotPlugVFIO == config.SwitchPort || q.state.ColdPlugVFIO == config.SwitchPort)
+ 
 diff --git a/src/runtime/virtcontainers/qemu_arm64.go b/src/runtime/virtcontainers/qemu_arm64.go
-index a9b803f..c9a4e97 100644
+index a9b803f..d1773a4 100644
 --- a/src/runtime/virtcontainers/qemu_arm64.go
 +++ b/src/runtime/virtcontainers/qemu_arm64.go
 @@ -11,11 +11,12 @@ import (
@@ -1018,16 +1051,36 @@ index a9b803f..c9a4e97 100644
  	if err := q.handleImagePath(config); err != nil {
  		return nil, err
  	}
-@@ -146,18 +158,55 @@ func (q *qemuArm64) getPFlash() ([]string, error) {
+@@ -145,19 +157,77 @@ func (q *qemuArm64) getPFlash() ([]string, error) {
+ 	}
  }
  
- func (q *qemuArm64) enableProtection() error {
+-func (q *qemuArm64) enableProtection() error {
 -	q.protection, _ = availableGuestProtection()
 -	if q.protection != noneProtection {
 -		return fmt.Errorf("Protection %v is not supported on arm64", q.protection)
+-	}
++func setOvercommitMemory(value uint32) error {
++	const sysctlFile = "/proc/sys/vm/overcommit_memory"
+ 
++	// Prepare data to write
++	data := []byte(fmt.Sprintf("%d", value))
++
++	// Open system file in write-only mode
++	err := os.WriteFile(sysctlFile, data, 0200)
++	if err != nil {
++		return fmt.Errorf("failed to write to %s: %w (check root privileges)", sysctlFile, err)
++	}
+ 	return nil
+ }
+ 
+-func (q *qemuArm64) appendProtectionDevice(devices []govmmQemu.Device, firmware, firmwareVolume string) ([]govmmQemu.Device, string, error) {
+-	err := q.enableProtection()
++func (q *qemuArm64) enableProtection() error {
 +	var err error
 +	q.protection, err = availableGuestProtection()
-+	if err != nil {
+ 	if err != nil {
+-		hvLogger.WithField("arch", runtime.GOARCH).Error(err)
 +		return err
 +	}
 +	// // Configure CCA only if specified in config
@@ -1049,6 +1102,13 @@ index a9b803f..c9a4e97 100644
 +			q.qemuMachine.Options += ","
 +		}
 +		q.qemuMachine.Options += "kernel_irqchip=on,kvm-type=cvm"
++
++		// Set overcommit_memory to 1
++		if err := setOvercommitMemory(1); err != nil {
++			fmt.Fprintf(os.Stderr, "Failed to set overcommit_memory: %v\n", err)
++			os.Exit(1)
++		}
++
 +		logger.Info("Enabling Arm VirtCCA protection")
 +		return nil
 +
@@ -1056,15 +1116,10 @@ index a9b803f..c9a4e97 100644
 +
 +	default:
 +		return fmt.Errorf("This system doesn't support Confidential Computing (Guest Protection)")
- 	}
--
--	return nil
- }
- 
- func (q *qemuArm64) appendProtectionDevice(devices []govmmQemu.Device, firmware, firmwareVolume string) ([]govmmQemu.Device, string, error) {
--	err := q.enableProtection()
--	if err != nil {
--		hvLogger.WithField("arch", runtime.GOARCH).Error(err)
++	}
++}
++
++func (q *qemuArm64) appendProtectionDevice(devices []govmmQemu.Device, firmware, firmwareVolume string) ([]govmmQemu.Device, string, error) {
 +	switch q.protection {
 +	case virtccaProtection:
 +		return append(devices,
