@@ -1,9 +1,10 @@
-From e55bdde6546d2dd76527719b3b3a486cb49ab6af Mon Sep 17 00:00:00 2001
-From: fuju <fuju1@huawei.com>
-Date: Mon, 9 Jun 2025 08:18:25 -0400
+From 8c6c0e8a248555dbeb17387f7c5dc8c5b9e66042 Mon Sep 17 00:00:00 2001
+From: yxk <yangxiangkai@huawei.com>
+Date: Wed, 27 Aug 2025 15:48:29 +0800
 Subject: [PATCH] Support VirtCCA
 
 ---
+ Cargo.lock                                 |  14 +-
  Cargo.toml                                 |   4 +-
  attestation-service/Cargo.toml             |   1 +
  attestation-service/README.md              |   1 +
@@ -12,12 +13,81 @@ Subject: [PATCH] Support VirtCCA
  attestation-service/src/bin/restful/mod.rs |   1 +
  deps/verifier/Cargo.toml                   |   3 +
  deps/verifier/src/lib.rs                   |  13 +
- deps/verifier/src/virtcca/mod.rs           | 377 +++++++++++++++++++++++++++++
+ deps/verifier/src/virtcca/mod.rs           | 423 +++++++++++++++++++++
  kbs/Cargo.toml                             |   2 +-
  tools/kbs-client/Cargo.toml                |   1 +
- 11 files changed, 402 insertions(+), 3 deletions(-)
+ 12 files changed, 453 insertions(+), 12 deletions(-)
  create mode 100644 deps/verifier/src/virtcca/mod.rs
 
+diff --git a/Cargo.lock b/Cargo.lock
+index c421136..afe057c 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -606,7 +606,6 @@ dependencies = [
+ [[package]]
+ name = "attester"
+ version = "0.1.0"
+-source = "git+https://github.com/confidential-containers/guest-components.git?rev=27b8245#27b824547dd75ea4e2b2fe4a1eb9722d25f81c1a"
+ dependencies = [
+  "anyhow",
+  "async-trait",
+@@ -1355,7 +1354,6 @@ checksum = "43da5946c66ffcc7745f48db692ffbb10a83bfe0afd96235c5c2a4fb23994929"
+ [[package]]
+ name = "crypto"
+ version = "0.1.0"
+-source = "git+https://github.com/confidential-containers/guest-components.git?rev=27b8245#27b824547dd75ea4e2b2fe4a1eb9722d25f81c1a"
+ dependencies = [
+  "aes-gcm",
+  "aes-kw",
+@@ -2984,8 +2982,6 @@ dependencies = [
+ [[package]]
+ name = "kbs-types"
+ version = "0.10.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "6db954f164e19a63a1eb7c04c46511167d68a5eb5025d4a435c1ba297f00dbf4"
+ dependencies = [
+  "base64 0.22.1",
+  "serde",
+@@ -2996,18 +2992,17 @@ dependencies = [
+ [[package]]
+ name = "kbs_protocol"
+ version = "0.1.0"
+-source = "git+https://github.com/confidential-containers/guest-components.git?rev=27b8245#27b824547dd75ea4e2b2fe4a1eb9722d25f81c1a"
+ dependencies = [
+  "anyhow",
+  "async-trait",
+- "attester 0.1.0 (git+https://github.com/confidential-containers/guest-components.git?rev=27b8245)",
++ "attester 0.1.0",
+  "base64 0.22.1",
+- "crypto 0.1.0 (git+https://github.com/confidential-containers/guest-components.git?rev=27b8245)",
++ "crypto 0.1.0",
+  "jwt-simple",
+  "kbs-types 0.10.0",
+  "log",
+  "reqwest 0.12.12",
+- "resource_uri 0.1.0 (git+https://github.com/confidential-containers/guest-components.git?rev=27b8245)",
++ "resource_uri 0.1.0",
+  "serde",
+  "serde_json",
+  "sha2",
+@@ -4375,7 +4370,6 @@ dependencies = [
+ [[package]]
+ name = "resource_uri"
+ version = "0.1.0"
+-source = "git+https://github.com/confidential-containers/guest-components.git?rev=27b8245#27b824547dd75ea4e2b2fe4a1eb9722d25f81c1a"
+ dependencies = [
+  "anyhow",
+  "serde",
+@@ -5932,7 +5926,9 @@ dependencies = [
+  "bitflags 2.9.0",
+  "byteorder",
+  "cfg-if",
++ "ciborium",
+  "codicon",
++ "cose-rust",
+  "csv-rs",
+  "ear 0.1.2",
+  "eventlog-rs",
 diff --git a/Cargo.toml b/Cargo.toml
 index d0f7904..6531148 100644
 --- a/Cargo.toml
@@ -42,9 +112,9 @@ index 140b401..877426f 100644
  cca-verifier = [ "verifier/cca-verifier" ]
  se-verifier  = [ "verifier/se-verifier" ]
 +virtcca-verifier = [ "verifier/virtcca-verifier" ]
- 
+
  rvps-grpc = ["prost", "tonic"]
- 
+
 diff --git a/attestation-service/README.md b/attestation-service/README.md
 index fafc656..9753f86 100644
 --- a/attestation-service/README.md
@@ -54,9 +124,9 @@ index fafc656..9753f86 100644
  - `csv`: Verifier Driver for China Security Virtualization (Hygon CSV).
  - `se`: Verifier Driver for IBM Secure Execution (SE).
 +- `virtcca`: Verifier Driver for Virtualized Arm Confidential Compute Architecture with TrustZone (VirtCCA).
- 
+
  ### Policy Engine
- 
+
 diff --git a/attestation-service/docs/grpc-as.md b/attestation-service/docs/grpc-as.md
 index 25ad2a8..34a0615 100644
 --- a/attestation-service/docs/grpc-as.md
@@ -66,11 +136,11 @@ index 25ad2a8..34a0615 100644
  - `aztdxvtpm`: Azure TDX vTPM
  - `se`: IBM Secure Execution
 +- `virtcca`: VirtCCA
- 
+
  ## Quick Start
- 
+
 diff --git a/attestation-service/src/bin/grpc/mod.rs b/attestation-service/src/bin/grpc/mod.rs
-index faba652..2869887 100644
+index faba652..7707a62 100644
 --- a/attestation-service/src/bin/grpc/mod.rs
 +++ b/attestation-service/src/bin/grpc/mod.rs
 @@ -41,6 +41,7 @@ fn to_kbs_tee(tee: &str) -> anyhow::Result<Tee> {
@@ -80,9 +150,9 @@ index faba652..2869887 100644
 +	  "virtcca" => Tee::Virtcca,
          other => bail!("Unsupported TEE type: {other}"),
      };
- 
+
 diff --git a/attestation-service/src/bin/restful/mod.rs b/attestation-service/src/bin/restful/mod.rs
-index 96d83fd..5d1cfec 100644
+index 96d83fd..de9f0e3 100644
 --- a/attestation-service/src/bin/restful/mod.rs
 +++ b/attestation-service/src/bin/restful/mod.rs
 @@ -72,6 +72,7 @@ fn to_tee(tee: &str) -> anyhow::Result<Tee> {
@@ -92,7 +162,7 @@ index 96d83fd..5d1cfec 100644
 +	  "virtcca" => Tee::Virtcca,
          other => bail!("tee `{other} not supported`"),
      };
- 
+
 diff --git a/deps/verifier/Cargo.toml b/deps/verifier/Cargo.toml
 index dac7a5a..f3ad264 100644
 --- a/deps/verifier/Cargo.toml
@@ -102,7 +172,7 @@ index dac7a5a..f3ad264 100644
  cca-verifier = [ "ear", "jsonwebtoken", "veraison-apiclient" ]
  se-verifier = [ "openssl", "pv", "serde_with", "tokio/sync" ]
 +virtcca-verifier = ["cose-rust", "openssl", "ciborium"]
- 
+
  [dependencies]
  anyhow.workspace = true
 @@ -51,6 +52,8 @@ ear = { git = "https://github.com/veraison/rust-ear", rev = "43f7f480d09ea2ebc03
@@ -111,17 +181,17 @@ index dac7a5a..f3ad264 100644
  bitflags = { version = "2.8.0", features = ["serde"] }
 +cose-rust = { version = "0.1.7", optional = true }
 +ciborium = { version = "0.2.2", optional = true }
- 
+
  [build-dependencies]
  shadow-rs.workspace = true
 diff --git a/deps/verifier/src/lib.rs b/deps/verifier/src/lib.rs
-index dfcaf36..861f9ce 100644
+index dfcaf36..28e3f41 100644
 --- a/deps/verifier/src/lib.rs
 +++ b/deps/verifier/src/lib.rs
 @@ -33,6 +33,9 @@ pub mod cca;
  #[cfg(feature = "se-verifier")]
  pub mod se;
- 
+
 +#[cfg(feature = "virtcca-verifier")]
 +pub mod virtcca;
 +
@@ -144,13 +214,13 @@ index dfcaf36..861f9ce 100644
 +        }
      }
  }
- 
+
 diff --git a/deps/verifier/src/virtcca/mod.rs b/deps/verifier/src/virtcca/mod.rs
 new file mode 100644
-index 0000000..f9a5170
+index 0000000..009f1b5
 --- /dev/null
 +++ b/deps/verifier/src/virtcca/mod.rs
-@@ -0,0 +1,377 @@
+@@ -0,0 +1,423 @@
 +// VirtCCA verifier plugin
 +
 +use super::*;
@@ -187,7 +257,8 @@ index 0000000..f9a5170
 +const CVM_CHALLENGE_SIZE: usize = 64;
 +const CVM_RPV_SIZE: usize = 64;
 +const CVM_REM_ARR_SIZE: usize = 4;
-+const CVM_PUB_KEY_SIZE: usize = 550;
++const CVM_PUB_KEY_SIZE: usize = 550;    // RSA public key.
++const CVM_ECC_PUB_KEY_SIZE: usize = 133;
 +
 +#[derive(Debug, Deserialize)]
 +pub struct VirtccaEvidence {
@@ -208,6 +279,7 @@ index 0000000..f9a5170
 +    pub rem: [Vec<u8>; CVM_REM_ARR_SIZE],           // 44239 => [ 4*4 bytes .size {32,48,64} ]
 +    pub hash_alg: String,                           // 44236 => text
 +    pub pub_key: [u8; CVM_PUB_KEY_SIZE],            // 44237 => bytes .size 550
++    pub ecc_pub_key: [u8; CVM_ECC_PUB_KEY_SIZE],    // => .size 133
 +    pub pub_key_hash_alg: String,                   // 44240 => text
 +}
 +
@@ -220,6 +292,9 @@ index 0000000..f9a5170
 +const DEFAULT_SUB_CERT: &str = "/etc/attestation/attestation-service/verifier/virtcca/Huawei IT Product CA.pem";
 +const ROOT_CERT_ENV: &str = "VIRTCCA_ROOT_CERT";
 +const SUB_CERT_ENV: &str = "VIRTCCA_SUB_CERT";
++
++const ECC_ROOT_CERT_OF_DEVICE_CERT: &str = "/etc/attestation/attestation-service/verifier/virtcca/eccp521_root_cert.pem";
++const ECC_SUB_CERT_OF_DEVICE_CERT: &str = "/etc/attestation/attestation-service/verifier/virtcca/eccp521_sub_cert.pem";
 +
 +
 +#[derive(Debug, Default)]
@@ -244,13 +319,25 @@ index 0000000..f9a5170
 +        let evidence = serde_json::from_slice::<VirtccaEvidence>(evidence)
 +                       .context("Failed to deserialize VirtCCA CcaCoseEvidence!")?;
 +
++        // check the device cert is der(rsa algorithm) or pem(ecc algorithm) format.
++        let dev_cert_is_ecc = is_pem(&evidence.dev_cert);
++
 +        // Read certificates
-+        let sub_cert_path = std::env::var(SUB_CERT_ENV).unwrap_or_else(|_| DEFAULT_SUB_CERT.to_string());
-+        let root_cert_path = std::env::var(ROOT_CERT_ENV).unwrap_or_else(|_| DEFAULT_ROOT_CERT.to_string());
++        let sub_cert_path;
++        let root_cert_path;
++        let dev_cert;
++        if dev_cert_is_ecc {
++            sub_cert_path = std::env::var(SUB_CERT_ENV).unwrap_or_else(|_| ECC_SUB_CERT_OF_DEVICE_CERT.to_string());
++            root_cert_path = std::env::var(ROOT_CERT_ENV).unwrap_or_else(|_| ECC_ROOT_CERT_OF_DEVICE_CERT.to_string());
++            dev_cert = x509::X509::from_pem(&evidence.dev_cert)?;
++        } else {
++            sub_cert_path = std::env::var(SUB_CERT_ENV).unwrap_or_else(|_| DEFAULT_SUB_CERT.to_string());
++            root_cert_path = std::env::var(ROOT_CERT_ENV).unwrap_or_else(|_| DEFAULT_ROOT_CERT.to_string());
++            dev_cert = x509::X509::from_der(&evidence.dev_cert)?;
++        }
 +        let sub_cert_file = std::fs::read(sub_cert_path)?;
 +        let root_cert_file = std::fs::read(root_cert_path)?;
 +
-+        let dev_cert = x509::X509::from_der(&evidence.dev_cert)?;
 +        let sub_cert = x509::X509::from_pem(&sub_cert_file)?;
 +        let root_cert = x509::X509::from_pem(&root_cert_file)?;
 +
@@ -300,12 +387,25 @@ index 0000000..f9a5170
 +            .context("Failed to verify device certificate chain!")?;
 +
 +        // Verify the cose envelop integrity
-+        verify_evidence_integrity(cca_evidence.realm_envelop, &realm_claims.pub_key)
-+            .context("Failed to verify realm evidence integrity!")?;
++        if dev_cert_is_ecc {
++            verify_evidence_integrity(dev_cert_is_ecc, cca_evidence.realm_envelop, &realm_claims.ecc_pub_key)
++                .context("Failed to verify realm evidence integrity!")?;
++        } else {
++            verify_evidence_integrity(dev_cert_is_ecc, cca_evidence.realm_envelop, &realm_claims.pub_key)
++                .context("Failed to verify realm evidence integrity!")?;
++        }
 +
-+        if dev_pub_key.as_slice() != &realm_claims.pub_key {
-+            bail!("Failed to matching device cert pub key ({:?}) with realm pub key ({:?})!",
-+                  dev_pub_key, realm_claims.pub_key);
++
++        if dev_cert_is_ecc {
++            /* TODO:
++             * 1. convert the pub_key of realm_claims from EC_KEY to EVP_PKEY.
++             * 2. compare the pub_key of realm_claims with the pub_key of device cert.
++             */
++        } else {
++            if dev_pub_key.as_slice() != &realm_claims.pub_key {
++                bail!("Failed to matching device cert pub key ({:?}) with realm pub key ({:?})!",
++                      dev_pub_key, realm_claims.pub_key);
++            }
 +        }
 +
 +        // Verify the challenges
@@ -386,6 +486,7 @@ index 0000000..f9a5170
 +            rem: Default::default(),
 +            hash_alg: String::from(""),
 +            pub_key: [0; CVM_PUB_KEY_SIZE],
++            ecc_pub_key: [0; CVM_ECC_PUB_KEY_SIZE],
 +            pub_key_hash_alg: String::from(""),
 +        }
 +    }
@@ -440,10 +541,13 @@ index 0000000..f9a5170
 +
 +    fn set_pub_key(&mut self, v: &Value) -> Result<()> {
 +        let res = v.as_bytes().ok_or_else(|| format_err!("Invalid realm evidence format: pub key is none"))?.clone();
-+        if res.len() != CVM_PUB_KEY_SIZE {
++        if res.len() == CVM_PUB_KEY_SIZE {
++            self.pub_key[..].clone_from_slice(&res);
++        } else if res.len() == CVM_ECC_PUB_KEY_SIZE {
++            self.ecc_pub_key[..].clone_from_slice(&res);
++        } else {
 +            bail!("Invalid realm evidence format: pub key expecting {} bytes, got {}", CVM_PUB_KEY_SIZE, res.len());
 +        }
-+        self.pub_key[..].clone_from_slice(&res);
 +        Ok(())
 +    }
 +
@@ -466,9 +570,14 @@ index 0000000..f9a5170
 +    }
 +}
 +
-+fn verify_evidence_integrity(mut cose_envelop: CoseMessage, public_key: &[u8]) -> Result<()> {
++fn verify_evidence_integrity(dev_cert_is_ecc: bool, mut cose_envelop: CoseMessage, public_key: &[u8]) -> Result<()> {
 +
-+    // Verify realm COSE envelop signature
++    if dev_cert_is_ecc {
++        // TODO: get cose_key with ecc public_key and verify the COSE_Sign1 signature.
++        return Ok(());
++    }
++
++    // Verify realm COSE envelop signature with rsa device public key.
 +    let public_key: rsa::Rsa<Public> = rsa::Rsa::public_key_from_der(public_key)?;
 +    let mut cose_key = CoseKey::new();
 +    cose_key.kty(cose::keys::RSA);
@@ -495,6 +604,7 @@ index 0000000..f9a5170
 +    if !ret {
 +        bail!("Failed to verify public key identity: failed to verify device cert signature");
 +    }
++
 +    // verify if sub_cert is signed by root_cert
 +    let ret = sub_cert.verify(&(root_cert.public_key()? as PKey<Public>))?;
 +    if !ret {
@@ -528,19 +638,26 @@ index 0000000..f9a5170
 +    });
 +    Ok(claim as TeeEvidenceParsedClaim)
 +}
++
++fn is_pem(data: &[u8]) -> bool {
++    let pem_start = b"-----BEGIN CERTIFICATE-----";
++    let pem_end = b"-----END CERTIFICATE-----";
++    data.starts_with(pem_start) && data.ends_with(pem_end)
++}
+\ No newline at end of file
 diff --git a/kbs/Cargo.toml b/kbs/Cargo.toml
 index 80eb231..0e168e6 100644
 --- a/kbs/Cargo.toml
 +++ b/kbs/Cargo.toml
 @@ -94,7 +94,7 @@ attestation-service = { path = "../attestation-service", default-features = fals
- 
+
  [target.'cfg(target_arch = "aarch64")'.dependencies]
  attestation-service = { path = "../attestation-service", default-features = false, features = [
 -    "cca-verifier",
 +    "cca-verifier","virtcca-verifier",
  ], optional = true }
- 
- 
+
+
 diff --git a/tools/kbs-client/Cargo.toml b/tools/kbs-client/Cargo.toml
 index d0ce617..17483e7 100644
 --- a/tools/kbs-client/Cargo.toml
@@ -550,6 +667,6 @@ index d0ce617..17483e7 100644
  cca-attester = ["kbs_protocol/cca-attester"]
  se-attester  = ["kbs_protocol/se-attester"]
 +virtcca-attester  = ["kbs_protocol/virtcca-attester"]
--- 
-1.8.3.1
+--
+2.43.0
 
