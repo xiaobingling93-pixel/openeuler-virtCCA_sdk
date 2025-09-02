@@ -507,6 +507,7 @@ echo "===== Copying VirtCCA configuration files ====="
 cd "$KATA_SRC_DIR"
 cp -v ./build/virtCCA_sdk/kata-v"$KATA_VERSION"/conf/virtcca.config ./build/
 cp -v ./build/virtCCA_sdk/kata-v"$KATA_VERSION"/conf/hosts ./build/
+echo "$IP_ADDR $REGISTRY_DOMAIN" | sudo tee -a ./build/hosts
 
 # 7. Prepare certificates
 echo "===== Generating SSL certificates ====="

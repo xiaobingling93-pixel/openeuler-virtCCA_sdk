@@ -3601,13 +3601,13 @@ func (config *Config) appendMemory() {
 
 		memoryParams = append(memoryParams, config.Memory.Size)
 
-		if config.Memory.Slots > 0 {
-			memoryParams = append(memoryParams, fmt.Sprintf("slots=%d", config.Memory.Slots))
-		}
+		// if config.Memory.Slots > 0 {
+		// 	memoryParams = append(memoryParams, fmt.Sprintf("slots=%d", config.Memory.Slots))
+		// }
 
-		if config.Memory.MaxMem != "" {
-			memoryParams = append(memoryParams, fmt.Sprintf("maxmem=%s", config.Memory.MaxMem))
-		}
+		// if config.Memory.MaxMem != "" {
+		// 	memoryParams = append(memoryParams, fmt.Sprintf("maxmem=%s", config.Memory.MaxMem))
+		// }
 
 		config.qemuParams = append(config.qemuParams, "-m")
 		config.qemuParams = append(config.qemuParams, strings.Join(memoryParams, ","))

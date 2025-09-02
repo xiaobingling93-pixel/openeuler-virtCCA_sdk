@@ -12,6 +12,7 @@ cd inc/qemu_generator
 go mod tidy
 
 # compile
+cd ../../
 mkdir build && cd build
 cmake ..
 make
