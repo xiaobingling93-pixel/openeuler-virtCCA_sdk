@@ -166,7 +166,7 @@ function install_containerd()
 
     # 6. Add kata runtime config
     echo "Configuring kata runtime..."
-    sed -i '/\[plugins."io.containerd.grpc.v1.cri".containerd\]/a \\n  [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.kata]\n    runtime_type = "io.containerd.kata.v2"\n    privileged_without_host_devices = false' /etc/containerd/config.toml
+    sed -i '/\[plugins."io.containerd.grpc.v1.cri".containerd.default_runtime\]/i \\n  [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.kata]\n    runtime_type = "io.containerd.kata.v2"\n    privileged_without_host_devices = false\n' /etc/containerd/config.toml
 
     # 7. Modify critical settings
     echo "Modifying core configurations..."
@@ -264,8 +264,7 @@ EOF
 
     # Disable swap
     echo "swapoff -a" >> /etc/profile
-    echo "cp -p /etc/fstab /etc/fstab.bak$(date '+%Y%m%d%H%M%S')" >> /etc/profile
-    echo "sed -i "s/\/dev\/mapper\/openeuler-swap/\#\/dev\/mapper\/openeuler-swap/g" /etc/fstab" >> /etc/profile
+    sed -i "s/\/dev\/mapper\/openeuler-swap/\#\/dev\/mapper\/openeuler-swap/g" /etc/fstab
 
     source_profile
 
@@ -676,7 +675,12 @@ echo "> Pushing image to local Registry (bypassing proxies)..."
     exit 1
 }
 
-# 11. Deploy Operator
+echo "Build and push kata-deploy image successfully !"
+}
+
+function launch_cc_operator()
+{
+# 1. Deploy Operator
 echo "===== Deploying Operator ($OPERATOR_VERSION) ====="
 
 if [ -n "$HTTP_PROXY" ]; then
@@ -694,19 +698,18 @@ kubectl label nodes --all node.kubernetes.io/worker= || true
 echo "Waiting for Operator initialization (15 seconds)..."
 sleep 15
 
-
-# 12. Deploy VirtCCA Kata
+# 2. Deploy VirtCCA Kata
 echo "===== Deploying VirtCCA Kata Runtime ====="
 set +e
 kubectl apply -f $KATA_SRC_DIR/build/virtCCA_sdk/kata-v3.15.0/conf/virtcca-kata-deploy.yaml
 set -e
 
-# 13. Verify deployment
+# 3. Verify deployment
 echo "===== Verifying cluster status ====="
 sleep 15
 kubectl get pods -A
 
-# 14. Create test Pod
+# 4. Create test Pod
 echo "===== Creating test Pod ====="
 cat > "$WORK_DIR/test-kata-qemu-virtcca.yaml" <<EOF
 apiVersion: v1
@@ -737,14 +740,14 @@ echo "Waiting for test Pod startup (15 seconds)..."
 sleep 15
 kubectl get pods
 
-# 15. Launching pod with ctr
+# 5. Launching pod with ctr
 mkdir -p /etc/kata-containers
 cp -f /opt/kata/share/defaults/kata-containers/configuration-qemu-virtcca.toml /etc/kata-containers/configuration.toml
 sed -i 's/^\([[:space:]]*shared_fs[[:space:]]*=[[:space:]]*\)"[^"]*"/\1"virtio-fs"/' /etc/kata-containers/configuration.toml
 cp -f /opt/kata/bin/containerd-shim-kata-v2 /usr/bin/containerd-shim-kata-v2
 cp -f /opt/kata/bin/kata-runtime /usr/bin/kata-runtime
 
-# 16. Completion notice
+# 6. Completion notice
 echo -e "\n===== Deployment successful! ====="
 echo "Test commands:"
 echo "  kubectl logs test-kata-qemu-virtcca"
@@ -752,7 +755,6 @@ echo "  kubectl exec -it test-kata-qemu-virtcca -- sh"
 echo -e "\nFor cleanup, run:"
 echo "  kubectl delete -f $WORK_DIR/virtcca-kata-deploy.yaml"
 echo "  kubectl delete -k github.com/confidential-containers/operator/config/release?ref=$OPERATOR_VERSION"
-
 }
 
 # Compile Confidential Containers components
@@ -1420,6 +1422,9 @@ case "$1" in
     kdeploy*)
         kata_deploy
         ;;
+    operator*)
+        launch_cc_operator
+        ;;
     rats*)
         compile_coco
         rats
@@ -1436,6 +1441,7 @@ case "$1" in
         install_containerd
         init_k8s
         kata_deploy
+        launch_cc_operator
         compile_coco
         rats
         install_cosign
