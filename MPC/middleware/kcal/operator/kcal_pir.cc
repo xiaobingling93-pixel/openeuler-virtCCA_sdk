@@ -29,14 +29,21 @@ Pir::~Pir()
 
 int Pir::Init(std::shared_ptr<Context> ctx)
 {
-    utils::NodeInfoHelper nodeInfoHelper(ctx->GetWorldSize());
+    if (!ctx) {
+        return DG_ERR_MPC_INVALID_PARAM;
+    }
+
+    auto nodeInfoHelper = utils::NodeInfoHelper::Create(ctx->GetWorldSize());
+    if (!nodeInfoHelper) {
+        return DG_ERR_MPC_INVALID_PARAM;
+    }
 
     int rv = opts_->initTeeCtx(ctx->GetTeeConfig(), &dgTeeCtx_);
     if (rv != 0) {
         return rv;
     }
 
-    rv = opts_->setTeeNodeInfos(dgTeeCtx_, nodeInfoHelper.Get());
+    rv = opts_->setTeeNodeInfos(dgTeeCtx_, nodeInfoHelper->Get());
     if (rv != 0) {
         return rv;
     }
@@ -48,11 +55,17 @@ int Pir::Init(std::shared_ptr<Context> ctx)
 
 int Pir::ServerPreProcess(DG_PairList *pairList)
 {
+    if (!pairList) {
+        return DG_ERR_MPC_INVALID_PARAM;
+    }
     return opts_->offlineCalculate(dgTeeCtx_, pairList, &bucketMap_);
 }
 
 int Pir::ClientQuery(DG_TeeInput *input, DG_TeeOutput **output, DG_DummyMode dummyMode)
 {
+    if (!input || !output) {
+        return DG_ERR_MPC_INVALID_PARAM;
+    }
     return opts_->clientCalculate(dgTeeCtx_, dummyMode, input, output);
 }
 

@@ -13,6 +13,7 @@
 #ifndef NODE_INFO_HELPER_H
 #define NODE_INFO_HELPER_H
 
+#include <optional>
 #include <vector>
 #include "kcal/api/kcal_api.h"
 
@@ -20,16 +21,17 @@ namespace kcal::utils {
 
 class NodeInfoHelper {
 public:
-    explicit NodeInfoHelper(int worldSize);
+    static std::optional<NodeInfoHelper> Create(int worldSize);
 
     ~NodeInfoHelper() = default;
 
-    NodeInfoHelper(const NodeInfoHelper &) = delete;
-    NodeInfoHelper &operator=(const NodeInfoHelper &) = delete;
-
-    TeeNodeInfos *Get() { return &nodeInfos_; }
+    TeeNodeInfos *Get();
 
 private:
+    NodeInfoHelper() = default;
+
+    explicit NodeInfoHelper(int worldSize);
+
     TeeNodeInfos nodeInfos_;
     std::vector<TeeNodeInfo> infos_;
 };

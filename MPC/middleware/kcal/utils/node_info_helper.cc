@@ -25,4 +25,18 @@ NodeInfoHelper::NodeInfoHelper(int worldSize)
     nodeInfos_.size = infos_.size();
 }
 
+TeeNodeInfos *NodeInfoHelper::Get()
+{
+    nodeInfos_.nodeInfo = infos_.data();
+    return &nodeInfos_;
+}
+
+std::optional<NodeInfoHelper> NodeInfoHelper::Create(int worldSize)
+{
+    if (worldSize <= 0) {
+        return std::nullopt;
+    }
+    return NodeInfoHelper(worldSize);
+}
+
 }

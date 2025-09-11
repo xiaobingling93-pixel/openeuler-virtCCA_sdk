@@ -25,14 +25,21 @@ Psi::~Psi() { opts_->releaseTeeCtx(&dgTeeCtx_); }
 
 int Psi::Init(std::shared_ptr<Context> ctx)
 {
-    utils::NodeInfoHelper nodeInfoHelper(ctx->GetWorldSize());
+    if (!ctx) {
+        return DG_ERR_MPC_INVALID_PARAM;
+    }
+
+    auto nodeInfoHelper = utils::NodeInfoHelper::Create(ctx->GetWorldSize());
+    if (!nodeInfoHelper) {
+        return DG_ERR_MPC_INVALID_PARAM;
+    }
 
     int rv = opts_->initTeeCtx(ctx->GetTeeConfig(), &dgTeeCtx_);
     if (rv != 0) {
         return rv;
     }
 
-    rv = opts_->setTeeNodeInfos(dgTeeCtx_, nodeInfoHelper.Get());
+    rv = opts_->setTeeNodeInfos(dgTeeCtx_, nodeInfoHelper->Get());
     if (rv != 0) {
         return rv;
     }
@@ -44,6 +51,9 @@ int Psi::Init(std::shared_ptr<Context> ctx)
 
 int Psi::Run(DG_TeeInput *input, DG_TeeOutput **output, DG_TeeMode outputMode)
 {
+    if (!input || !output) {
+        return DG_ERR_MPC_INVALID_PARAM;
+    }
     return opts_->calculate(dgTeeCtx_, PSI, input, output, outputMode);
 }
 

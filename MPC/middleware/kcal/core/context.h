@@ -34,6 +34,7 @@ public:
     explicit Context(KCAL_Config config, KCAL_AlgorithmsType type);
 
     Context(const Context &) = delete;
+
     Context &operator=(const Context &) = delete;
 
     ~Context();
@@ -46,9 +47,9 @@ public:
 
     void *GetTeeConfig() { return teeCfg_; }
 
-    void SetNetRes(TEE_NET_RES *teeNetRes);
-
 private:
+    int SetNetRes(TEE_NET_RES *teeNetRes);
+
     KCAL_Config config_;
     KCAL_AlgorithmsType type_;
 

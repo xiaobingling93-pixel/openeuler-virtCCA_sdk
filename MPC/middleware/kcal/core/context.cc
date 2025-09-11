@@ -33,17 +33,30 @@ int Context::Init()
         return rv;
     }
 
-    cfgOpts_->setIntValue(teeCfg_, DG_CON_MPC_TEE_INT_NODEID, config_.nodeId);
-    if (type_ == KCAL_AlgorithmsType::PSI || type_ == KCAL_AlgorithmsType::PIR) {
-        cfgOpts_->setIntValue(teeCfg_, DG_CON_MPC_TEE_INT_FXP_BITS, 0);
-    } else {
-        cfgOpts_->setIntValue(teeCfg_, DG_CON_MPC_TEE_INT_FXP_BITS, config_.fixBits);
+    rv = cfgOpts_->setIntValue(teeCfg_, DG_CON_MPC_TEE_INT_NODEID, config_.nodeId);
+    if (rv != DG_SUCCESS) {
+        return rv;
     }
-    cfgOpts_->setIntValue(teeCfg_, DG_CON_MPC_TEE_INT_THREAD_COUNT, config_.threadCount);
-    if (config_.useSMAlg) {
-        cfgOpts_->setIntValue(teeCfg_, DG_CON_MPC_TEE_INT_IS_SM_ALGORITHM, 1);
+    if (type_ == KCAL_AlgorithmsType::PSI || type_ == KCAL_AlgorithmsType::PIR) {
+        rv = cfgOpts_->setIntValue(teeCfg_, DG_CON_MPC_TEE_INT_FXP_BITS, 0);
     } else {
-        cfgOpts_->setIntValue(teeCfg_, DG_CON_MPC_TEE_INT_IS_SM_ALGORITHM, 0);
+        rv = cfgOpts_->setIntValue(teeCfg_, DG_CON_MPC_TEE_INT_FXP_BITS, config_.fixBits);
+    }
+    if (rv != DG_SUCCESS) {
+        return rv;
+    }
+    rv = cfgOpts_->setIntValue(teeCfg_, DG_CON_MPC_TEE_INT_THREAD_COUNT, config_.threadCount);
+    if (rv != DG_SUCCESS) {
+        return rv;
+    }
+    // NOTE: kcal_25.0.7.2 版本不支持国密算法，参数不能设置 DG_CON_MPC_TEE_INT_IS_SM_ALGORITHM，需删除下面 if-else 代码
+    if (config_.useSMAlg) {
+        rv = cfgOpts_->setIntValue(teeCfg_, DG_CON_MPC_TEE_INT_IS_SM_ALGORITHM, 1);
+    } else {
+        rv = cfgOpts_->setIntValue(teeCfg_, DG_CON_MPC_TEE_INT_IS_SM_ALGORITHM, 0);
+    }
+    if (rv != DG_SUCCESS) {
+        return rv;
     }
 
     return DG_SUCCESS;
@@ -51,16 +64,25 @@ int Context::Init()
 
 std::shared_ptr<Context> Context::Create(KCAL_Config config, TEE_NET_RES *netRes, KCAL_AlgorithmsType type)
 {
+    if (!netRes) {
+        return nullptr;
+    }
     auto context = std::make_shared<Context>(config, type);
-    context->Init();
-    context->SetNetRes(netRes);
+    int rv = context->Init();
+    if (rv != DG_SUCCESS) {
+        return nullptr;
+    }
+    rv = context->SetNetRes(netRes);
+    if (rv != DG_SUCCESS) {
+        return nullptr;
+    }
     return context;
 }
 
-void Context::SetNetRes(TEE_NET_RES *teeNetRes)
+int Context::SetNetRes(TEE_NET_RES *teeNetRes)
 {
     DG_Void netFunc = {.data = teeNetRes, .size = sizeof(TEE_NET_RES)};
-    cfgOpts_->setVoidValue(teeCfg_, DG_CON_MPC_TEE_VOID_NET_API, &netFunc);
+    return cfgOpts_->setVoidValue(teeCfg_, DG_CON_MPC_TEE_VOID_NET_API, &netFunc);
 }
 
 }
