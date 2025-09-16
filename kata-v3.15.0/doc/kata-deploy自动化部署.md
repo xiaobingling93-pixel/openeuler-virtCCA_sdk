@@ -203,7 +203,7 @@ docker run -d -p 5000:5000 \
   -v /home/registry/certs:/certs \
   -v /home/registry/data:/var/lib/registry \
   -v /home/registry/config.yml:/etc/docker/registry/config.yml \
-  registry:2 > /home/fuju/registry/registry.log 2>&1 &
+  registry:2 > /home/registry/registry.log 2>&1 &
 ```
 
 >  查看registry调测日志：`docker logs -f registry.hw.com`
