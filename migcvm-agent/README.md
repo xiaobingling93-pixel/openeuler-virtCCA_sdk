@@ -1,33 +1,84 @@
-# MIGVM 
+# MIGVM Agent
 
 ## 
-MIGVMTSI
+1. 下载安装编译依赖
 
-## 
-1. 
-2. 
+QCBOR
 ```bash
-chmod +x build.sh
-./build.sh
+git clone https://github.com/laurencelundblade/QCBOR.git -b v1.2
+cd QCBOR
+make
+make install
+cd -
 ```
 
-`build``migvm_agent`
-
-### 
-`--debug`
+t_cose
 ```bash
-./build.sh --debug
+git clone https://github.com/laurencelundblade/t_cose.git -b v1.1.2
+cd t_cose
+cmake -S . -B build -DCRYPTO_PROVIDER=OpenSSL
+cmake --build build
+cmake --install build
+cd -
 ```
 
-socket-send
+libcbor
 ```bash
-./build.sh --build-debug-tool
+git clone https://github.com/PJK/libcbor.git
+cd libcbor
+cmake -S . -B build
+cmake --build build
+cmake --install build
+cd -
 ```
 
-## 
-
+rats-tls(该仓库须放置于当前migcvm-agent目录下)
 ```bash
-./build/migvm_agent
+git clone https://github.com/inclavare-containers/rats-tls.git
+cd rats-tls
+git reset --hard 40f7b78403d75d13b1a372c769b2600f62b02692
+git apply ../../attestation/rats-tls/*.patch
+bash build.sh -s -r -c -v gcc
+cd -
+```
+
+1. 编译
+```bash
+mkdir build && cd build
+cmake ..
+make
+cd -
+```
+
+1. 部署
+
+将以下编译产物部署至CVM
+```bash
+cd rats-tls/bin/
+tar xvf rats-tls.tar.gz
+cp -rf lib/rats-tls ${CVM_PATH}/usr/lib/
+cp -rfL lib/rats-tls/librats_tls.so.0 ${CVM_PATH}/lib64/
+
+cd -
+cp build/migcvm-agent   ${CVM_PATH}/home/
+```
+
+5. 运行
+源机密虚机
+```bash
+./migcvm-agent
+```
+
+目的机密虚机
+```bash
+./migcvm-agent -r ${RIM}
+```
+
+宿主机
+```bash
+cd build
+./socket-tool -c ${SRC_CID} -p ${SRC_VSOCK_PORT} -t 1 -i ${SRC_IP}
+./socket-tool -c ${DST_CID} -p ${DST_VSOCK_PORT} -t 2 -i ${SRC_IP}
 ```
 
 ## 
@@ -35,16 +86,14 @@ socket-send
 .
  CMakeLists.txt        # CMake
  build.sh              # 
- migvm_agent.c         # 
  debug/                # 
-    socket-send.c     # 
+    socket-tool.c     # 
     tsi-test.c        # TSI
  migcvm_tsi/           # TSI
     migcvm_tsi.c
     tsi.h
- socket_agent/         # 
-     host_socket_agent.c
-     socket_agent.h
+ src/         # migcvm-agent
+     xxx
 ```
 
 ## 
