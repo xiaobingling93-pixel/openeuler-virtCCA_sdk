@@ -24,7 +24,7 @@ enum HashAlgo {
 };
 #endif
 
-enum SlotStatus {
+enum slot_status {
     SLOT_IS_EMPTY = 0,
     SLOT_IS_BINDED,
     SLOT_IS_READY
@@ -40,42 +40,42 @@ enum TSI_ERROR {
 
 typedef struct {
     int fd;
-} TsiCtx;
+} tsi_ctx;
 
 /*
  * @brief   Init ctx.
  * @return  TSI context
  */
-TsiCtx *TsiNewCtx(void);
+tsi_ctx *tsi_new_ctx(void);
 
 /*
  * @brief   Free ctx.
  * @param   ctx [IN] TSI context
  */
-void TsiFreeCtx(TsiCtx *ctx);
+void tsi_free_ctx(tsi_ctx *ctx);
 
-typedef struct MigrationInfo {
+typedef struct migration_info {
     /* Algorithm to use for measurements */
     // enum HashAlgo measurement_algo;
     /* cvm measurement */
     // unsigned char measurement[MEASUREMENT_SLOT_NR][MAX_MEASUREMENT_SIZE];
-    bool isSrc;
-    unsigned short slotStatus;
+    bool is_src;
+    unsigned short slot_status;
     unsigned long msk;
-} MigrationInfoT;
+} migration_info_t;
 
-typedef struct VirtccaMigvmInfo {
+typedef struct virtcca_migvm_info {
     enum Ops {
         OP_MIGRATE_GET_ATTR = 0,
         OP_MIGRATE_SET_SLOT
 	} ops;
-    MigrationInfoT *migInfo;    /* if ops == OP_MIGRATE_GET_ATTR, the size is sizeof(content) */
-    unsigned long long guestRd;  /* if ops == OP_MIGRATE_SET_SLOT, the size is sizeof(guestRd) */
+    migration_info_t *mig_info;    /* if ops == OP_MIGRATE_GET_ATTR, the size is sizeof(content) */
+    unsigned long long guest_rd;  /* if ops == OP_MIGRATE_SET_SLOT, the size is sizeof(guest_rd) */
     unsigned long size;
-} VirtccaMigvmInfoT;
+} virtcca_mig_info_t;
 
-#define TMM_GET_MIGRATION_INFO _IOWR(TSI_MAGIC, 3, struct VirtccaMigvmInfo)
+#define TMM_GET_MIGRATION_INFO _IOWR(TSI_MAGIC, 3, struct virtcca_migvm_info)
 
-int GetMigrationInfoAndMsk(TsiCtx *ctx, VirtccaMigvmInfoT *migvmInfo, MigrationInfoT *attestInfo);
-int SetMigrationBindSlotAndMsk(TsiCtx *ctx, VirtccaMigvmInfoT *migvmInfo, MigrationInfoT *attestInfo);
+int get_migration_info_and_mask(tsi_ctx *ctx, virtcca_mig_info_t *migvm_info, migration_info_t *attest_info);
+int set_migration_bind_slot_and_mask(tsi_ctx *ctx, virtcca_mig_info_t *migvm_info, migration_info_t *attest_info);
 #endif

@@ -13,25 +13,25 @@
 #include <unistd.h>
 #include "migcvm_tsi.h"
 
-TsiCtx *TsiNewCtx(void)
+tsi_ctx *tsi_new_ctx(void)
 {
-    TsiCtx *ctx = calloc(1, sizeof(TsiCtx));
+    tsi_ctx *ctx = calloc(1, sizeof(tsi_ctx));
     if (ctx == NULL) {
         printf("Failed to allocate TSI context: out of memory\n");
         return NULL;
     }
     ctx->fd = open("/dev/tsi", O_RDWR | O_CLOEXEC);
     if (ctx->fd == -1) {
-        char errorMessage[256] = {0};
-        strerror_r(errno, errorMessage, sizeof(errorMessage));
-        printf("Failed to open TSI device: %s (errno=%d)\n", errorMessage, errno);
+        char error_message[256] = {0};
+        strerror_r(errno, error_message, sizeof(error_message));
+        printf("Failed to open TSI device: %s (errno=%d)\n", error_message, errno);
         free(ctx);
         return NULL;
     }
     return ctx;
 }
 
-void TsiFreeCtx(TsiCtx *ctx)
+void tsi_free_ctx(tsi_ctx *ctx)
 {
     if (ctx == NULL) {
         return;
@@ -43,57 +43,57 @@ void TsiFreeCtx(TsiCtx *ctx)
     free(ctx);
 }
 
-int GetMigrationInfoAndMsk(TsiCtx *ctx, VirtccaMigvmInfoT *migvmInfo, MigrationInfoT *attestInfo)
+int get_migration_info_and_mask(tsi_ctx *ctx, virtcca_mig_info_t *migvm_info, migration_info_t *attest_info)
 {
     int ret;
-    if (ctx == NULL || migvmInfo == NULL || attestInfo == NULL) {
+    if (ctx == NULL || migvm_info == NULL || attest_info == NULL) {
         return NULL_INPUT;
     }
 
-    migvmInfo->ops = OP_MIGRATE_GET_ATTR;
-    migvmInfo->size = sizeof(MigrationInfoT);
-    if (attestInfo == NULL) {
-        printf("Failed to allocate memory for MigrationInfo: out of memory\n");
+    migvm_info->ops = OP_MIGRATE_GET_ATTR;
+    migvm_info->size = sizeof(migration_info_t);
+    if (attest_info == NULL) {
+        printf("Failed to allocate memory for migration_info: out of memory\n");
         return TSI_ERROR;
     }
-    migvmInfo->migInfo = attestInfo;
+    migvm_info->mig_info = attest_info;
 
-    ret = ioctl(ctx->fd, TMM_GET_MIGRATION_INFO, migvmInfo);
+    ret = ioctl(ctx->fd, TMM_GET_MIGRATION_INFO, migvm_info);
     if (ret != 0) {
-        char errorMessage[256] = {0};
-        strerror_r(errno, errorMessage, sizeof(errorMessage));
-        printf("Failed to get migration info: %s (errno=%d)\n", errorMessage, errno);
-        free(attestInfo);
+        char error_message[256] = {0};
+        strerror_r(errno, error_message, sizeof(error_message));
+        printf("Failed to get migration info: %s (errno=%d)\n", error_message, errno);
+        free(attest_info);
         return TSI_ERROR;
     }
 
-    if (attestInfo->msk) {
-        printf("the local msk is 0x%lx\n", attestInfo->msk);
+    if (attest_info->msk) {
+        printf("the local msk is 0x%lx\n", attest_info->msk);
     } else {
         printf("the msk is not set\n");
     }
 
-    if (attestInfo->isSrc) {
+    if (attest_info->is_src) {
         printf("This is a source VM.\n");
     } else {
         printf("This is a destination VM.\n");
     }
-    free(attestInfo);
+    free(attest_info);
     return TSI_SUCCESS;
 }
 
-int SetMigrationBindSlotAndMsk(TsiCtx *ctx, VirtccaMigvmInfoT *migvmInfo, MigrationInfoT *attestInfo)
+int set_migration_bind_slot_and_mask(tsi_ctx *ctx, virtcca_mig_info_t *migvm_info, migration_info_t *attest_info)
 {
     int ret;
-    if (ctx == NULL || migvmInfo == NULL || attestInfo == NULL) {
+    if (ctx == NULL || migvm_info == NULL || attest_info == NULL) {
         return NULL_INPUT;
     }
 
-    migvmInfo->size = sizeof(MigrationInfoT);
-    migvmInfo->ops = OP_MIGRATE_SET_SLOT;
-    migvmInfo->migInfo = attestInfo;
+    migvm_info->size = sizeof(migration_info_t);
+    migvm_info->ops = OP_MIGRATE_SET_SLOT;
+    migvm_info->mig_info = attest_info;
 
-    ret = ioctl(ctx->fd, TMM_GET_MIGRATION_INFO, migvmInfo);
+    ret = ioctl(ctx->fd, TMM_GET_MIGRATION_INFO, migvm_info);
     if (ret != 0) {
         printf("Failed to get migration info. errno: %d\n", errno);
         return TSI_ERROR;

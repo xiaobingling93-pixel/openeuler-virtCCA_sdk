@@ -1,99 +1,57 @@
-cmake_minimum_required(VERSION 3.10)
-project(MIGVM_Agent)
+cmake_minimum_required(VERSION 3.5.1)
+project(migcvm-agent)
 
-# Set build type
-if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Choose the type of build" FORCE)
-    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "MinSizeRel" "RelWithDebInfo")
-endif()
+set(CMAKE_C_FLAGS "-fPIE ${CMAKE_C_FLAGS}")
 
-message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
+# Set source file
+set(SOURCES src/rats-mig-agent.c 
+    src/token_parse.c 
+    src/token_validate.c 
+    src/platform_verify.c
+    src/ima_measure.c
+    src/event_log.c
+    src/rem.c
+    src/firmware_state.c
+    src/binary_blob.c
+    src/verify.c
+    src/config.c
+    src/host_socket_agent.c
+    src/utils.c)
 
-# Set C standard
-set(CMAKE_C_STANDARD 99)
-set(CMAKE_C_STANDARD_REQUIRED ON)
-
-# Use host compiler
-message(STATUS "Using host compiler")
-
-# Add executable
-# Main executable
-add_executable(migvm_agent 
-    migvm_agent.c
-    migcvm_tsi/migcvm_tsi.c
-    socket_agent/host_socket_agent.c
-)
+# Generate bin file
+add_executable(${PROJECT_NAME} ${SOURCES})
 
 # Debug tool
-add_executable(socket-send
-    debug/socket-send.c
-)
-target_include_directories(socket-send PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/socket_agent
+set(DEBUG_TOOL debug/socket-tool.c)
+add_executable(socket-tool ${DEBUG_TOOL})
+
+target_include_directories(${PROJECT_NAME} PRIVATE
+    rats-tls/src/include
+    inc/
+    /usr/local/include/qcbor
+    /usr/include
+    /usr/local/lib
+    /usr/include/openssl
+    /usr/local/include/t_cose
 )
 
-add_executable(tsi-test
-    debug/tsi-test.c
-    migcvm_tsi/migcvm_tsi.c
-)
-target_include_directories(tsi-test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/migcvm_tsi
-)
+link_directories(/lib64/
+                /usr/lib/rats-tls/
+                /usr/lib64
+                /usr/local/lib64)
 
-# Build debug tool in debug mode
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    add_dependencies(migvm_agent socket-send tsi-test)
-endif()
+find_package(OpenSSL REQUIRED)
+find_library(RATS_TLS_LIB rats_tls PATHS /usr/lib/rats-tls/)
+find_library(QCBOR_LIB qcbor)
+find_library(T_COSE_LIB t_cose)
 
-# Include directories
-target_include_directories(migvm_agent PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/migcvm_tsi
-    ${CMAKE_CURRENT_SOURCE_DIR}/socket_agent
-)
-
-# Common compile options
-target_compile_options(migvm_agent PRIVATE
-    $<$<CONFIG:Debug>:-O0 -g3 -DDEBUG>
-    $<$<NOT:$<CONFIG:Debug>>:-O2 -DNDEBUG>
-    -Wall
-    -Wextra
-    -Werror
-    -fPIC
+target_link_libraries(${PROJECT_NAME} PRIVATE 
+    m
+    OpenSSL::Crypto
+    ${T_COSE_LIB}
+    ${QCBOR_LIB}
+    ${RATS_TLS_LIB}
 )
 
-target_compile_options(socket-send PRIVATE
-    -g3 -O0 -DDEBUG
-    -Wall
-    -Wextra
-    -fPIC
-)
-
-target_compile_options(tsi-test PRIVATE
-    -g3 -O0 -DDEBUG
-    -Wall
-    -Wextra
-    -fPIC
-)
-
-# General Compiler Options
-target_compile_options(migvm_agent PRIVATE
-    -Wall
-    -Wextra
-    -Werror
-    -fPIC
-)
-
-target_link_options(migvm_agent PRIVATE
-    -Wl,--no-undefined
-)
-
-# Link libraries
-target_link_libraries(migvm_agent PRIVATE
-    pthread
-)
-
-# Install target
-install(TARGETS migvm_agent
-    RUNTIME DESTINATION bin
-)
-
+install(TARGETS ${PROJECT_NAME}
+        DESTINATION ${RATS_TLS_INSTALL_BIN_PATH})
