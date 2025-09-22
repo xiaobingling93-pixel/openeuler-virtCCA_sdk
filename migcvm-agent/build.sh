@@ -16,6 +16,10 @@ for arg in "$@"; do
         --clean)
             CLEAN=true
             ;;
+        *)
+            echo "Unknown argument: $arg"
+            exit 1
+            ;;
     esac
 done
 
@@ -23,6 +27,7 @@ done
 if [[ $CLEAN == true ]]; then
     echo "Cleaning build directory..."
     rm -rf build
+    exit 1
 fi
 
 # 
@@ -40,20 +45,20 @@ cmake -DCMAKE_BUILD_TYPE=${BUILD_TYPE} .. || {
 echo "Building project..."
 if [[ $BUILD_DEBUG_TOOL == true ]]; then
     echo "Building debug tool only..."
-    make socket-send tsi_test || {
+    make socket-tool tsi-controller || {
         echo "Debug tool build failed"
         exit 1
     }
     echo "Debug tool built successfully! Executable is located at: build/socket-send"
 elif [[ $BUILD_TYPE == "Debug" ]]; then
     echo "Building in debug mode (both main agent and debug tool)..."
-    make migvm_agent socket-send tsi-test || {
+    make migcvm-agent socket-tool tsi-controller || {
         echo "Build failed"
         exit 1
     }
     echo "Build successful! Executables are located at: build/migvm_agent and build/socket-send"
 else
-    make migvm_agent || {
+    make migcvm-agent || {
         echo "Build failed"
         exit 1
     }
