@@ -1375,16 +1375,10 @@ fi
 # Add nydus configuration to containerd
 sed -i '/^[[:space:]]*\[proxy_plugins\][[:space:]]*$/d' /etc/containerd/config.toml
 
+sed -i '/\[plugins\."io\.containerd\.grpc\.v1\.cri"\.containerd\]/,/^\[/ s/snapshotter = "overlayfs"/snapshotter = "nydus"/' /etc/containerd/config.toml
+
 if ! grep -q "proxy_plugins.nydus" /etc/containerd/config.toml; then
   sudo tee -a /etc/containerd/config.toml > /dev/null <<'EOF'
-
-[plugins."io.containerd.grpc.v1.cri".containerd]
-  default_runtime_name = "runc"
-  disable_snapshot_annotations = false
-  discard_unpacked_layers = false
-  ignore_rdt_not_enabled_errors = false
-  no_pivot = false
-  snapshotter = "nydus"
 
 [proxy_plugins]
   [proxy_plugins.nydus]
