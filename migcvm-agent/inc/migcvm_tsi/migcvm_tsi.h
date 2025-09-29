@@ -1,0 +1,83 @@
+/*
+ * Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+ */
+
+#ifndef MIGCVM_TSI_H
+#define MIGCVM_TSI_H
+#include <stdbool.h>
+#include <linux/ioctl.h>
+
+#define TSI_MAGIC 'T'
+#define TSI_SUCCESS 0
+
+/* Measurement Related Defination */
+#define TMI_HASH_ALGO_SHA256    0
+#define TMI_HASH_ALGO_SHA512    1
+#define TMI_HASH_ALGO_SM3        2
+
+#define MAX_BIND_VM                (16U)
+
+enum slot_status {
+    SLOT_IS_EMPTY = 0,
+    SLOT_IS_BINDED,
+    SLOT_IS_READY
+};
+
+enum TSI_ERROR {
+    NULL_INPUT = 0x00010001,  /* NULL pointer. */
+    INVALID_PARAM,            /* Invalid param. */
+    INSUFFICIENT_BUFFER_LEN,  /* Insufficient buffer space. */
+    NO_DEVICE_FILE,           /* The TSI device file does not exist. */
+    TSI_ERROR,                /* TSI error. */
+};
+
+typedef struct {
+    int fd;
+} tsi_ctx;
+
+/*
+ * @brief   Init ctx.
+ * @return  TSI context
+ */
+tsi_ctx *tsi_new_ctx(void);
+
+/*
+ * @brief   Free ctx.
+ * @param   ctx [IN] TSI context
+ */
+void tsi_free_ctx(tsi_ctx *ctx);
+
+#define MAX_MEASUREMENT_SIZE                (64U)
+#define MEASUREMENT_SLOT_NR        (5U)
+typedef struct pending_guest_rd_s {
+    unsigned long long guest_rd[MAX_BIND_VM];
+} pending_guest_rd_t;
+
+typedef struct migration_info {
+    /* Algorithm to use for measurements */
+    unsigned long long measurement_algo;
+    /* cvm measurement */
+    unsigned char measurement[MEASUREMENT_SLOT_NR][MAX_MEASUREMENT_SIZE];
+    bool set_key;
+    unsigned short slot_status;
+    unsigned long long msk[4];
+    pending_guest_rd_t *pending_guest_rds;
+} migration_info_t;
+
+typedef struct virtcca_migvm_info {
+    enum Ops {
+        OP_MIGRATE_GET_ATTR = 0,
+        OP_MIGRATE_SET_SLOT,
+        OP_MIGRATE_PEEK_RDS
+    } ops;
+    migration_info_t *mig_info;    /* if ops == OP_MIGRATE_GET_ATTR, the size is sizeof(content) */
+    unsigned long long guest_rd;  /* if ops == OP_MIGRATE_SET_SLOT, the size is sizeof(guest_rd) */
+    unsigned long size;
+} virtcca_mig_info_t;
+
+#define TMM_GET_MIGRATION_INFO _IOWR(TSI_MAGIC, 3, struct virtcca_migvm_info)
+
+int get_migration_info_and_mask(tsi_ctx *ctx, virtcca_mig_info_t *migvm_info, migration_info_t *attest_info);
+int set_migration_bind_slot_and_mask(tsi_ctx *ctx, virtcca_mig_info_t *migvm_info, migration_info_t *attest_info);
+int get_migration_binded_rds(tsi_ctx *ctx, virtcca_mig_info_t *migvm_info, migration_info_t *attest_info);
+#endif
