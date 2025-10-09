@@ -1,0 +1,171 @@
+From ef56af82fc085b5e6ff6c6a05bf2cf0c26d75618 Mon Sep 17 00:00:00 2001
+From: yxk <yangxiangkai@huawei.com>
+Date: Wed, 7 May 2025 17:22:13 +0000
+Subject: [PATCH] virtCCA supports SR-IOV of NVMe in CoDA scenarios.
+
+virtcca inclusion
+category: feature
+bugzilla: https://gitee.com/openeuler/kernel/issues/IC6314
+
+--------------------------------
+
+We modified the NVMe driver to route secure device access
+via TMM, implemented PF driver (in non-secure world) to
+manage VFs (in secure world).
+
+Signed-off-by: yxk <yangxiangkai@huawei.com>
+---
+ drivers/nvme/host/pci.c | 43 ++++++++++++++++++++++-------------------
+ 1 file changed, 23 insertions(+), 20 deletions(-)
+
+diff --git a/drivers/nvme/host/pci.c b/drivers/nvme/host/pci.c
+index b1310e69d07d..42e0dda8a7bb 100644
+--- a/drivers/nvme/host/pci.c
++++ b/drivers/nvme/host/pci.c
+@@ -28,6 +28,9 @@
+ #include <linux/io-64-nonatomic-hi-lo.h>
+ #include <linux/sed-opal.h>
+ #include <linux/pci-p2pdma.h>
++#ifdef CONFIG_HISI_VIRTCCA_CODA
++#include <asm/virtcca_coda.h>
++#endif
+ 
+ #include "trace.h"
+ #include "nvme.h"
+@@ -482,7 +485,7 @@ static inline void nvme_write_sq_db(struct nvme_queue *nvmeq, bool write_sq)
+ 
+ 	if (nvme_dbbuf_update_and_check_event(nvmeq->sq_tail,
+ 			nvmeq->dbbuf_sq_db, nvmeq->dbbuf_sq_ei))
+-		writel(nvmeq->sq_tail, nvmeq->q_db);
++		writel_hook(nvmeq->sq_tail, nvmeq->q_db, to_pci_dev(nvmeq->dev->dev));
+ 	nvmeq->last_sq_tail = nvmeq->sq_tail;
+ }
+ 
+@@ -997,7 +1000,7 @@ static inline void nvme_ring_cq_doorbell(struct nvme_queue *nvmeq)
+ 
+ 	if (nvme_dbbuf_update_and_check_event(head, nvmeq->dbbuf_cq_db,
+ 					      nvmeq->dbbuf_cq_ei))
+-		writel(head, nvmeq->q_db + nvmeq->dev->db_stride);
++		writel_hook(head, nvmeq->q_db + nvmeq->dev->db_stride, to_pci_dev(nvmeq->dev->dev));
+ }
+ 
+ static inline struct blk_mq_tags *nvme_queue_tagset(struct nvme_queue *nvmeq)
+@@ -1282,7 +1285,7 @@ static enum blk_eh_timer_return nvme_timeout(struct request *req)
+ 	struct nvme_dev *dev = nvmeq->dev;
+ 	struct request *abort_req;
+ 	struct nvme_command cmd = { };
+-	u32 csts = readl(dev->bar + NVME_REG_CSTS);
++	u32 csts = readl_hook(dev->bar + NVME_REG_CSTS, to_pci_dev(dev->dev));
+ 
+ 	if (nvme_state_terminal(&dev->ctrl))
+ 		goto disable;
+@@ -1727,12 +1730,12 @@ static int nvme_pci_configure_admin_queue(struct nvme_dev *dev)
+ 	if (result < 0)
+ 		return result;
+ 
+-	dev->subsystem = readl(dev->bar + NVME_REG_VS) >= NVME_VS(1, 1, 0) ?
++	dev->subsystem = readl_hook(dev->bar + NVME_REG_VS, to_pci_dev(dev->dev)) >= NVME_VS(1, 1, 0) ?
+ 				NVME_CAP_NSSRC(dev->ctrl.cap) : 0;
+ 
+ 	if (dev->subsystem &&
+-	    (readl(dev->bar + NVME_REG_CSTS) & NVME_CSTS_NSSRO))
+-		writel(NVME_CSTS_NSSRO, dev->bar + NVME_REG_CSTS);
++		(readl_hook(dev->bar + NVME_REG_CSTS, to_pci_dev(dev->dev)) & NVME_CSTS_NSSRO))
++		writel_hook(NVME_CSTS_NSSRO, dev->bar + NVME_REG_CSTS, to_pci_dev(dev->dev));
+ 
+ 	/*
+ 	 * If the device has been passed off to us in an enabled state, just
+@@ -1755,9 +1758,9 @@ static int nvme_pci_configure_admin_queue(struct nvme_dev *dev)
+ 	aqa = nvmeq->q_depth - 1;
+ 	aqa |= aqa << 16;
+ 
+-	writel(aqa, dev->bar + NVME_REG_AQA);
+-	lo_hi_writeq(nvmeq->sq_dma_addr, dev->bar + NVME_REG_ASQ);
+-	lo_hi_writeq(nvmeq->cq_dma_addr, dev->bar + NVME_REG_ACQ);
++	writel_hook(aqa, dev->bar + NVME_REG_AQA, to_pci_dev(dev->dev));
++	lo_hi_writeq_hook(nvmeq->sq_dma_addr, dev->bar + NVME_REG_ASQ, to_pci_dev(dev->dev));
++	lo_hi_writeq_hook(nvmeq->cq_dma_addr, dev->bar + NVME_REG_ACQ, to_pci_dev(dev->dev));
+ 
+ 	result = nvme_enable_ctrl(&dev->ctrl);
+ 	if (result)
+@@ -1835,12 +1838,12 @@ static void nvme_map_cmb(struct nvme_dev *dev)
+ 		return;
+ 
+ 	if (NVME_CAP_CMBS(dev->ctrl.cap))
+-		writel(NVME_CMBMSC_CRE, dev->bar + NVME_REG_CMBMSC);
++		writel_hook(NVME_CMBMSC_CRE, dev->bar + NVME_REG_CMBMSC, pdev);
+ 
+-	dev->cmbsz = readl(dev->bar + NVME_REG_CMBSZ);
++	dev->cmbsz = readl_hook(dev->bar + NVME_REG_CMBSZ, pdev);
+ 	if (!dev->cmbsz)
+ 		return;
+-	dev->cmbloc = readl(dev->bar + NVME_REG_CMBLOC);
++	dev->cmbloc = readl_hook(dev->bar + NVME_REG_CMBLOC, pdev);
+ 
+ 	size = nvme_cmb_size_unit(dev) * nvme_cmb_size(dev);
+ 	offset = nvme_cmb_size_unit(dev) * NVME_CMB_OFST(dev->cmbloc);
+@@ -1855,9 +1858,9 @@ static void nvme_map_cmb(struct nvme_dev *dev)
+ 	 * and enable CMB decoding for the NVMe 1.4+ scheme:
+ 	 */
+ 	if (NVME_CAP_CMBS(dev->ctrl.cap)) {
+-		hi_lo_writeq(NVME_CMBMSC_CRE | NVME_CMBMSC_CMSE |
++		hi_lo_writeq_hook(NVME_CMBMSC_CRE | NVME_CMBMSC_CMSE |
+ 			     (pci_bus_address(pdev, bar) + offset),
+-			     dev->bar + NVME_REG_CMBMSC);
++			     dev->bar + NVME_REG_CMBMSC, pdev);
+ 	}
+ 
+ 	/*
+@@ -2502,7 +2505,7 @@ static int nvme_pci_enable(struct nvme_dev *dev)
+ 
+ 	pci_set_master(pdev);
+ 
+-	if (readl(dev->bar + NVME_REG_CSTS) == -1) {
++	if (readl_hook(dev->bar + NVME_REG_CSTS, pdev) == -1) {
+ 		result = -ENODEV;
+ 		goto disable;
+ 	}
+@@ -2518,7 +2521,7 @@ static int nvme_pci_enable(struct nvme_dev *dev)
+ 	if (result < 0)
+ 		goto disable;
+ 
+-	dev->ctrl.cap = lo_hi_readq(dev->bar + NVME_REG_CAP);
++	dev->ctrl.cap = lo_hi_readq_hook(dev->bar + NVME_REG_CAP, pdev);
+ 
+ 	dev->q_depth = min_t(u32, NVME_CAP_MQES(dev->ctrl.cap) + 1,
+ 				io_queue_depth);
+@@ -2590,7 +2593,7 @@ static bool nvme_pci_ctrl_is_dead(struct nvme_dev *dev)
+ 	if (pdev->error_state != pci_channel_io_normal)
+ 		return true;
+ 
+-	csts = readl(dev->bar + NVME_REG_CSTS);
++	csts = readl_hook(dev->bar + NVME_REG_CSTS, pdev);
+ 	return (csts & NVME_CSTS_CFS) || !(csts & NVME_CSTS_RDY);
+ }
+ 
+@@ -2818,19 +2821,19 @@ static void nvme_reset_work(struct work_struct *work)
+ 
+ static int nvme_pci_reg_read32(struct nvme_ctrl *ctrl, u32 off, u32 *val)
+ {
+-	*val = readl(to_nvme_dev(ctrl)->bar + off);
++	*val = readl_hook(to_nvme_dev(ctrl)->bar + off, to_pci_dev(to_nvme_dev(ctrl)->dev));
+ 	return 0;
+ }
+ 
+ static int nvme_pci_reg_write32(struct nvme_ctrl *ctrl, u32 off, u32 val)
+ {
+-	writel(val, to_nvme_dev(ctrl)->bar + off);
++	writel_hook(val, to_nvme_dev(ctrl)->bar + off, to_pci_dev(to_nvme_dev(ctrl)->dev));
+ 	return 0;
+ }
+ 
+ static int nvme_pci_reg_read64(struct nvme_ctrl *ctrl, u32 off, u64 *val)
+ {
+-	*val = lo_hi_readq(to_nvme_dev(ctrl)->bar + off);
++	*val = lo_hi_readq_hook(to_nvme_dev(ctrl)->bar + off, to_pci_dev(to_nvme_dev(ctrl)->dev));
+ 	return 0;
+ }
+ 
+-- 
+Gitee
+

@@ -1,0 +1,976 @@
+From 097728e288b1a6615e2f79a5a16789a2c24e1423 Mon Sep 17 00:00:00 2001
+From: yxk <yangxiangkai@huawei.com>
+Date: Wed, 7 May 2025 17:23:07 +0000
+Subject: [PATCH] virtCCA supports SR-IOV of Mellanox NICs in CoDA scenarios.
+
+virtcca inclusion
+category: feature
+bugzilla: https://gitee.com/openeuler/kernel/issues/IC6314
+
+--------------------------------
+
+We modified the mlx5 driver to route secure device access
+via TMM, implemented  PF driver (in non-secure world) to
+manage VFs (in secure world).
+
+Signed-off-by: yxk <yangxiangkai@huawei.com>
+---
+ drivers/infiniband/hw/mlx5/cq.c               |  7 +-
+ drivers/infiniband/hw/mlx5/mem.c              |  7 +-
+ drivers/infiniband/hw/mlx5/wr.c               |  5 +-
+ drivers/net/ethernet/mellanox/mlx5/core/cmd.c | 13 ++--
+ .../net/ethernet/mellanox/mlx5/core/ecpf.c    |  5 +-
+ .../net/ethernet/mellanox/mlx5/core/en/txrx.h |  5 +-
+ .../net/ethernet/mellanox/mlx5/core/en/xdp.h  |  2 +-
+ .../mellanox/mlx5/core/en_accel/ktls_rx.c     |  9 ++-
+ .../net/ethernet/mellanox/mlx5/core/en_main.c |  2 +-
+ .../net/ethernet/mellanox/mlx5/core/en_rx.c   |  2 +-
+ .../net/ethernet/mellanox/mlx5/core/en_tx.c   |  8 +-
+ .../net/ethernet/mellanox/mlx5/core/en_txrx.c |  2 +-
+ drivers/net/ethernet/mellanox/mlx5/core/eq.c  |  5 +-
+ .../ethernet/mellanox/mlx5/core/fpga/conn.c   |  9 ++-
+ .../ethernet/mellanox/mlx5/core/fw_reset.c    |  7 +-
+ .../net/ethernet/mellanox/mlx5/core/health.c  | 75 ++++++++++---------
+ .../net/ethernet/mellanox/mlx5/core/lib/aso.c |  5 +-
+ .../ethernet/mellanox/mlx5/core/lib/clock.c   | 19 +++--
+ .../net/ethernet/mellanox/mlx5/core/lib/eq.h  |  5 +-
+ .../ethernet/mellanox/mlx5/core/lib/tout.c    |  9 ++-
+ .../net/ethernet/mellanox/mlx5/core/main.c    |  7 +-
+ .../mellanox/mlx5/core/steering/dr_send.c     |  6 +-
+ drivers/vfio/pci/mlx5/cmd.c                   | 11 ++-
+ include/linux/mlx5/coda_mlx5.h                | 74 ++++++++++++++++++
+ include/linux/mlx5/driver.h                   |  9 ++-
+ 25 files changed, 219 insertions(+), 89 deletions(-)
+ create mode 100644 include/linux/mlx5/coda_mlx5.h
+
+diff --git a/drivers/infiniband/hw/mlx5/cq.c b/drivers/infiniband/hw/mlx5/cq.c
+index 9773d2a3d97f..3fa929059ab3 100644
+--- a/drivers/infiniband/hw/mlx5/cq.c
++++ b/drivers/infiniband/hw/mlx5/cq.c
+@@ -37,6 +37,9 @@
+ #include "mlx5_ib.h"
+ #include "srq.h"
+ #include "qp.h"
++#ifdef CONFIG_HISI_VIRTCCA_CODA
++#include <linux/mlx5/coda_mlx5.h>
++#endif
+ 
+ static void mlx5_ib_cq_comp(struct mlx5_core_cq *cq, struct mlx5_eqe *eqe)
+ {
+@@ -657,10 +660,10 @@ int mlx5_ib_arm_cq(struct ib_cq *ibcq, enum ib_cq_notify_flags flags)
+ 		ret = 1;
+ 	spin_unlock_irqrestore(&cq->lock, irq_flags);
+ 
+-	mlx5_cq_arm(&cq->mcq,
++	mlx5_cq_arm_hook(&cq->mcq,
+ 		    (flags & IB_CQ_SOLICITED_MASK) == IB_CQ_SOLICITED ?
+ 		    MLX5_CQ_DB_REQ_NOT_SOL : MLX5_CQ_DB_REQ_NOT,
+-		    uar_page, to_mcq(ibcq)->mcq.cons_index);
++		    uar_page, to_mcq(ibcq)->mcq.cons_index, mdev->pdev);
+ 
+ 	return ret;
+ }
+diff --git a/drivers/infiniband/hw/mlx5/mem.c b/drivers/infiniband/hw/mlx5/mem.c
+index 5a22be14d958..13f9c40cfc37 100644
+--- a/drivers/infiniband/hw/mlx5/mem.c
++++ b/drivers/infiniband/hw/mlx5/mem.c
+@@ -34,6 +34,9 @@
+ #include <rdma/ib_umem_odp.h>
+ #include "mlx5_ib.h"
+ #include <linux/jiffies.h>
++#ifdef CONFIG_HISI_VIRTCCA_CODA
++#include <asm/virtcca_coda.h>
++#endif
+ 
+ /*
+  * Fill in a physical address list. ib_umem_num_dma_blocks() entries will be
+@@ -148,8 +151,8 @@ static int post_send_nop(struct mlx5_ib_dev *dev, struct ib_qp *ibqp, u64 wr_id,
+ 	 * we hit doorbell
+ 	 */
+ 	wmb();
+-	__iowrite64_copy(bf->bfreg->map + bf->offset, mmio_wqe,
+-			 sizeof(mmio_wqe) / 8);
++	__iowrite64_copy_hook(bf->bfreg->map + bf->offset, mmio_wqe,
++			 sizeof(mmio_wqe) / 8, dev->mdev->pdev);
+ 
+ 	bf->offset ^= bf->buf_size;
+ 
+diff --git a/drivers/infiniband/hw/mlx5/wr.c b/drivers/infiniband/hw/mlx5/wr.c
+index 9947feb7fb8a..3698807bb16c 100644
+--- a/drivers/infiniband/hw/mlx5/wr.c
++++ b/drivers/infiniband/hw/mlx5/wr.c
+@@ -8,6 +8,9 @@
+ #include <linux/mlx5/driver.h>
+ #include "wr.h"
+ #include "umr.h"
++#ifdef CONFIG_HISI_VIRTCCA_CODA
++#include <linux/mlx5/coda_mlx5.h>
++#endif
+ 
+ static const u32 mlx5_ib_opcode[] = {
+ 	[IB_WR_SEND]				= MLX5_OPCODE_SEND,
+@@ -1041,7 +1044,7 @@ void mlx5r_ring_db(struct mlx5_ib_qp *qp, unsigned int nreq,
+ 	 */
+ 	wmb();
+ 
+-	mlx5_write64((__be32 *)ctrl, bf->bfreg->map + bf->offset);
++	mlx5_write64_hook((__be32 *)ctrl, bf->bfreg->map + bf->offset, to_mdev(qp->ibqp.device)->mdev->pdev);
+ 	/* Make sure doorbells don't leak out of SQ spinlock
+ 	 * and reach the HCA out of order.
+ 	 */
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/cmd.c b/drivers/net/ethernet/mellanox/mlx5/core/cmd.c
+index 3e6bd27f6315..1d59189dea36 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/cmd.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/cmd.c
+@@ -46,6 +46,9 @@
+ #include "lib/tout.h"
+ #define CREATE_TRACE_POINTS
+ #include "diag/cmd_tracepoint.h"
++#ifdef CONFIG_HISI_VIRTCCA_CODA
++#include <asm/virtcca_coda.h>
++#endif
+ 
+ struct mlx5_ifc_mbox_out_bits {
+ 	u8         status[0x8];
+@@ -1053,7 +1056,7 @@ static void cmd_work_handler(struct work_struct *work)
+ 	/* ring doorbell after the descriptor is valid */
+ 	mlx5_core_dbg(dev, "writing 0x%x to command doorbell\n", 1 << ent->idx);
+ 	wmb();
+-	iowrite32be(1 << ent->idx, &dev->iseg->cmd_dbell);
++	iowrite32be_hook(1 << ent->idx, &dev->iseg->cmd_dbell, dev->pdev);
+ 	/* if not in polling don't use ent after this point */
+ 	if (cmd_mode == CMD_MODE_POLLING || poll_cmd) {
+ 		poll_timeout(ent);
+@@ -2215,7 +2218,7 @@ static void free_cmd_page(struct mlx5_core_dev *dev, struct mlx5_cmd *cmd)
+ 
+ static u16 cmdif_rev(struct mlx5_core_dev *dev)
+ {
+-	return ioread32be(&dev->iseg->cmdif_rev_fw_sub) >> 16;
++	return ioread32be_hook(&dev->iseg->cmdif_rev_fw_sub, dev->pdev) >> 16;
+ }
+ 
+ int mlx5_cmd_init(struct mlx5_core_dev *dev)
+@@ -2264,7 +2267,7 @@ int mlx5_cmd_enable(struct mlx5_core_dev *dev)
+ 		return -EINVAL;
+ 	}
+ 
+-	cmd_l = ioread32be(&dev->iseg->cmdq_addr_l_sz) & 0xff;
++	cmd_l = ioread32be_hook(&dev->iseg->cmdq_addr_l_sz, dev->pdev) & 0xff;
+ 	cmd->vars.log_sz = cmd_l >> 4 & 0xf;
+ 	cmd->vars.log_stride = cmd_l & 0xf;
+ 	if (1 << cmd->vars.log_sz > MLX5_MAX_COMMANDS) {
+@@ -2302,8 +2305,8 @@ int mlx5_cmd_enable(struct mlx5_core_dev *dev)
+ 		goto err_cmd_page;
+ 	}
+ 
+-	iowrite32be(cmd_h, &dev->iseg->cmdq_addr_h);
+-	iowrite32be(cmd_l, &dev->iseg->cmdq_addr_l_sz);
++	iowrite32be_hook(cmd_h, &dev->iseg->cmdq_addr_h, dev->pdev);
++	iowrite32be_hook(cmd_l, &dev->iseg->cmdq_addr_l_sz, dev->pdev);
+ 
+ 	/* Make sure firmware sees the complete address before we proceed */
+ 	wmb();
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/ecpf.c b/drivers/net/ethernet/mellanox/mlx5/core/ecpf.c
+index d000236ddbac..2ab20bf65457 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/ecpf.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/ecpf.c
+@@ -2,10 +2,13 @@
+ /* Copyright (c) 2019 Mellanox Technologies. */
+ 
+ #include "ecpf.h"
++#ifdef CONFIG_HISI_VIRTCCA_CODA
++#include <asm/virtcca_coda.h>
++#endif
+ 
+ bool mlx5_read_embedded_cpu(struct mlx5_core_dev *dev)
+ {
+-	return (ioread32be(&dev->iseg->initializing) >> MLX5_ECPU_BIT_NUM) & 1;
++	return (ioread32be_hook(&dev->iseg->initializing, dev->pdev) >> MLX5_ECPU_BIT_NUM) & 1;
+ }
+ 
+ static bool mlx5_ecpf_esw_admins_host_pf(const struct mlx5_core_dev *dev)
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/en/txrx.h b/drivers/net/ethernet/mellanox/mlx5/core/en/txrx.h
+index 879d698b6119..f72ba674cfac 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/en/txrx.h
++++ b/drivers/net/ethernet/mellanox/mlx5/core/en/txrx.h
+@@ -6,6 +6,9 @@
+ 
+ #include "en.h"
+ #include <linux/indirect_call_wrapper.h>
++#ifdef CONFIG_HISI_VIRTCCA_CODA
++#include <linux/mlx5/coda_mlx5.h>
++#endif
+ 
+ #define MLX5E_TX_WQE_EMPTY_DS_COUNT (sizeof(struct mlx5e_tx_wqe) / MLX5_SEND_WQE_DS)
+ 
+@@ -278,7 +281,7 @@ static inline void mlx5e_cq_arm(struct mlx5e_cq *cq)
+ 	struct mlx5_core_cq *mcq;
+ 
+ 	mcq = &cq->mcq;
+-	mlx5_cq_arm(mcq, MLX5_CQ_DB_REQ_NOT, mcq->uar->map, cq->wq.cc);
++	mlx5_cq_arm_hook(mcq, MLX5_CQ_DB_REQ_NOT, mcq->uar->map, cq->wq.cc, cq->mdev->pdev);
+ }
+ 
+ static inline struct mlx5e_sq_dma *
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/en/xdp.h b/drivers/net/ethernet/mellanox/mlx5/core/en/xdp.h
+index ecfe93a479da..a16b4e87ce02 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/en/xdp.h
++++ b/drivers/net/ethernet/mellanox/mlx5/core/en/xdp.h
+@@ -153,7 +153,7 @@ static inline bool mlx5e_xdp_is_active(struct mlx5e_priv *priv)
+ static inline void mlx5e_xmit_xdp_doorbell(struct mlx5e_xdpsq *sq)
+ {
+ 	if (sq->doorbell_cseg) {
+-		mlx5e_notify_hw(&sq->wq, sq->pc, sq->uar_map, sq->doorbell_cseg);
++		mlx5e_notify_hw_hook(&sq->wq, sq->pc, sq->uar_map, sq->doorbell_cseg, sq->wq_ctrl.mdev->pdev);
+ 		sq->doorbell_cseg = NULL;
+ 	}
+ }
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/en_accel/ktls_rx.c b/drivers/net/ethernet/mellanox/mlx5/core/en_accel/ktls_rx.c
+index 9b597cb24598..bb525930b7cb 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/en_accel/ktls_rx.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/en_accel/ktls_rx.c
+@@ -7,6 +7,9 @@
+ #include "en_accel/ktls_txrx.h"
+ #include "en_accel/ktls_utils.h"
+ #include "en_accel/fs_tcp.h"
++#ifdef CONFIG_HISI_VIRTCCA_CODA
++#include <linux/mlx5/coda_mlx5.h>
++#endif
+ 
+ struct accel_rule {
+ 	struct work_struct work;
+@@ -212,7 +215,7 @@ static int post_rx_param_wqes(struct mlx5e_channel *c,
+ 	if (IS_ERR(cseg))
+ 		goto err_out;
+ 
+-	mlx5e_notify_hw(&sq->wq, sq->pc, sq->uar_map, cseg);
++	mlx5e_notify_hw_hook(&sq->wq, sq->pc, sq->uar_map, cseg, sq->wq_ctrl.mdev->pdev);
+ unlock:
+ 	spin_unlock_bh(&c->async_icosq_lock);
+ 
+@@ -310,7 +313,7 @@ resync_post_get_progress_params(struct mlx5e_icosq *sq,
+ 	};
+ 	icosq_fill_wi(sq, pi, &wi);
+ 	sq->pc++;
+-	mlx5e_notify_hw(&sq->wq, sq->pc, sq->uar_map, cseg);
++	mlx5e_notify_hw_hook(&sq->wq, sq->pc, sq->uar_map, cseg, sq->wq_ctrl.mdev->pdev);
+ 	spin_unlock_bh(&sq->channel->async_icosq_lock);
+ 
+ 	return 0;
+@@ -764,7 +767,7 @@ bool mlx5e_ktls_rx_handle_resync_list(struct mlx5e_channel *c, int budget)
+ 		db_cseg = cseg;
+ 	}
+ 	if (db_cseg)
+-		mlx5e_notify_hw(&sq->wq, sq->pc, sq->uar_map, db_cseg);
++		mlx5e_notify_hw_hook(&sq->wq, sq->pc, sq->uar_map, db_cseg, sq->wq_ctrl.mdev->pdev);
+ 	spin_unlock(&c->async_icosq_lock);
+ 
+ 	priv_rx->rq_stats->tls_resync_res_ok += j;
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/en_main.c b/drivers/net/ethernet/mellanox/mlx5/core/en_main.c
+index dc6c62f20dac..d53ecdb1cd40 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/en_main.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/en_main.c
+@@ -1759,7 +1759,7 @@ void mlx5e_deactivate_txqsq(struct mlx5e_txqsq *sq)
+ 		};
+ 
+ 		nop = mlx5e_post_nop(wq, sq->sqn, &sq->pc);
+-		mlx5e_notify_hw(wq, sq->pc, sq->uar_map, &nop->ctrl);
++		mlx5e_notify_hw_hook(wq, sq->pc, sq->uar_map, &nop->ctrl, sq->wq_ctrl.mdev->pdev);
+ 	}
+ }
+ 
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/en_rx.c b/drivers/net/ethernet/mellanox/mlx5/core/en_rx.c
+index 57b0e26696e3..47ac909205fc 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/en_rx.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/en_rx.c
+@@ -1124,7 +1124,7 @@ INDIRECT_CALLABLE_SCOPE bool mlx5e_post_rx_mpwqes(struct mlx5e_rq *rq)
+ 
+ 	rq->mpwqe.umr_last_bulk    = missing - i;
+ 	if (sq->doorbell_cseg) {
+-		mlx5e_notify_hw(&sq->wq, sq->pc, sq->uar_map, sq->doorbell_cseg);
++		mlx5e_notify_hw_hook(&sq->wq, sq->pc, sq->uar_map, sq->doorbell_cseg, rq->mdev->pdev);
+ 		sq->doorbell_cseg = NULL;
+ 	}
+ 
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/en_tx.c b/drivers/net/ethernet/mellanox/mlx5/core/en_tx.c
+index 85d6334308e3..6b8ea5e60cb1 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/en_tx.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/en_tx.c
+@@ -368,7 +368,7 @@ static void mlx5e_tx_flush(struct mlx5e_txqsq *sq)
+ 	};
+ 
+ 	wqe = mlx5e_post_nop(&sq->wq, sq->sqn, &sq->pc);
+-	mlx5e_notify_hw(&sq->wq, sq->pc, sq->uar_map, &wqe->ctrl);
++	mlx5e_notify_hw_hook(&sq->wq, sq->pc, sq->uar_map, &wqe->ctrl, sq->wq_ctrl.mdev->pdev);
+ }
+ 
+ static inline void
+@@ -420,7 +420,7 @@ mlx5e_txwqe_complete(struct mlx5e_txqsq *sq, struct sk_buff *skb,
+ 
+ 	send_doorbell = __netdev_tx_sent_queue(sq->txq, attr->num_bytes, xmit_more);
+ 	if (send_doorbell)
+-		mlx5e_notify_hw(wq, sq->pc, sq->uar_map, cseg);
++		mlx5e_notify_hw_hook(wq, sq->pc, sq->uar_map, cseg, sq->wq_ctrl.mdev->pdev);
+ }
+ 
+ static void
+@@ -631,12 +631,12 @@ mlx5e_sq_xmit_mpwqe(struct mlx5e_txqsq *sq, struct sk_buff *skb,
+ 		cseg = mlx5e_tx_mpwqe_session_complete(sq);
+ 
+ 		if (__netdev_tx_sent_queue(sq->txq, txd.len, xmit_more))
+-			mlx5e_notify_hw(&sq->wq, sq->pc, sq->uar_map, cseg);
++			mlx5e_notify_hw_hook(&sq->wq, sq->pc, sq->uar_map, cseg, sq->wq_ctrl.mdev->pdev);
+ 	} else if (__netdev_tx_sent_queue(sq->txq, txd.len, xmit_more)) {
+ 		/* Might stop the queue, but we were asked to ring the doorbell anyway. */
+ 		cseg = mlx5e_tx_mpwqe_session_complete(sq);
+ 
+-		mlx5e_notify_hw(&sq->wq, sq->pc, sq->uar_map, cseg);
++		mlx5e_notify_hw_hook(&sq->wq, sq->pc, sq->uar_map, cseg, sq->wq_ctrl.mdev->pdev);
+ 	}
+ 
+ 	return;
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/en_txrx.c b/drivers/net/ethernet/mellanox/mlx5/core/en_txrx.c
+index a7d9b7cb4297..6409529e2ebc 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/en_txrx.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/en_txrx.c
+@@ -82,7 +82,7 @@ void mlx5e_trigger_irq(struct mlx5e_icosq *sq)
+ 	};
+ 
+ 	nopwqe = mlx5e_post_nop(wq, sq->sqn, &sq->pc);
+-	mlx5e_notify_hw(wq, sq->pc, sq->uar_map, &nopwqe->ctrl);
++	mlx5e_notify_hw_hook(wq, sq->pc, sq->uar_map, &nopwqe->ctrl, sq->wq_ctrl.mdev->pdev);
+ }
+ 
+ static bool mlx5e_napi_xsk_post(struct mlx5e_xdpsq *xsksq, struct mlx5e_rq *xskrq)
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/eq.c b/drivers/net/ethernet/mellanox/mlx5/core/eq.c
+index 07a041954909..836d28bf477f 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/eq.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/eq.c
+@@ -21,6 +21,9 @@
+ #include "pci_irq.h"
+ #include "devlink.h"
+ #include "en_accel/ipsec.h"
++#ifdef CONFIG_HISI_VIRTCCA_CODA
++#include <asm/virtcca_coda.h>
++#endif
+ 
+ enum {
+ 	MLX5_EQE_OWNER_INIT_VAL	= 0x1,
+@@ -809,7 +812,7 @@ void mlx5_eq_update_ci(struct mlx5_eq *eq, u32 cc, bool arm)
+ 	eq->cons_index += cc;
+ 	val = (eq->cons_index & 0xffffff) | (eq->eqn << 24);
+ 
+-	__raw_writel((__force u32)cpu_to_be32(val), addr);
++	__raw_writel_hook((__force u32)cpu_to_be32(val), addr, eq->dev->pdev);
+ 	/* We still want ordering, just not swabbing, so add a barrier */
+ 	wmb();
+ }
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/fpga/conn.c b/drivers/net/ethernet/mellanox/mlx5/core/fpga/conn.c
+index c4de6bf8d1b6..b4982e39d6e5 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/fpga/conn.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/fpga/conn.c
+@@ -38,6 +38,9 @@
+ #include "mlx5_core.h"
+ #include "lib/mlx5.h"
+ #include "fpga/conn.h"
++#ifdef CONFIG_HISI_VIRTCCA_CODA
++#include <linux/mlx5/coda_mlx5.h>
++#endif
+ 
+ #define MLX5_FPGA_PKEY 0xFFFF
+ #define MLX5_FPGA_PKEY_INDEX 0 /* RoCE PKEY 0xFFFF is always at index 0 */
+@@ -135,7 +138,7 @@ static void mlx5_fpga_conn_notify_hw(struct mlx5_fpga_conn *conn, void *wqe)
+ 	*conn->qp.wq.sq.db = cpu_to_be32(conn->qp.sq.pc);
+ 	/* Make sure that doorbell record is visible before ringing */
+ 	wmb();
+-	mlx5_write64(wqe, conn->fdev->conn_res.uar->map + MLX5_BF_OFFSET);
++	mlx5_write64_hook(wqe, conn->fdev->conn_res.uar->map + MLX5_BF_OFFSET, conn->fdev->mdev->pdev);
+ }
+ 
+ static void mlx5_fpga_conn_post_send(struct mlx5_fpga_conn *conn,
+@@ -358,8 +361,8 @@ static void mlx5_fpga_conn_handle_cqe(struct mlx5_fpga_conn *conn,
+ 
+ static void mlx5_fpga_conn_arm_cq(struct mlx5_fpga_conn *conn)
+ {
+-	mlx5_cq_arm(&conn->cq.mcq, MLX5_CQ_DB_REQ_NOT,
+-		    conn->fdev->conn_res.uar->map, conn->cq.wq.cc);
++	mlx5_cq_arm_hook(&conn->cq.mcq, MLX5_CQ_DB_REQ_NOT,
++		    conn->fdev->conn_res.uar->map, conn->cq.wq.cc, conn->fdev->mdev->pdev);
+ }
+ 
+ static inline void mlx5_fpga_conn_cqes(struct mlx5_fpga_conn *conn,
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/fw_reset.c b/drivers/net/ethernet/mellanox/mlx5/core/fw_reset.c
+index 6b17346aa4ce..fdc63085b50b 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/fw_reset.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/fw_reset.c
+@@ -6,6 +6,9 @@
+ #include "fw_reset.h"
+ #include "diag/fw_tracer.h"
+ #include "lib/tout.h"
++#ifdef CONFIG_HISI_VIRTCCA_CODA
++#include <asm/virtcca_coda.h>
++#endif
+ 
+ enum {
+ 	MLX5_FW_RESET_FLAGS_RESET_REQUESTED,
+@@ -43,12 +46,12 @@ enum {
+ 
+ static u8 mlx5_get_fw_rst_state(struct mlx5_core_dev *dev)
+ {
+-	return (ioread32be(&dev->iseg->initializing) >> MLX5_RST_STATE_BIT_NUM) & 0xF;
++	return (ioread32be_hook(&dev->iseg->initializing, dev->pdev) >> MLX5_RST_STATE_BIT_NUM) & 0xF;
+ }
+ 
+ static void mlx5_set_fw_rst_ack(struct mlx5_core_dev *dev)
+ {
+-	iowrite32be(BIT(MLX5_RST_ACK_BIT_NUM), &dev->iseg->initializing);
++	iowrite32be_hook(BIT(MLX5_RST_ACK_BIT_NUM), &dev->iseg->initializing, dev->pdev);
+ }
+ 
+ static int mlx5_fw_reset_enable_remote_dev_reset_set(struct devlink *devlink, u32 id,
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/health.c b/drivers/net/ethernet/mellanox/mlx5/core/health.c
+index 42b129e1142b..e1ac5ab6fbfa 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/health.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/health.c
+@@ -44,6 +44,9 @@
+ #include "lib/tout.h"
+ #include "diag/fw_tracer.h"
+ #include "diag/reporter_vnic.h"
++#ifdef CONFIG_HISI_VIRTCCA_CODA
++#include <asm/virtcca_coda.h>
++#endif
+ 
+ #if defined(CONFIG_OPTIMIZE_INLINING)
+ static inline void mlx5_printk(struct mlx5_core_dev *dev, int level,
+@@ -99,17 +102,17 @@ enum {
+ 
+ u8 mlx5_get_nic_state(struct mlx5_core_dev *dev)
+ {
+-	return (ioread32be(&dev->iseg->cmdq_addr_l_sz) >> 8) & 7;
++	return (ioread32be_hook(&dev->iseg->cmdq_addr_l_sz, dev->pdev) >> 8) & 7;
+ }
+ 
+ void mlx5_set_nic_state(struct mlx5_core_dev *dev, u8 state)
+ {
+ 	u32 cur_cmdq_addr_l_sz;
+ 
+-	cur_cmdq_addr_l_sz = ioread32be(&dev->iseg->cmdq_addr_l_sz);
+-	iowrite32be((cur_cmdq_addr_l_sz & 0xFFFFF000) |
++	cur_cmdq_addr_l_sz = ioread32be_hook(&dev->iseg->cmdq_addr_l_sz, dev->pdev);
++	iowrite32be_hook((cur_cmdq_addr_l_sz & 0xFFFFF000) |
+ 		    state << MLX5_NIC_IFC_OFFSET,
+-		    &dev->iseg->cmdq_addr_l_sz);
++		    &dev->iseg->cmdq_addr_l_sz, dev->pdev);
+ }
+ 
+ static bool sensor_pci_not_working(struct mlx5_core_dev *dev)
+@@ -118,7 +121,7 @@ static bool sensor_pci_not_working(struct mlx5_core_dev *dev)
+ 	struct health_buffer __iomem *h = health->health;
+ 
+ 	/* Offline PCI reads return 0xffffffff */
+-	return (ioread32be(&h->fw_ver) == 0xffffffff);
++	return (ioread32be_hook(&h->fw_ver, dev->pdev) == 0xffffffff);
+ }
+ 
+ static int mlx5_health_get_rfr(u8 rfr_severity)
+@@ -130,10 +133,10 @@ static bool sensor_fw_synd_rfr(struct mlx5_core_dev *dev)
+ {
+ 	struct mlx5_core_health *health = &dev->priv.health;
+ 	struct health_buffer __iomem *h = health->health;
+-	u8 synd = ioread8(&h->synd);
++	u8 synd = ioread8_hook(&h->synd, dev->pdev);
+ 	u8 rfr;
+ 
+-	rfr = mlx5_health_get_rfr(ioread8(&h->rfr_severity));
++	rfr = mlx5_health_get_rfr(ioread8_hook(&h->rfr_severity, dev->pdev));
+ 
+ 	if (rfr && synd)
+ 		mlx5_core_dbg(dev, "FW requests reset, synd: %d\n", synd);
+@@ -191,7 +194,7 @@ static int lock_sem_sw_reset(struct mlx5_core_dev *dev, bool lock)
+ 
+ static bool reset_fw_if_needed(struct mlx5_core_dev *dev)
+ {
+-	bool supported = (ioread32be(&dev->iseg->initializing) >>
++	bool supported = (ioread32be_hook(&dev->iseg->initializing, dev->pdev) >>
+ 			  MLX5_FW_RESET_SUPPORTED_OFFSET) & 1;
+ 	u32 fatal_error;
+ 
+@@ -446,36 +449,36 @@ static void print_health_info(struct mlx5_core_dev *dev)
+ 	int i;
+ 
+ 	/* If the syndrome is 0, the device is OK and no need to print buffer */
+-	if (!ioread8(&h->synd))
++	if (!ioread8_hook(&h->synd, dev->pdev))
+ 		return;
+ 
+-	if (ioread32be(&h->fw_ver) == 0xFFFFFFFF) {
++	if (ioread32be_hook(&h->fw_ver, dev->pdev) == 0xFFFFFFFF) {
+ 		mlx5_log(dev, LOGLEVEL_ERR, "PCI slot is unavailable\n");
+ 		return;
+ 	}
+ 
+-	rfr_severity = ioread8(&h->rfr_severity);
++	rfr_severity = ioread8_hook(&h->rfr_severity, dev->pdev);
+ 	severity  = mlx5_health_get_severity(rfr_severity);
+ 	mlx5_log(dev, severity, "Health issue observed, %s, severity(%d) %s:\n",
+-		 hsynd_str(ioread8(&h->synd)), severity, mlx5_loglevel_str(severity));
++		 hsynd_str(ioread8_hook(&h->synd, dev->pdev)), severity, mlx5_loglevel_str(severity));
+ 
+ 	for (i = 0; i < ARRAY_SIZE(h->assert_var); i++)
+ 		mlx5_log(dev, severity, "assert_var[%d] 0x%08x\n", i,
+-			 ioread32be(h->assert_var + i));
++			 ioread32be_hook(h->assert_var + i, dev->pdev));
+ 
+-	mlx5_log(dev, severity, "assert_exit_ptr 0x%08x\n", ioread32be(&h->assert_exit_ptr));
+-	mlx5_log(dev, severity, "assert_callra 0x%08x\n", ioread32be(&h->assert_callra));
++	mlx5_log(dev, severity, "assert_exit_ptr 0x%08x\n", ioread32be_hook(&h->assert_exit_ptr, dev->pdev));
++	mlx5_log(dev, severity, "assert_callra 0x%08x\n", ioread32be_hook(&h->assert_callra, dev->pdev));
+ 	mlx5_log(dev, severity, "fw_ver %d.%d.%d", fw_rev_maj(dev), fw_rev_min(dev),
+ 		 fw_rev_sub(dev));
+-	mlx5_log(dev, severity, "time %u\n", ioread32be(&h->time));
+-	mlx5_log(dev, severity, "hw_id 0x%08x\n", ioread32be(&h->hw_id));
++	mlx5_log(dev, severity, "time %u\n", ioread32be_hook(&h->time, dev->pdev));
++	mlx5_log(dev, severity, "hw_id 0x%08x\n", ioread32be_hook(&h->hw_id, dev->pdev));
+ 	mlx5_log(dev, severity, "rfr %d\n", mlx5_health_get_rfr(rfr_severity));
+ 	mlx5_log(dev, severity, "severity %d (%s)\n", severity, mlx5_loglevel_str(severity));
+-	mlx5_log(dev, severity, "irisc_index %d\n", ioread8(&h->irisc_index));
+-	mlx5_log(dev, severity, "synd 0x%x: %s\n", ioread8(&h->synd),
+-		 hsynd_str(ioread8(&h->synd)));
+-	mlx5_log(dev, severity, "ext_synd 0x%04x\n", ioread16be(&h->ext_synd));
+-	mlx5_log(dev, severity, "raw fw_ver 0x%08x\n", ioread32be(&h->fw_ver));
++	mlx5_log(dev, severity, "irisc_index %d\n", ioread8_hook(&h->irisc_index, dev->pdev));
++	mlx5_log(dev, severity, "synd 0x%x: %s\n", ioread8_hook(&h->synd, dev->pdev),
++		 hsynd_str(ioread8_hook(&h->synd, dev->pdev)));
++	mlx5_log(dev, severity, "ext_synd 0x%04x\n", ioread16be_hook(&h->ext_synd, dev->pdev));
++	mlx5_log(dev, severity, "raw fw_ver 0x%08x\n", ioread32be_hook(&h->fw_ver, dev->pdev));
+ }
+ 
+ static int
+@@ -489,7 +492,7 @@ mlx5_fw_reporter_diagnose(struct devlink_health_reporter *reporter,
+ 	u8 synd;
+ 	int err;
+ 
+-	synd = ioread8(&h->synd);
++	synd = ioread8_hook(&h->synd, dev->pdev);
+ 	err = devlink_fmsg_u8_pair_put(fmsg, "Syndrome", synd);
+ 	if (err || !synd)
+ 		return err;
+@@ -528,7 +531,7 @@ mlx5_fw_reporter_heath_buffer_data_put(struct mlx5_core_dev *dev,
+ 	int err;
+ 	int i;
+ 
+-	if (!ioread8(&h->synd))
++	if (!ioread8_hook(&h->synd, dev->pdev))
+ 		return 0;
+ 
+ 	err = devlink_fmsg_pair_nest_start(fmsg, "health buffer");
+@@ -542,7 +545,7 @@ mlx5_fw_reporter_heath_buffer_data_put(struct mlx5_core_dev *dev,
+ 		return err;
+ 
+ 	for (i = 0; i < ARRAY_SIZE(h->assert_var); i++) {
+-		err = devlink_fmsg_u32_put(fmsg, ioread32be(h->assert_var + i));
++		err = devlink_fmsg_u32_put(fmsg, ioread32be_hook(h->assert_var + i, dev->pdev));
+ 		if (err)
+ 			return err;
+ 	}
+@@ -550,20 +553,20 @@ mlx5_fw_reporter_heath_buffer_data_put(struct mlx5_core_dev *dev,
+ 	if (err)
+ 		return err;
+ 	err = devlink_fmsg_u32_pair_put(fmsg, "assert_exit_ptr",
+-					ioread32be(&h->assert_exit_ptr));
++					ioread32be_hook(&h->assert_exit_ptr, dev->pdev));
+ 	if (err)
+ 		return err;
+ 	err = devlink_fmsg_u32_pair_put(fmsg, "assert_callra",
+-					ioread32be(&h->assert_callra));
++					ioread32be_hook(&h->assert_callra, dev->pdev));
+ 	if (err)
+ 		return err;
+-	err = devlink_fmsg_u32_pair_put(fmsg, "time", ioread32be(&h->time));
++	err = devlink_fmsg_u32_pair_put(fmsg, "time", ioread32be_hook(&h->time, dev->pdev));
+ 	if (err)
+ 		return err;
+-	err = devlink_fmsg_u32_pair_put(fmsg, "hw_id", ioread32be(&h->hw_id));
++	err = devlink_fmsg_u32_pair_put(fmsg, "hw_id", ioread32be_hook(&h->hw_id, dev->pdev));
+ 	if (err)
+ 		return err;
+-	rfr_severity = ioread8(&h->rfr_severity);
++	rfr_severity = ioread8_hook(&h->rfr_severity, dev->pdev);
+ 	err = devlink_fmsg_u8_pair_put(fmsg, "rfr", mlx5_health_get_rfr(rfr_severity));
+ 	if (err)
+ 		return err;
+@@ -571,18 +574,18 @@ mlx5_fw_reporter_heath_buffer_data_put(struct mlx5_core_dev *dev,
+ 	if (err)
+ 		return err;
+ 	err = devlink_fmsg_u8_pair_put(fmsg, "irisc_index",
+-				       ioread8(&h->irisc_index));
++				       ioread8_hook(&h->irisc_index, dev->pdev));
+ 	if (err)
+ 		return err;
+-	err = devlink_fmsg_u8_pair_put(fmsg, "synd", ioread8(&h->synd));
++	err = devlink_fmsg_u8_pair_put(fmsg, "synd", ioread8_hook(&h->synd, dev->pdev));
+ 	if (err)
+ 		return err;
+ 	err = devlink_fmsg_u32_pair_put(fmsg, "ext_synd",
+-					ioread16be(&h->ext_synd));
++					ioread16be_hook(&h->ext_synd, dev->pdev));
+ 	if (err)
+ 		return err;
+ 	err = devlink_fmsg_u32_pair_put(fmsg, "raw_fw_ver",
+-					ioread32be(&h->fw_ver));
++					ioread32be_hook(&h->fw_ver, dev->pdev));
+ 	if (err)
+ 		return err;
+ 	err = devlink_fmsg_obj_nest_end(fmsg);
+@@ -854,7 +857,7 @@ static void poll_health(struct timer_list *t)
+ 		return;
+ 	}
+ 
+-	count = ioread32be(health->health_counter);
++	count = ioread32be_hook(health->health_counter, dev->pdev);
+ 	if (count == health->prev)
+ 		++health->miss_counter;
+ 	else
+@@ -868,7 +871,7 @@ static void poll_health(struct timer_list *t)
+ 	}
+ 
+ 	prev_synd = health->synd;
+-	health->synd = ioread8(&h->synd);
++	health->synd = ioread8_hook(&h->synd, dev->pdev);
+ 	if (health->synd && health->synd != prev_synd)
+ 		queue_work(health->wq, &health->report_work);
+ 
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/lib/aso.c b/drivers/net/ethernet/mellanox/mlx5/core/lib/aso.c
+index 58bd749b5e4d..8a93302b36c4 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/lib/aso.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/lib/aso.c
+@@ -6,6 +6,9 @@
+ #include "clock.h"
+ #include "aso.h"
+ #include "wq.h"
++#ifdef CONFIG_HISI_VIRTCCA_CODA
++#include <linux/mlx5/coda_mlx5.h>
++#endif
+ 
+ struct mlx5_aso_cq {
+ 	/* data path - accessed per cqe */
+@@ -382,7 +385,7 @@ void mlx5_aso_post_wqe(struct mlx5_aso *aso, bool with_data,
+ 	 */
+ 	wmb();
+ 
+-	mlx5_write64((__be32 *)doorbell_cseg, aso->uar_map);
++	mlx5_write64_hook((__be32 *)doorbell_cseg, aso->uar_map, aso->wq_ctrl.mdev->pdev);
+ 
+ 	/* Ensure doorbell is written on uar_page before poll_cq */
+ 	WRITE_ONCE(doorbell_cseg, NULL);
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/lib/clock.c b/drivers/net/ethernet/mellanox/mlx5/core/lib/clock.c
+index f00702bf781f..91805b6b3fdb 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/lib/clock.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/lib/clock.c
+@@ -38,6 +38,9 @@
+ #include "lib/eq.h"
+ #include "en.h"
+ #include "clock.h"
++#ifdef CONFIG_HISI_VIRTCCA_CODA
++#include <asm/virtcca_coda.h>
++#endif
+ 
+ enum {
+ 	MLX5_PIN_MODE_IN		= 0x0,
+@@ -154,19 +157,19 @@ static u64 mlx5_read_time(struct mlx5_core_dev *dev,
+ {
+ 	u32 timer_h, timer_h1, timer_l;
+ 
+-	timer_h = ioread32be(real_time ? &dev->iseg->real_time_h :
+-			     &dev->iseg->internal_timer_h);
++	timer_h = ioread32be_hook(real_time ? &dev->iseg->real_time_h :
++			     &dev->iseg->internal_timer_h, dev->pdev);
+ 	ptp_read_system_prets(sts);
+-	timer_l = ioread32be(real_time ? &dev->iseg->real_time_l :
+-			     &dev->iseg->internal_timer_l);
++	timer_l = ioread32be_hook(real_time ? &dev->iseg->real_time_l :
++			     &dev->iseg->internal_timer_l, dev->pdev);
+ 	ptp_read_system_postts(sts);
+-	timer_h1 = ioread32be(real_time ? &dev->iseg->real_time_h :
+-			      &dev->iseg->internal_timer_h);
++	timer_h1 = ioread32be_hook(real_time ? &dev->iseg->real_time_h :
++			      &dev->iseg->internal_timer_h, dev->pdev);
+ 	if (timer_h != timer_h1) {
+ 		/* wrap around */
+ 		ptp_read_system_prets(sts);
+-		timer_l = ioread32be(real_time ? &dev->iseg->real_time_l :
+-				     &dev->iseg->internal_timer_l);
++		timer_l = ioread32be_hook(real_time ? &dev->iseg->real_time_l :
++				     &dev->iseg->internal_timer_l, dev->pdev);
+ 		ptp_read_system_postts(sts);
+ 	}
+ 
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/lib/eq.h b/drivers/net/ethernet/mellanox/mlx5/core/lib/eq.h
+index 69a75459775d..3b582db216b6 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/lib/eq.h
++++ b/drivers/net/ethernet/mellanox/mlx5/core/lib/eq.h
+@@ -6,6 +6,9 @@
+ #include <linux/mlx5/driver.h>
+ #include <linux/mlx5/eq.h>
+ #include <linux/mlx5/cq.h>
++#ifdef CONFIG_HISI_VIRTCCA_CODA
++#include <asm/virtcca_coda.h>
++#endif
+ 
+ #define MLX5_EQE_SIZE       (sizeof(struct mlx5_eqe))
+ 
+@@ -70,7 +73,7 @@ static inline void eq_update_ci(struct mlx5_eq *eq, int arm)
+ 	__be32 __iomem *addr = eq->doorbell + (arm ? 0 : 2);
+ 	u32 val = (eq->cons_index & 0xffffff) | (eq->eqn << 24);
+ 
+-	__raw_writel((__force u32)cpu_to_be32(val), addr);
++	__raw_writel_hook((__force u32)cpu_to_be32(val), addr, eq->dev->pdev);
+ 	/* We still want ordering, just not swabbing, so add a barrier */
+ 	mb();
+ }
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/lib/tout.c b/drivers/net/ethernet/mellanox/mlx5/core/lib/tout.c
+index e223e0e46433..c4411fc663ea 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/lib/tout.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/lib/tout.c
+@@ -3,6 +3,9 @@
+ 
+ #include <linux/mlx5/driver.h>
+ #include "lib/tout.h"
++#ifdef CONFIG_HISI_VIRTCCA_CODA
++#include <asm/virtcca_coda.h>
++#endif
+ 
+ struct mlx5_timeouts {
+ 	u64 to[MAX_TIMEOUT_TYPES];
+@@ -81,7 +84,7 @@ static u64 tout_convert_iseg_to_ms(u32 iseg_to)
+ 
+ static bool tout_is_supported(struct mlx5_core_dev *dev)
+ {
+-	return !!ioread32be(&dev->iseg->cmd_q_init_to);
++	return !!ioread32be_hook(&dev->iseg->cmd_q_init_to, dev->pdev);
+ }
+ 
+ void mlx5_tout_query_iseg(struct mlx5_core_dev *dev)
+@@ -91,10 +94,10 @@ void mlx5_tout_query_iseg(struct mlx5_core_dev *dev)
+ 	if (!tout_is_supported(dev))
+ 		return;
+ 
+-	to = ioread32be(&dev->iseg->cmd_q_init_to);
++	to = ioread32be_hook(&dev->iseg->cmd_q_init_to, dev->pdev);
+ 	tout_set(dev, tout_convert_iseg_to_ms(to), MLX5_TO_FW_INIT_MS);
+ 
+-	to = ioread32be(&dev->iseg->cmd_exec_to);
++	to = ioread32be_hook(&dev->iseg->cmd_exec_to, dev->pdev);
+ 	tout_set(dev, tout_convert_iseg_to_ms(to), MLX5_TO_CMD_MS);
+ }
+ 
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/main.c b/drivers/net/ethernet/mellanox/mlx5/core/main.c
+index 96136229b1b0..97ab010618db 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/main.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/main.c
+@@ -73,6 +73,9 @@
+ #include "sf/sf.h"
+ #include "mlx5_irq.h"
+ #include "hwmon.h"
++#ifdef CONFIG_HISI_VIRTCCA_CODA
++#include <asm/virtcca_coda.h>
++#endif
+ 
+ MODULE_AUTHOR("Eli Cohen <eli@mellanox.com>");
+ MODULE_DESCRIPTION("Mellanox 5th generation network adapters (ConnectX series) core driver");
+@@ -194,7 +197,7 @@ static int wait_fw_init(struct mlx5_core_dev *dev, u32 max_wait_mili,
+ 	int err = 0;
+ 
+ 	do {
+-		fw_initializing = ioread32be(&dev->iseg->initializing);
++		fw_initializing = ioread32be_hook(&dev->iseg->initializing, dev->pdev);
+ 		if (!(fw_initializing >> 31))
+ 			break;
+ 		if (time_after(jiffies, end) ||
+@@ -2035,7 +2038,7 @@ static int wait_vital(struct pci_dev *pdev)
+ 	int i;
+ 
+ 	for (i = 0; i < niter; i++) {
+-		count = ioread32be(health->health_counter);
++		count = ioread32be_hook(health->health_counter, pdev);
+ 		if (count && count != 0xffffffff) {
+ 			if (last_count && last_count != count) {
+ 				mlx5_core_info(dev,
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/steering/dr_send.c b/drivers/net/ethernet/mellanox/mlx5/core/steering/dr_send.c
+index f57c84e5128b..1f7aea412a96 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/steering/dr_send.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/steering/dr_send.c
+@@ -3,6 +3,9 @@
+ 
+ #include <linux/smp.h>
+ #include "dr_types.h"
++#ifdef CONFIG_HISI_VIRTCCA_CODA
++#include <linux/mlx5/coda_mlx5.h>
++#endif
+ 
+ #define QUEUE_SIZE 128
+ #define SIGNAL_PER_DIV_QUEUE 16
+@@ -365,8 +368,7 @@ static void dr_cmd_notify_hw(struct mlx5dr_qp *dr_qp, void *ctrl)
+ 
+ 	/* After wmb() the hw aware of new work */
+ 	wmb();
+-
+-	mlx5_write64(ctrl, dr_qp->uar->map + MLX5_BF_OFFSET);
++	mlx5_write64_hook(ctrl, dr_qp->uar->map + MLX5_BF_OFFSET, dr_qp->mdev->pdev);
+ }
+ 
+ static void
+diff --git a/drivers/vfio/pci/mlx5/cmd.c b/drivers/vfio/pci/mlx5/cmd.c
+index 2d996c913ecd..c6ad535962c5 100644
+--- a/drivers/vfio/pci/mlx5/cmd.c
++++ b/drivers/vfio/pci/mlx5/cmd.c
+@@ -4,6 +4,9 @@
+  */
+ 
+ #include "cmd.h"
++#ifdef CONFIG_HISI_VIRTCCA_CODA
++#include <linux/mlx5/coda_mlx5.h>
++#endif
+ 
+ enum { CQ_OK = 0, CQ_EMPTY = -1, CQ_POLL_ERR = -2 };
+ 
+@@ -999,8 +1002,8 @@ static int mlx5vf_create_cq(struct mlx5_core_dev *mdev,
+ 	if (err)
+ 		goto err_vec;
+ 
+-	mlx5_cq_arm(&cq->mcq, MLX5_CQ_DB_REQ_NOT, tracker->uar->map,
+-		    cq->mcq.cons_index);
++	mlx5_cq_arm_hook(&cq->mcq, MLX5_CQ_DB_REQ_NOT, tracker->uar->map,
++		    cq->mcq.cons_index, mdev->pdev);
+ 	kvfree(in);
+ 	return 0;
+ 
+@@ -1620,8 +1623,8 @@ int mlx5vf_tracker_read_and_clear(struct vfio_device *vdev, unsigned long iova,
+ 		poll_err = mlx5vf_cq_poll_one(cq, tracker->host_qp, dirty,
+ 					      &tracker->status);
+ 		if (poll_err == CQ_EMPTY) {
+-			mlx5_cq_arm(&cq->mcq, MLX5_CQ_DB_REQ_NOT, tracker->uar->map,
+-				    cq->mcq.cons_index);
++			mlx5_cq_arm_hook(&cq->mcq, MLX5_CQ_DB_REQ_NOT, tracker->uar->map,
++				    cq->mcq.cons_index, mdev->pdev);
+ 			poll_err = mlx5vf_cq_poll_one(cq, tracker->host_qp,
+ 						      dirty, &tracker->status);
+ 			if (poll_err == CQ_EMPTY) {
+diff --git a/include/linux/mlx5/coda_mlx5.h b/include/linux/mlx5/coda_mlx5.h
+new file mode 100644
+index 000000000000..2826d8a0d878
+--- /dev/null
++++ b/include/linux/mlx5/coda_mlx5.h
+@@ -0,0 +1,74 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/*
++ * Copyright (C) 2024. Huawei Technologies Co., Ltd. All rights reserved.
++ */
++
++#ifndef MLX5_CODA_H
++#define MLX5_CODA_H
++
++#include <linux/mlx5/driver.h>
++#include <linux/refcount.h>
++#include <linux/mlx5/cq.h>
++#include <linux/mlx5/doorbell.h>
++#include "../../../drivers/net/ethernet/mellanox/mlx5/core/wq.h"
++
++static inline void virtcca_mlx5_cq_arm(struct mlx5_core_cq *cq, u32 cmd,
++			       void __iomem *uar_page, u32 cons_index, struct pci_dev *pdev)
++{
++	__be32 doorbell[2];
++	u32 sn;
++	u32 ci;
++
++	sn = cq->arm_sn & 3;
++	ci = cons_index & 0xffffff;
++
++	*cq->arm_db = cpu_to_be32(sn << 28 | cmd | ci);
++
++	/* Make sure that the doorbell record in host memory is
++	 * written before ringing the doorbell via PCI MMIO.
++	 */
++	wmb();
++
++	doorbell[0] = cpu_to_be32(sn << 28 | cmd | ci);
++	doorbell[1] = cpu_to_be32(cq->cqn);
++
++	virtcca_pci_mmio_write(pdev, *(u64 *)doorbell, CVM_RW_64_BIT, uar_page + MLX5_CQ_DOORBELL);
++}
++
++static inline void mlx5_cq_arm_hook(struct mlx5_core_cq *cq, u32 cmd,
++			       void __iomem *uar_page, u32 cons_index, struct pci_dev *pdev)
++{
++    if (is_virtcca_cvm_enable() && is_cc_dev(pci_dev_id(pdev))) {
++        return virtcca_mlx5_cq_arm(cq, cmd, uar_page, cons_index, pdev);
++    }
++    return mlx5_cq_arm(cq, cmd, uar_page, cons_index);
++}
++
++static inline void mlx5e_notify_hw_hook(struct mlx5_wq_cyc *wq, u16 pc, void __iomem *uar_map,
++		struct mlx5_wqe_ctrl_seg *ctrl, struct pci_dev *pdev)
++{
++    ctrl->fm_ce_se |= MLX5_WQE_CTRL_CQ_UPDATE;
++	/* ensure wqe is visible to device before updating doorbell record */
++	dma_wmb();
++
++	*wq->db = cpu_to_be32(pc);
++
++	/* ensure doorbell record is visible to device before ringing the
++	 * doorbell
++	 */
++	wmb();
++
++	if (is_virtcca_cvm_enable() && is_cc_dev(pci_dev_id(pdev))) {
++		return virtcca_pci_mmio_write(pdev, *(u64 *)ctrl, CVM_RW_64_BIT, uar_map);
++	}
++	mlx5_write64((__be32 *)ctrl, uar_map);
++}
++
++static inline void mlx5_write64_hook(__be32 val[2], void __iomem *dest, struct pci_dev *pdev)
++{
++    if (is_virtcca_cvm_enable() && is_cc_dev(pci_dev_id(pdev))) {
++        return virtcca_pci_mmio_write(pdev, *(u64 *)val, CVM_RW_64_BIT, dest);
++    }
++    return mlx5_write64(val, dest);
++}
++#endif /* MLX5_CODA_H */
+diff --git a/include/linux/mlx5/driver.h b/include/linux/mlx5/driver.h
+index 69d844b34da0..5d5325fe0bcb 100644
+--- a/include/linux/mlx5/driver.h
++++ b/include/linux/mlx5/driver.h
+@@ -57,6 +57,9 @@
+ #include <linux/timecounter.h>
+ #include <linux/ptp_clock_kernel.h>
+ #include <net/devlink.h>
++#ifdef CONFIG_HISI_VIRTCCA_CODA
++#include <asm/virtcca_coda.h>
++#endif
+ 
+ #define MLX5_ADEV_NAME "mlx5_core"
+ 
+@@ -907,17 +910,17 @@ extern struct dentry *mlx5_debugfs_root;
+ 
+ static inline u16 fw_rev_maj(struct mlx5_core_dev *dev)
+ {
+-	return ioread32be(&dev->iseg->fw_rev) & 0xffff;
++	return ioread32be_hook(&dev->iseg->fw_rev, dev->pdev) & 0xffff;
+ }
+ 
+ static inline u16 fw_rev_min(struct mlx5_core_dev *dev)
+ {
+-	return ioread32be(&dev->iseg->fw_rev) >> 16;
++	return ioread32be_hook(&dev->iseg->fw_rev, dev->pdev) >> 16;
+ }
+ 
+ static inline u16 fw_rev_sub(struct mlx5_core_dev *dev)
+ {
+-	return ioread32be(&dev->iseg->cmdif_rev_fw_sub) & 0xffff;
++	return ioread32be_hook(&dev->iseg->cmdif_rev_fw_sub, dev->pdev) & 0xffff;
+ }
+ 
+ static inline u32 mlx5_base_mkey(const u32 key)
+-- 
+Gitee
+
