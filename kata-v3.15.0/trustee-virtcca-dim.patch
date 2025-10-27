@@ -1,0 +1,263 @@
+From 9fa32477d9b782afd92c436cb952345eedc89a02 Mon Sep 17 00:00:00 2001
+From: xuce <xuce10@h-partners.com>
+Date: Fri, 17 Oct 2025 16:07:24 +0800
+Subject: [PATCH] dim support virtcca
+
+Signed-off-by: xuce <xuce10@h-partners.com>
+---
+ Cargo.lock                       | 16 ++++++++
+ Cargo.toml                       |  2 +
+ deps/verifier/Cargo.toml         |  4 +-
+ deps/verifier/src/virtcca/dim.rs | 48 +++++++++++++++++++++++
+ deps/verifier/src/virtcca/mod.rs | 65 ++++++++++++++++++++++++++++++--
+ 5 files changed, 131 insertions(+), 4 deletions(-)
+ create mode 100644 deps/verifier/src/virtcca/dim.rs
+
+diff --git a/Cargo.lock b/Cargo.lock
+index c421136..76ebcd0 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -5960,6 +5960,7 @@ dependencies = [
+  "tonic-build",
+  "veraison-apiclient",
+  "x509-parser",
++ "ima-measurements",
+ ]
+ 
+ [[package]]
+@@ -6589,3 +6590,18 @@ dependencies = [
+  "cc",
+  "pkg-config",
+ ]
++
++[[package]]
++name = "ima-measurements"
++version = "0.2.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "352224641e2e2c25761629713f5059995750ad52ec59358d0f47cb71d1f836f2"
++dependencies = [
++ "byteorder",
++ "fallible-iterator",
++ "hex",
++ "serde",
++ "serde_yaml 0.8.26",
++ "thiserror 1.0.69",
++ "tpmless-tpm2",
++]
+\ No newline at end of file
+diff --git a/Cargo.toml b/Cargo.toml
+index 6531148..628082a 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -64,3 +64,5 @@ tokio = { version = "1", features = ["full"], default-features = false }
+ tempfile = "3.14.0"
+ tonic = "0.12"
+ tonic-build = "0.12"
++ima-measurements = "0.2.0"
++fallible-iterator = "0.2.0"
+\ No newline at end of file
+diff --git a/deps/verifier/Cargo.toml b/deps/verifier/Cargo.toml
+index f3ad264..bd88a28 100644
+--- a/deps/verifier/Cargo.toml
++++ b/deps/verifier/Cargo.toml
+@@ -44,7 +44,7 @@ serde_json.workspace = true
+ serde_with = { workspace = true, optional = true }
+ sev = { version = "4.0.0", features = ["openssl", "snp"], optional = true }
+ sha2.workspace = true 
+-tokio = { workspace = true, optional = true }
++tokio = { workspace = true, features = ["full"] }
+ intel-tee-quote-verification-rs = { git = "https://github.com/intel/SGXDataCenterAttestationPrimitives", tag = "DCAP_1.22", optional = true }
+ strum.workspace = true
+ veraison-apiclient = { git = "https://github.com/chendave/rust-apiclient", branch = "token", optional = true }
+@@ -54,6 +54,8 @@ reqwest.workspace = true
+ bitflags = { version = "2.8.0", features = ["serde"] }
+ cose-rust = { version = "0.1.7", optional = true }
+ ciborium = { version = "0.2.2", optional = true }
++ima-measurements.workspace = true
++fallible-iterator.workspace = true
+ 
+ [build-dependencies]
+ shadow-rs.workspace = true
+diff --git a/deps/verifier/src/virtcca/dim.rs b/deps/verifier/src/virtcca/dim.rs
+new file mode 100644
+index 0000000..19383a4
+--- /dev/null
++++ b/deps/verifier/src/virtcca/dim.rs
+@@ -0,0 +1,48 @@
++/*
++ * Copyright (c) Huawei Technologies Co., Ltd. 2024. All rights reserved.
++ * secGear is licensed under the Mulan PSL v2.
++ * You can use this software according to the terms and conditions of the Mulan PSL v2.
++ * You may obtain a copy of Mulan PSL v2 at:
++ *     http://license.coscl.org.cn/MulanPSL2
++ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY OR FIT FOR A PARTICULAR
++ * PURPOSE.
++ * See the Mulan PSL v2 for more details.
++ */
++
++//! DIM verifier module
++//!
++//! This module provides DIM (Dynamic Integrity Measurement) verification functionality
++//! for TEE attestation.
++
++use anyhow::{bail, Result};
++use ima_measurements::Event;
++
++/// Common function to parse DIM events
++/// which is shared between different TEE implementations.
++pub fn parse_dim_events(events: &[Event]) -> Result<Vec<String>> {
++    if events.len() < 2 {
++        bail!("No DIM measurement records for files found.");
++    }
++
++    let mut dim_digests = Vec::new();
++    let mut skip_first = true;
++    // parse each file digest in dim log
++    for event in events {
++        let (name, file_digest) = match &event.data {
++            ima_measurements::EventData::ImaNg { digest, name } => (name, &digest.digest),
++            _ => bail!("Invalid event {:?}", event),
++        };
++        if skip_first && name == "boot_aggregate" {
++            skip_first = false;
++            continue;
++        }
++
++        let hex_str_digest = hex::encode(file_digest);
++        dim_digests.push(hex_str_digest);
++    }
++
++    log::debug!("dim digests: {:?}", dim_digests);
++
++    Ok(dim_digests)
++}
+\ No newline at end of file
+diff --git a/deps/verifier/src/virtcca/mod.rs b/deps/verifier/src/virtcca/mod.rs
+index 9fac7e4..aa9e923 100644
+--- a/deps/verifier/src/virtcca/mod.rs
++++ b/deps/verifier/src/virtcca/mod.rs
+@@ -17,6 +17,11 @@ use serde::Deserialize;
+ use cose::message::CoseMessage;
+ use cose::keys::CoseKey;
+ 
++use fallible_iterator::FallibleIterator;
++mod dim;
++use dim::parse_dim_events;
++use ima_measurements::{Event, Parser};
++
+ // Define constants for the tags
+ const TAG_CCA_TOKEN_COLLECTION: u64 = 399;
+ const TAG_CCA_REALM_TOKEN: i128 = 44241;
+@@ -41,6 +46,7 @@ const CVM_ECC_PUB_KEY_SIZE: usize = 133;
+ pub struct VirtccaEvidence {
+     pub evidence_virtcca: Vec<u8>,
+     pub dev_cert: Vec<u8>,
++    pub dim_log: Vec<u8>
+ }
+ 
+ pub struct CcaCoseEvidence {
+@@ -73,7 +79,6 @@ const SUB_CERT_ENV: &str = "VIRTCCA_SUB_CERT";
+ const ECC_ROOT_CERT_OF_DEVICE_CERT: &str = "/etc/attestation/attestation-service/verifier/virtcca/Huawei ECC Attestation Root CA 1.pem";
+ const ECC_SUB_CERT_OF_DEVICE_CERT: &str = "/etc/attestation/attestation-service/verifier/virtcca/Huawei Computing ECC CCA CA 1.pem";
+ 
+-
+ #[derive(Debug, Default)]
+ pub struct VirtCCAVerifier {}
+ 
+@@ -191,6 +196,12 @@ impl Verifier for VirtCCAVerifier {
+                   realm_claims.challenge, expected_report_data);
+         }
+ 
++        // Verify the DIM events
++        let dim_digests = match dim_verify(&evidence.dim_log, &realm_claims.rem) {
++            Ok(result) => Some(result),
++            Err(err) => bail!("Failed to verify DIM events: {:?}", err),
++        };
++
+         // Not to verify if no init data from attester
+         if let InitDataHash::Value(expected_init_data_hash) = expected_init_data_hash {
+             let expected_init_data_hash = regularize_data(expected_init_data_hash, 64, "REPORT_DATA", "VIRTCCA");
+@@ -201,7 +212,7 @@ impl Verifier for VirtCCAVerifier {
+         }
+ 
+         // Extract and parse TeeClaim from evidence_virtcca
+-        let tee_claim = build_tee_claims(realm_claims, platform_claims)
++        let tee_claim = build_tee_claims(realm_claims, platform_claims, dim_digests)
+             .context("Failed to TeeEvidenceParsedClaim")?;
+ 
+         Ok(tee_claim)
+@@ -371,6 +382,53 @@ fn verify_evidence_integrity(dev_cert_is_ecc: bool, mut cose_envelop: CoseMessag
+     Ok(())
+ }
+ 
++fn dim_verify(dim_log: &[u8], cvm_rem: &[Vec<u8>]) -> Result<Vec<String>> {
++        if dim_log.is_empty() {
++            return Ok(Vec::new());
++        }
++
++        // Parse DIM events
++        let mut parser = Parser::new(dim_log);
++        let mut events: Vec<Event> = Vec::new();
++        while let Some(event) = parser.next()? {
++            events.push(event);
++        }
++
++        if events.len() < 2 {
++            bail!("No DIM measurement records for files found.");
++        }
++
++        let pcr_index = events[1].pcr_index;
++        if pcr_index < 1 || pcr_index > CVM_REM_ARR_SIZE as u32 {
++            bail!("Invalid pcr_index for DIM");
++        }
++
++        let dim_index = (pcr_index - 1) as usize;
++        let pcr_values = parser.pcr_values();
++        let pcr_value = pcr_values.get(&pcr_index).expect("PCR not measured");
++        let string_pcr_sha256 = hex::encode(pcr_value.sha256);
++        let string_dim_log_hash = hex::encode(cvm_rem[dim_index].clone());
++
++        log::debug!(
++            "pcr_index: {}, string_pcr_sha256: {}, string_dim_log_hash: {}",
++            pcr_index,
++            string_pcr_sha256,
++            string_dim_log_hash
++        );
++
++        if string_pcr_sha256 != string_dim_log_hash {
++            log::error!(
++                "dim log verify failed string_pcr_sha256 {}, string_dim_log_hash {}",
++                string_pcr_sha256,
++                string_dim_log_hash
++            );
++            bail!("DIM log hash verification failed. Please check the log and reference data, and verify if PCR has been extended to PCR4.");
++        }
++
++        // Use th+e common function to parse DIM events
++        parse_dim_events(&events)
++}
++
+ fn verify_dev_cert_chain(dev_cert: &x509::X509, sub_cert: &x509::X509, root_cert: &x509::X509) -> Result<Vec<u8>> {
+ 
+     // verify if pub key of dev_cert match expected_public_key
+@@ -395,7 +453,7 @@ fn verify_dev_cert_chain(dev_cert: &x509::X509, sub_cert: &x509::X509, root_cert
+     Ok(dev_cert_pub_key_der)
+ }
+ 
+-fn build_tee_claims(realm: CcaRealmClaims, platform: Option<CcaPlatformClaims>) -> Result<TeeEvidenceParsedClaim> {
++fn build_tee_claims(realm: CcaRealmClaims, platform: Option<CcaPlatformClaims>, dim_digests: Option<Vec<String>>) -> Result<TeeEvidenceParsedClaim> {
+     let claim = json!({
+         "realm": {
+             "challenge": hex::encode(realm.challenge.clone()),
+@@ -412,6 +470,7 @@ fn build_tee_claims(realm: CcaRealmClaims, platform: Option<CcaPlatformClaims>)
+             "payload": platform.as_ref().map(|p| hex::encode(&p.payload)).unwrap_or_default(),
+         },
+         "report_data" : hex::encode(realm.challenge.clone()),
++        "dim": dim_digests.unwrap_or_default(),
+     });
+     Ok(claim as TeeEvidenceParsedClaim)
+ }
+-- 
+2.43.0
+

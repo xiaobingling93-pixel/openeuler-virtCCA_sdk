@@ -490,10 +490,22 @@ git apply --reject --whitespace=fix ../virtCCA_sdk/kata-v"$KATA_VERSION"/guest-c
     echo "Warning: guest-components patch issues detected, check .rej files"
 }
 
+if [[ $1 == "with_dim" ]]; then
+    git apply --reject --whitespace=fix ./build/virtCCA_sdk/kata-v"$KATA_VERSION"/guest-components-virtcca-dim.patch || {
+        echo "Warning: kata-containers patch issues detected, check .rej files"
+    }
+fi
+
 cd "$KATA_SRC_DIR/build/trustee"
 git apply --reject --whitespace=fix ../virtCCA_sdk/kata-v"$KATA_VERSION"/trustee.patch || {
     echo "Warning: trustee patch issues detected, check .rej files"
 }
+
+if [[ $1 == "with_dim" ]]; then
+    git apply --reject --whitespace=fix ./build/virtCCA_sdk/kata-v"$KATA_VERSION"/trustee-virtcca-dim.patch || {
+        echo "Warning: kata-containers patch issues detected, check .rej files"
+    }
+fi
 
 cd "$KATA_SRC_DIR/build/kbs-types"
 git reset --hard $KBS_TYPES_COMMIT_TAG
@@ -1414,7 +1426,7 @@ case "$1" in
         init_k8s
         ;;
     kdeploy*)
-        kata_deploy
+        kata_deploy $2
         ;;
     operator*)
         launch_cc_operator
@@ -1434,7 +1446,7 @@ case "$1" in
     all*)
         install_containerd
         init_k8s
-        kata_deploy
+        kata_deploy $2
         launch_cc_operator
         compile_coco
         rats
