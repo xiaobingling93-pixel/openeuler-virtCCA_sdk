@@ -10,31 +10,24 @@
  * See the Mulan PSL v2 for more details.
  */
 
-#ifndef KCAL_PSI_H
-#define KCAL_PSI_H
+#ifndef KCAL_MIDDLEWARE_KCAL_MAKE_SHARE_H
+#define KCAL_MIDDLEWARE_KCAL_MAKE_SHARE_H
 
-#include <memory>
-#include "kcal/api/kcal_api.h"
-#include "kcal/core/context.h"
-#include "kcal/core/operator_base.h"
+#include "kcal/operator/kcal_arithmetic.h"
 
 namespace kcal {
 
-class Psi : public OperatorBase {
+class MakeShare : public Arithmetic {
 public:
-    Psi();
-    ~Psi() override;
+    MakeShare() = default;
+    ~MakeShare() override = default;
 
     int GetTeeCtx(const std::shared_ptr<Context> &context) override;
-    KCAL_AlgorithmsType GetType() const override { return KCAL_AlgorithmsType::PSI; }
+    KCAL_AlgorithmsType GetType() const override { return KCAL_AlgorithmsType::MAKE_SHARE; }
 
-    int Run(DG_TeeInput *input, DG_TeeOutput **output, DG_TeeMode outputMode);
-
-private:
-    DG_TeeCtx *dgTeeCtx_ = nullptr;
-    std::unique_ptr<DG_PrivateSet_Opts> opts_;
+    int Run(io::KcalInput &input, int isRecvShare, io::KcalMpcShare *&share);
 };
 
 } // namespace kcal
 
-#endif // KCAL_PSI_H
+#endif // KCAL_MIDDLEWARE_KCAL_MAKE_SHARE_H

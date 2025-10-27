@@ -10,31 +10,24 @@
  * See the Mulan PSL v2 for more details.
  */
 
-#ifndef KCAL_PSI_H
-#define KCAL_PSI_H
+#ifndef TEE_CTX_INITIALIZER_H
+#define TEE_CTX_INITIALIZER_H
 
-#include <memory>
 #include "kcal/api/kcal_api.h"
-#include "kcal/core/context.h"
-#include "kcal/core/operator_base.h"
+#include "kcal/enumeration/kcal_enum.h"
 
 namespace kcal {
 
-class Psi : public OperatorBase {
+class TeeCtxInitializer {
 public:
-    Psi();
-    ~Psi() override;
+    virtual ~TeeCtxInitializer() = default;
 
-    int GetTeeCtx(const std::shared_ptr<Context> &context) override;
-    KCAL_AlgorithmsType GetType() const override { return KCAL_AlgorithmsType::PSI; }
-
-    int Run(DG_TeeInput *input, DG_TeeOutput **output, DG_TeeMode outputMode);
-
-private:
-    DG_TeeCtx *dgTeeCtx_ = nullptr;
-    std::unique_ptr<DG_PrivateSet_Opts> opts_;
+    virtual KCAL_AlgorithmsType GetAlgorithmType() const = 0;
+    virtual int InitializeTeeCtx(void *teeConfig, int worldSize, DG_TeeCtx **teeCtx) = 0;
+    virtual void ReleaseTeeCtx(DG_TeeCtx **teeCtx) = 0;
+    virtual bool SupportsAlgorithm(KCAL_AlgorithmsType algoType) const = 0;
 };
 
 } // namespace kcal
 
-#endif // KCAL_PSI_H
+#endif // TEE_CTX_INITIALIZER_H

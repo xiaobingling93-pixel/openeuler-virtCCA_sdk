@@ -17,9 +17,26 @@ namespace kcal {
 
 enum class KCAL_AlgorithmsType {
     PSI,
-    PIR
+    PIR,
+    ARITHMETIC,
+    MAKE_SHARE,
+    REVEAL_SHARE,
+    ADD,
+    SUB,
+    MUL,
+    DIV,
+    LESS,
+    LESS_EQUAL,
+    GREATER,
+    GREATER_EQUAL,
+    EQUAL,
+    NO_EQUAL,
+    SUM,
+    AVG,
+    MAX,
+    MIN
 };
 
-}
+} // namespace kcal
 
 #endif // KCAL_ENUM_H

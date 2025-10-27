@@ -14,7 +14,10 @@
 
 namespace kcal {
 
-Context::Context(KCAL_Config config, KCAL_AlgorithmsType type) : config_(config), type_(type) {}
+Context::Context(KCAL_Config config) : config_(config)
+{
+    teeCtxManager_ = std::make_unique<TeeCtxManager>();
+}
 
 Context::~Context()
 {
@@ -24,7 +27,7 @@ Context::~Context()
 
 int Context::Init()
 {
-    int rv = DG_InitConfigOpts(DG_BusinessType::MPC, &cfgOpts_);
+    int rv = DG_InitConfigOpts(MPC, &cfgOpts_);
     if (rv != DG_SUCCESS) {
         return rv;
     }
@@ -37,11 +40,8 @@ int Context::Init()
     if (rv != DG_SUCCESS) {
         return rv;
     }
-    if (type_ == KCAL_AlgorithmsType::PSI || type_ == KCAL_AlgorithmsType::PIR) {
-        rv = cfgOpts_->setIntValue(teeCfg_, DG_CON_MPC_TEE_INT_FXP_BITS, 0);
-    } else {
-        rv = cfgOpts_->setIntValue(teeCfg_, DG_CON_MPC_TEE_INT_FXP_BITS, config_.fixBits);
-    }
+
+    rv = cfgOpts_->setIntValue(teeCfg_, DG_CON_MPC_TEE_INT_FXP_BITS, config_.fixBits);
     if (rv != DG_SUCCESS) {
         return rv;
     }
@@ -49,7 +49,8 @@ int Context::Init()
     if (rv != DG_SUCCESS) {
         return rv;
     }
-    // NOTE: kcal_25.0.7.2 版本不支持国密算法，参数不能设置 DG_CON_MPC_TEE_INT_IS_SM_ALGORITHM，需删除下面 if-else 代码
+    // NOTE: kcal_25.0.7.2 version does not support SM cryptographic algorithms
+    // DG_CON_MPC_TEE_INT_IS_SM_ALGORITHM parameter cannot be setneed delete below 'if-else' code
     if (config_.useSMAlg) {
         rv = cfgOpts_->setIntValue(teeCfg_, DG_CON_MPC_TEE_INT_IS_SM_ALGORITHM, 1);
     } else {
@@ -62,12 +63,28 @@ int Context::Init()
     return DG_SUCCESS;
 }
 
-std::shared_ptr<Context> Context::Create(KCAL_Config config, TEE_NET_RES *netRes, KCAL_AlgorithmsType type)
+DG_TeeCtx *Context::GetTeeCtx(KCAL_AlgorithmsType algoType)
+{
+    if (!teeCtxManager_ || !teeCfg_) {
+        return nullptr;
+    }
+    return teeCtxManager_->GetTeeCtx(algoType, teeCfg_, config_.worldSize);
+}
+
+bool Context::IsTeeCtxInitialized(KCAL_AlgorithmsType algoType) const
+{
+    if (!teeCtxManager_) {
+        return false;
+    }
+    return teeCtxManager_->IsTeeCtxInitialized(algoType);
+}
+
+std::shared_ptr<Context> Context::Create(KCAL_Config config, TEE_NET_RES *netRes)
 {
     if (!netRes) {
         return nullptr;
     }
-    auto context = std::make_shared<Context>(config, type);
+    auto context = std::make_shared<Context>(config);
     int rv = context->Init();
     if (rv != DG_SUCCESS) {
         return nullptr;
@@ -85,4 +102,4 @@ int Context::SetNetRes(TEE_NET_RES *teeNetRes)
     return cfgOpts_->setVoidValue(teeCfg_, DG_CON_MPC_TEE_VOID_NET_API, &netFunc);
 }
 
-}
+} // namespace kcal

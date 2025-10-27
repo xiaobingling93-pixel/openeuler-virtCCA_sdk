@@ -23,38 +23,28 @@ Pir::Pir()
 
 Pir::~Pir()
 {
-    opts_->releaseBucketMap(&bucketMap_);
-    opts_->releaseTeeCtx(&dgTeeCtx_);
+    if (initialized_) {
+        opts_->releaseBucketMap(&bucketMap_);
+        dgTeeCtx_ = nullptr;
+        context_.reset();
+        initialized_ = false;
+    }
 }
 
-int Pir::Init(std::shared_ptr<Context> ctx)
+int Pir::GetTeeCtx(const std::shared_ptr<Context> &context)
 {
-    if (!ctx) {
+    dgTeeCtx_ = context->GetTeeCtx(KCAL_AlgorithmsType::PIR);
+    if (!dgTeeCtx_) {
         return DG_ERR_MPC_INVALID_PARAM;
     }
-
-    auto nodeInfoHelper = utils::NodeInfoHelper::Create(ctx->GetWorldSize());
-    if (!nodeInfoHelper) {
-        return DG_ERR_MPC_INVALID_PARAM;
-    }
-
-    int rv = opts_->initTeeCtx(ctx->GetTeeConfig(), &dgTeeCtx_);
-    if (rv != 0) {
-        return rv;
-    }
-
-    rv = opts_->setTeeNodeInfos(dgTeeCtx_, nodeInfoHelper->Get());
-    if (rv != 0) {
-        return rv;
-    }
-
-    baseCtx_ = std::move(ctx);
-
     return DG_SUCCESS;
 }
 
 int Pir::ServerPreProcess(DG_PairList *pairList)
 {
+    if (!initialized_ || !dgTeeCtx_) {
+        return DG_ERR_MPC_INVALID_PARAM;
+    }
     if (!pairList) {
         return DG_ERR_MPC_INVALID_PARAM;
     }
@@ -63,6 +53,9 @@ int Pir::ServerPreProcess(DG_PairList *pairList)
 
 int Pir::ClientQuery(DG_TeeInput *input, DG_TeeOutput **output, DG_DummyMode dummyMode)
 {
+    if (!initialized_ || !dgTeeCtx_) {
+        return DG_ERR_MPC_INVALID_PARAM;
+    }
     if (!input || !output) {
         return DG_ERR_MPC_INVALID_PARAM;
     }
@@ -71,7 +64,10 @@ int Pir::ClientQuery(DG_TeeInput *input, DG_TeeOutput **output, DG_DummyMode dum
 
 int Pir::ServerAnswer()
 {
+    if (!initialized_ || !dgTeeCtx_) {
+        return DG_ERR_MPC_INVALID_PARAM;
+    }
     return opts_->serverCalculate(dgTeeCtx_, bucketMap_);
 }
 
-}
+} // namespace kcal
