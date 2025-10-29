@@ -50,7 +50,7 @@ int Context::Init()
         return rv;
     }
     // NOTE: kcal_25.0.7.2 version does not support SM cryptographic algorithms
-    // DG_CON_MPC_TEE_INT_IS_SM_ALGORITHM parameter cannot be setneed delete below 'if-else' code
+    // DG_CON_MPC_TEE_INT_IS_SM_ALGORITHM parameter cannot be set, need delete below 'if-else' code
     if (config_.useSMAlg) {
         rv = cfgOpts_->setIntValue(teeCfg_, DG_CON_MPC_TEE_INT_IS_SM_ALGORITHM, 1);
     } else {

@@ -19,6 +19,7 @@
 #include "kcal/operator/kcal_reveal_share.h"
 #include "kcal/operator/kcal_sum.h"
 #include "kcal/operator/kcal_avg.h"
+#include "kcal/operator/kcal_maximum.h"
 
 namespace kcal {
 
@@ -43,8 +44,8 @@ void RegisterAllOpsImpl()
     registry.RegisterOperator<NoEqual>(KCAL_AlgorithmsType::NO_EQUAL);
     registry.RegisterOperator<Sum>(KCAL_AlgorithmsType::SUM);
     registry.RegisterOperator<Avg>(KCAL_AlgorithmsType::AVG);
-    registry.RegisterOperator<Avg>(KCAL_AlgorithmsType::MAX);
-    registry.RegisterOperator<Avg>(KCAL_AlgorithmsType::MIN);
+    registry.RegisterOperator<Max>(KCAL_AlgorithmsType::MAX);
+    registry.RegisterOperator<Min>(KCAL_AlgorithmsType::MIN);
 }
 
 } // namespace

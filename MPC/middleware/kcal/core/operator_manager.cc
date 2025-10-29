@@ -46,9 +46,9 @@ std::shared_ptr<OperatorBase> OperatorManager::CreateOperatorWithConfig(KCAL_Con
     return CreateOperator(context, type);
 }
 
-std::unordered_map<KCAL_AlgorithmsType, std::shared_ptr<OperatorBase>>
-OperatorManager::CreateOperators(std::shared_ptr<Context> context,
-                                 const std::vector<KCAL_AlgorithmsType> &types)
+std::unordered_map<KCAL_AlgorithmsType, std::shared_ptr<OperatorBase>> OperatorManager::CreateOperators(
+    std::shared_ptr<Context> context,
+    const std::vector<KCAL_AlgorithmsType> &types)
 {
     std::unordered_map<KCAL_AlgorithmsType, std::shared_ptr<OperatorBase>> operators;
     for (auto type : types) {
