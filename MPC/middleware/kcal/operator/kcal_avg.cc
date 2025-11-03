@@ -10,33 +10,23 @@
  * See the Mulan PSL v2 for more details.
  */
 
-#include "node_info_helper.h"
+#include "kcal/operator/kcal_avg.h"
 
-namespace kcal::utils {
+namespace kcal {
 
-NodeInfoHelper::NodeInfoHelper(int worldSize)
+int Avg::GetTeeCtx(const std::shared_ptr<Context> &context)
 {
-    infos_.resize(worldSize);
-    for (int i = 0; i < worldSize; ++i) {
-        infos_[i].nodeId = i;
+    return Arithmetic::GetTeeCtx(context);
+}
+
+int Avg::Run(const io::KcalMpcShareSet &shareSet, io::KcalMpcShare *&outShare)
+{
+    int ret = opts_->calculate(dgTeeCtx_, DG_AlgorithmsType::AVG, shareSet.Get(), &outShare->Get());
+    if (ret != DG_SUCCESS) {
+        return ret;
     }
-
-    nodeInfos_.nodeInfo = infos_.data();
-    nodeInfos_.size = infos_.size();
+    outShare->Get()->size = 1;
+    return DG_SUCCESS;
 }
 
-TeeNodeInfos *NodeInfoHelper::Get()
-{
-    nodeInfos_.nodeInfo = infos_.data();
-    return &nodeInfos_;
-}
-
-std::optional<NodeInfoHelper> NodeInfoHelper::Create(int worldSize)
-{
-    if (worldSize <= 0) {
-        return std::nullopt;
-    }
-    return NodeInfoHelper(worldSize);
-}
-
-} // namespace kcal::utils
+} // namespace kcal

@@ -16,6 +16,7 @@
 #include <memory>
 #include "kcal/api/kcal_api.h"
 #include "kcal/enumeration/kcal_enum.h"
+#include "kcal/core/tee_ctx_manager.h"
 
 namespace kcal {
 
@@ -30,33 +31,33 @@ struct KCAL_Config {
 class Context {
 public:
     Context() = default;
-
-    explicit Context(KCAL_Config config, KCAL_AlgorithmsType type);
-
-    Context(const Context &) = delete;
-
-    Context &operator=(const Context &) = delete;
-
+    explicit Context(KCAL_Config config);
     ~Context();
 
-    static std::shared_ptr<Context> Create(KCAL_Config config, TEE_NET_RES *netRes, KCAL_AlgorithmsType type);
+    Context(const Context &) = delete;
+    Context &operator=(const Context &) = delete;
 
+    static std::shared_ptr<Context> Create(KCAL_Config config, TEE_NET_RES *netRes);
     int Init();
 
-    [[nodiscard]] int GetWorldSize() const { return config_.worldSize; }
-
+    int GetWorldSize() const { return config_.worldSize; }
     void *GetTeeConfig() { return teeCfg_; }
+    bool IsValid() const { return teeCfg_ != nullptr; }
+    KCAL_Config GetConfig() const { return config_; }
+    int NodeId() const { return config_.nodeId; }
+
+    DG_TeeCtx *GetTeeCtx(KCAL_AlgorithmsType algoType);
+    bool IsTeeCtxInitialized(KCAL_AlgorithmsType algoType) const;
 
 private:
     int SetNetRes(TEE_NET_RES *teeNetRes);
 
     KCAL_Config config_;
-    KCAL_AlgorithmsType type_;
-
     void *teeCfg_ = nullptr;
     DG_ConfigOpts *cfgOpts_ = nullptr;
+    std::unique_ptr<TeeCtxManager> teeCtxManager_;
 };
 
-}
+} // namespace kcal
 
 #endif // CONTEXT_H

@@ -10,32 +10,13 @@
  * See the Mulan PSL v2 for more details.
  */
 
-#ifndef NODE_INFO_HELPER_H
-#define NODE_INFO_HELPER_H
+#ifndef KCAL_MIDDLEWARE_ALL_OPERATOR_REGISTER_H
+#define KCAL_MIDDLEWARE_ALL_OPERATOR_REGISTER_H
 
-#include <optional>
-#include <vector>
-#include "kcal/api/kcal_api.h"
+namespace kcal {
 
-namespace kcal::utils {
+void RegisterAllOps();
 
-class NodeInfoHelper {
-public:
-    static std::optional<NodeInfoHelper> Create(int worldSize);
+}
 
-    ~NodeInfoHelper() = default;
-
-    TeeNodeInfos *Get();
-
-private:
-    NodeInfoHelper() = default;
-
-    explicit NodeInfoHelper(int worldSize);
-
-    TeeNodeInfos nodeInfos_;
-    std::vector<TeeNodeInfo> infos_;
-};
-
-} // namespace kcal::utils
-
-#endif // NODE_INFO_HELPER_H
+#endif // KCAL_MIDDLEWARE_ALL_OPERATOR_REGISTER_H

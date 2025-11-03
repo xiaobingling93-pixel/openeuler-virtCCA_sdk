@@ -10,31 +10,33 @@
  * See the Mulan PSL v2 for more details.
  */
 
-#ifndef KCAL_PSI_H
-#define KCAL_PSI_H
+#ifndef OPERATOR_BASE_H
+#define OPERATOR_BASE_H
 
 #include <memory>
-#include "kcal/api/kcal_api.h"
 #include "kcal/core/context.h"
-#include "kcal/core/operator_base.h"
+#include "kcal/enumeration/kcal_enum.h"
 
 namespace kcal {
 
-class Psi : public OperatorBase {
+class OperatorBase {
 public:
-    Psi();
-    ~Psi() override;
+    virtual ~OperatorBase() = default;
 
-    int GetTeeCtx(const std::shared_ptr<Context> &context) override;
-    KCAL_AlgorithmsType GetType() const override { return KCAL_AlgorithmsType::PSI; }
+    int Initialize(std::shared_ptr<Context> context);
+    virtual KCAL_AlgorithmsType GetType() const = 0;
 
-    int Run(DG_TeeInput *input, DG_TeeOutput **output, DG_TeeMode outputMode);
+    bool IsInitialized() const { return initialized_; }
 
-private:
-    DG_TeeCtx *dgTeeCtx_ = nullptr;
-    std::unique_ptr<DG_PrivateSet_Opts> opts_;
+protected:
+    OperatorBase() = default;
+
+    virtual int GetTeeCtx(const std::shared_ptr<Context> &context) = 0;
+
+    bool initialized_ = false;
+    std::shared_ptr<Context> context_;
 };
 
 } // namespace kcal
 
-#endif // KCAL_PSI_H
+#endif // OPERATOR_BASE_H

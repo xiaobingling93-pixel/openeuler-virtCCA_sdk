@@ -21,40 +21,34 @@ Psi::Psi()
     *opts_ = DG_InitPsiOpts();
 }
 
-Psi::~Psi() { opts_->releaseTeeCtx(&dgTeeCtx_); }
-
-int Psi::Init(std::shared_ptr<Context> ctx)
+Psi::~Psi()
 {
-    if (!ctx) {
+    if (initialized_) {
+        dgTeeCtx_ = nullptr;
+        context_.reset();
+        initialized_ = false;
+    }
+}
+
+int Psi::GetTeeCtx(const std::shared_ptr<Context> &context)
+{
+    dgTeeCtx_ = context->GetTeeCtx(KCAL_AlgorithmsType::PSI);
+    if (!dgTeeCtx_) {
         return DG_ERR_MPC_INVALID_PARAM;
     }
-
-    auto nodeInfoHelper = utils::NodeInfoHelper::Create(ctx->GetWorldSize());
-    if (!nodeInfoHelper) {
-        return DG_ERR_MPC_INVALID_PARAM;
-    }
-
-    int rv = opts_->initTeeCtx(ctx->GetTeeConfig(), &dgTeeCtx_);
-    if (rv != 0) {
-        return rv;
-    }
-
-    rv = opts_->setTeeNodeInfos(dgTeeCtx_, nodeInfoHelper->Get());
-    if (rv != 0) {
-        return rv;
-    }
-
-    baseCtx_ = std::move(ctx);
-
     return DG_SUCCESS;
 }
 
 int Psi::Run(DG_TeeInput *input, DG_TeeOutput **output, DG_TeeMode outputMode)
 {
+    if (!initialized_ || !dgTeeCtx_) {
+        return DG_ERR_MPC_INVALID_PARAM;
+    }
     if (!input || !output) {
         return DG_ERR_MPC_INVALID_PARAM;
     }
+
     return opts_->calculate(dgTeeCtx_, PSI, input, output, outputMode);
 }
 
-}
+} // namespace kcal

@@ -10,32 +10,25 @@
  * See the Mulan PSL v2 for more details.
  */
 
-#ifndef NODE_INFO_HELPER_H
-#define NODE_INFO_HELPER_H
+#ifndef KCAL_MIDDLEWARE_MEM_KV_H
+#define KCAL_MIDDLEWARE_MEM_KV_H
 
-#include <optional>
-#include <vector>
-#include "kcal/api/kcal_api.h"
+#include <unordered_map>
+#include <string>
+#include "kcal/utils/io.h"
 
-namespace kcal::utils {
+namespace kcal::io {
 
-class NodeInfoHelper {
+class MemKVStore {
 public:
-    static std::optional<NodeInfoHelper> Create(int worldSize);
-
-    ~NodeInfoHelper() = default;
-
-    TeeNodeInfos *Get();
+    void Put(std::string_view key, KcalMpcShare *value);
+    bool Get(std::string_view key, KcalMpcShare *&value);
+    void Delete(std::string_view key);
 
 private:
-    NodeInfoHelper() = default;
-
-    explicit NodeInfoHelper(int worldSize);
-
-    TeeNodeInfos nodeInfos_;
-    std::vector<TeeNodeInfo> infos_;
+    std::unordered_map<std::string, KcalMpcShare *> mapCache_;
 };
 
-} // namespace kcal::utils
+} // namespace kcal::io
 
-#endif // NODE_INFO_HELPER_H
+#endif // KCAL_MIDDLEWARE_MEM_KV_H

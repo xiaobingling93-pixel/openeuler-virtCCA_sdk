@@ -10,33 +10,25 @@
  * See the Mulan PSL v2 for more details.
  */
 
-#include "node_info_helper.h"
+#include "kcal/core/operator_base.h"
 
-namespace kcal::utils {
+namespace kcal {
 
-NodeInfoHelper::NodeInfoHelper(int worldSize)
+int OperatorBase::Initialize(std::shared_ptr<Context> context)
 {
-    infos_.resize(worldSize);
-    for (int i = 0; i < worldSize; ++i) {
-        infos_[i].nodeId = i;
+    if (!context || !context->IsValid()) {
+        return DG_ERR_MPC_INVALID_PARAM;
     }
-
-    nodeInfos_.nodeInfo = infos_.data();
-    nodeInfos_.size = infos_.size();
-}
-
-TeeNodeInfos *NodeInfoHelper::Get()
-{
-    nodeInfos_.nodeInfo = infos_.data();
-    return &nodeInfos_;
-}
-
-std::optional<NodeInfoHelper> NodeInfoHelper::Create(int worldSize)
-{
-    if (worldSize <= 0) {
-        return std::nullopt;
+    if (initialized_) {
+        return DG_SUCCESS;
     }
-    return NodeInfoHelper(worldSize);
+    int ret = GetTeeCtx(context);
+    if (ret != DG_SUCCESS) {
+        return DG_FAILURE;
+    }
+    context_ = context;
+    initialized_ = true;
+    return DG_SUCCESS;
 }
 
-} // namespace kcal::utils
+} // namespace kcal
