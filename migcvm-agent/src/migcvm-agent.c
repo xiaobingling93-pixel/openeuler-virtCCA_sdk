@@ -705,7 +705,7 @@ static int deal_passwd(char password[MAX_PASSWD_LEN])
         return ENCLAVE_VERIFIER_ERR_UNKNOWN;
     }
     
-    for (i = 0; i < MAX_PASSWD_LEN, i++) {
+    for (i = 0; i < MAX_PASSWD_LEN; i++) {
         password[i] = '\0';
     }
 
