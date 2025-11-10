@@ -100,7 +100,7 @@ index 3beaa88..1e02c77 100644
 +              params.spu_runtime_cfg().max_concurrency(),
 +              params.spu_runtime_cfg().fxp_fraction_bits());
 +  kcal::KCAL_Config kcal_cfg{};
-+  kcal_cfg.fixBits = params.spu_runtime_cfg().fxp_fraction_bits();
++  kcal_cfg.fixBits = 3;  // 3 means .xxx
 +  kcal_cfg.nodeId = lctx_->Rank();
 +  kcal_cfg.threadCount = params.spu_runtime_cfg().max_concurrency();
 +  kcal_cfg.useSMAlg = false;

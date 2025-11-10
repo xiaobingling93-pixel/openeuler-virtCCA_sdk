@@ -402,7 +402,7 @@ index 0000000..f70f135
 +  GlobalManager::GetInstance().InitializeCtx(lctx_);
 +
 +  ::kcal::KCAL_Config kcal_cfg{};
-+  kcal_cfg.fixBits = 1;
++  kcal_cfg.fixBits = 3;
 +  kcal_cfg.nodeId = lctx_->Rank();
 +  kcal_cfg.threadCount = options_->thread_count;
 +  kcal_cfg.useSMAlg = options_->use_sm_alg;
@@ -608,7 +608,7 @@ index 0000000..a2235be
 +  GlobalManager::GetInstance().InitializeCtx(lctx_);
 +
 +  ::kcal::KCAL_Config kcal_cfg{};
-+  kcal_cfg.fixBits = 1;
++  kcal_cfg.fixBits = 3;
 +  kcal_cfg.nodeId = lctx_->Rank();
 +  kcal_cfg.threadCount = options_->thread_count;
 +  kcal_cfg.useSMAlg = options_->use_sm_alg;
@@ -897,7 +897,7 @@ index 0000000..c396db1
 +  GlobalManager::GetInstance().InitializeCtx(lctx_);
 +  // 
 +  ::kcal::KCAL_Config kcal_cfg;
-+  kcal_cfg.fixBits = 1;
++  kcal_cfg.fixBits = 3;
 +  kcal_cfg.nodeId = lctx_->Rank();
 +  kcal_cfg.threadCount = config_.protocol_config().kcal_config().thread_count();
 +  kcal_cfg.useSMAlg = config_.protocol_config().kcal_config().use_sm_alg();
@@ -1010,7 +1010,7 @@ index 0000000..c53c79e
 +  GlobalManager::GetInstance().InitializeCtx(lctx_);
 +  // 
 +  ::kcal::KCAL_Config kcal_cfg;
-+  kcal_cfg.fixBits = 1;
++  kcal_cfg.fixBits = 3;
 +  kcal_cfg.nodeId = lctx_->Rank();
 +  kcal_cfg.threadCount = config_.protocol_config().kcal_config().thread_count();
 +  kcal_cfg.useSMAlg = config_.protocol_config().kcal_config().use_sm_alg();
