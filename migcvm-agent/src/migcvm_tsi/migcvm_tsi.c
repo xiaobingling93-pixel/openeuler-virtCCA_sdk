@@ -122,8 +122,11 @@ int get_migration_binded_rds(tsi_ctx *ctx, virtcca_mig_info_t *migvm_info, migra
     }
 
     if (attest_info->pending_guest_rds) {
-        for (int i = 0; i < MAX_BIND_VM; ++i) {
-            printf("Pending guest rd %d: 0x%llx\n", i, attest_info->pending_guest_rds->guest_rd[i]);
+        for (unsigned int i = 0; i < MAX_BIND_VM; ++i) {
+            if (attest_info->pending_guest_rds->guest_rd[i] != 0) {
+                printf("Pending guest rd %u: 0x%llx\n", i,
+                       (unsigned long long)attest_info->pending_guest_rds->guest_rd[i]);
+            }
         }
     } else {
         printf("the pending_guest_rds is not set\n");

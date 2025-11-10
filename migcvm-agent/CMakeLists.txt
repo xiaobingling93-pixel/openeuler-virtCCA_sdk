@@ -7,7 +7,8 @@ add_subdirectory(src/attest)
 add_subdirectory(src/migcvm_tsi)
 
 set(SOURCES src/migcvm-agent.c
-    src/socket/host_socket_agent.c)
+    src/socket/host_socket_agent.c
+    src/rats_tls_handler/rats_tls_handler.c)
 
 add_executable(${PROJECT_NAME} ${SOURCES})
 
@@ -16,6 +17,8 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     inc/attest/
     inc/socket/
     inc/migcvm_tsi
+    inc/rats_tls_handler
+    inc
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE 
