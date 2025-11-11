@@ -8,17 +8,21 @@
 #include <linux/ioctl.h>
 
 #define TSI_MAGIC 'T'
-#define TSI_SUCCESS 0
+#define TSI_SUCCESS             0
+#define TSI_ERROR_INPUT         1
+#define TSI_ERROR_STATE         2
+#define TSI_INCOMPLETE          3
 
 /* Measurement Related Defination */
 #define TMI_HASH_ALGO_SHA256    0
 #define TMI_HASH_ALGO_SHA512    1
 #define TMI_HASH_ALGO_SM3        2
 
-#define MAX_BIND_VM                (16U)
+#define MAX_BIND_VM                (256U)
 
 enum slot_status {
     SLOT_IS_EMPTY = 0,
+    SLOT_NOT_BINDED,
     SLOT_IS_BINDED,
     SLOT_IS_READY
 };
@@ -80,4 +84,5 @@ typedef struct virtcca_migvm_info {
 int get_migration_info_and_mask(tsi_ctx *ctx, virtcca_mig_info_t *migvm_info, migration_info_t *attest_info);
 int set_migration_bind_slot_and_mask(tsi_ctx *ctx, virtcca_mig_info_t *migvm_info, migration_info_t *attest_info);
 int get_migration_binded_rds(tsi_ctx *ctx, virtcca_mig_info_t *migvm_info, migration_info_t *attest_info);
+int prepare_migration(unsigned long long guest_rd);
 #endif
