@@ -4,13 +4,16 @@ project(kcal_middleware LANGUAGES C CXX)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-find_package(libkcal)
+find_package(libkcal REQUIRED)
 
-include_directories(${CMAKE_CURRENT_SOURCE_DIR})
-
-add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/kcal)
+add_subdirectory(kcal)
 
 install(DIRECTORY kcal
         DESTINATION include
         FILES_MATCHING PATTERN "*.h"
+)
+
+install(EXPORT kcal_middlewareTargets
+        FILE kcal_middleConfig.cmake
+        DESTINATION lib/cmake/kcal_middle
 )
