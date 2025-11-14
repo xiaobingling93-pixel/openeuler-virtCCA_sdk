@@ -1,0 +1,20 @@
+[project]
+name = "kcal"
+version = "0.1.0"
+description = "Python bindings for kcal library (example, CMake + pybind11 + PDM)"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = ["pdm"]
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[tool.pdm.build]
+# ensure package dir and README are included in wheel
+includes = ["kcal/", "README.md"]
+
+[tool.pdm.scripts]
+# run `pdm run build-native` to configure/build/copy/generate-stubs
+build-native = { call = "build_native:build_native" }
+clean = { shell = "rm -rf build/ __pycache__/ *.egg-info/ dist/ CMakeFiles/ _skbuild/" }
