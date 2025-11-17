@@ -10,11 +10,50 @@
 #include <errno.h>
 #include <linux/vm_sockets.h>
 #include <rats-tls/log.h>
+#include <pthread.h>
 
 #include "socket_agent.h"
 #include "migcvm_tsi.h"
 
 static int start_listening = 1;
+
+ssize_t readn(int fd, void *buf, size_t n)
+{
+    size_t left = n;
+    char *p = buf;
+    while (left > 0) {
+        ssize_t r = read(fd, p, left);
+        if (r < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return -1;
+        } else if (r == 0) {
+            break;
+        }
+        left -= r;
+        p += r;
+    }
+    return n - left;
+}
+
+ssize_t writen(int fd, const void *buf, size_t n)
+{
+    size_t left = n;
+    const char *p = buf;
+    while (left > 0) {
+        ssize_t r = write(fd, p, left);
+        if (r < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return -1;
+        }
+        left -= r;
+        p += r;
+    }
+    return n;
+}
 
 static void default_msg_handler(const struct socket_msg *msg, int conn_fd)
 {
@@ -27,17 +66,24 @@ static void default_msg_handler(const struct socket_msg *msg, int conn_fd)
 }
 
 static void calling_handler(const int listen_fd, socket_msg_handler handler,
-                            mig_agent_args *args)
+                            mig_agent_args *args, const struct socket_agent_cfg *cfg)
 {
-    int conn_fd = accept(listen_fd, NULL, NULL);
+    struct sockaddr_vm peer_sa = {0};
+    socklen_t peer_len = sizeof(peer_sa);
+    struct sockaddr_vm local_sa = {0};
+    socklen_t local_len = sizeof(local_sa);
+    struct socket_msg msg;
+
+    int conn_fd = accept(listen_fd, (struct sockaddr *)&peer_sa, &peer_len);
     if (conn_fd < 0) {
         perror("accept failed");
         return;
     }
+    getsockname(conn_fd, (struct sockaddr *)&local_sa, &local_len);
+    printf("Accepted: listener port=%u, local port=%u, peer cid=%u, peer port=%u\n",
+        cfg->port, local_sa.svm_port, peer_sa.svm_cid, peer_sa.svm_port);
 
-    printf("New connection accepted\n");
-    struct socket_msg msg;
-    ssize_t bytes_read = read(conn_fd, &msg, sizeof(msg));
+    ssize_t bytes_read = readn(conn_fd, &msg, sizeof(msg));
     if (bytes_read == sizeof(msg)) {
         if (handler) {
             printf("Handling message: cmd=%s, payload_type=%d\n",
@@ -45,14 +91,13 @@ static void calling_handler(const int listen_fd, socket_msg_handler handler,
             handler(&msg, conn_fd, args);
         }
     } else if (bytes_read < 0) {
-        char error_message[256] = {0};
-        strerror_r(errno, error_message, sizeof(error_message));
-        printf("read failed: %s (errno=%d)\n", error_message, errno);
+        printf("read failed: %s (errno=%d)\n", strerror(errno), errno);
     } else if (bytes_read == 0) {
-        printf("Connection closed by client\n");
+        printf("Connection closed by client before sending data\n");
     } else {
         printf("Partial message received: %zd/%zu bytes\n", bytes_read, sizeof(msg));
     }
+    printf("Closing connection (client cid=%u, port=%u)\n", peer_sa.svm_cid, peer_sa.svm_port);
     close(conn_fd);
 }
 
@@ -84,8 +129,7 @@ int socket_agent_start_with_handler(const struct socket_agent_cfg *cfg,
 
     printf("Trying to bind: CID=%u, Port=%d\n", sa.svm_cid, sa.svm_port);
     if (bind(listen_fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
-        strerror_r(errno, error_message, sizeof(error_message));
-        RTLS_ERR("bind failed: %s (errno=%d)\n", error_message, errno);
+        printf("bind failed: (errno=%d)\n", errno);
         close(listen_fd);
         return TSI_ERROR_INPUT;
     }
@@ -93,13 +137,15 @@ int socket_agent_start_with_handler(const struct socket_agent_cfg *cfg,
     printf("Successfully bound to port %d\n", sa.svm_port);
     if (listen(listen_fd, cfg->backlog) < 0) {
         strerror_r(errno, error_message, sizeof(error_message));
-        RTLS_INFO("listen failed: %s (errno=%d)\n", error_message, errno);
+        printf("listen failed: (errno=%d)\n", errno);
         close(listen_fd);
         return TSI_ERROR_STATE;
     }
 
     printf("Listening for VSOCK connections on port %d...\n", sa.svm_port);
-    calling_handler(listen_fd, handler, cfg->args);
+    while (start_listening) {
+        calling_handler(listen_fd, handler, cfg->args, cfg);
+    }
     close(listen_fd);
     return TSI_SUCCESS;
 }

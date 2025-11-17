@@ -57,6 +57,15 @@ int get_migration_info_and_mask(tsi_ctx *ctx, virtcca_mig_info_t *migvm_info, mi
     }
     migvm_info->mig_info = attest_info;
 
+    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[0]);
+    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[1]);
+    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[2]);
+    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[3]);
+    printf("the local msk is 0x%lx\n", attest_info->msk[0]);
+    printf("the local msk is 0x%lx\n", attest_info->msk[1]);
+    printf("the local msk is 0x%lx\n", attest_info->msk[2]);
+    printf("the local msk is 0x%lx\n", attest_info->msk[3]);
+
     ret = ioctl(ctx->fd, TMM_GET_MIGRATION_INFO, migvm_info);
     if (ret != 0) {
         char error_message[256] = {0};
@@ -65,6 +74,10 @@ int get_migration_info_and_mask(tsi_ctx *ctx, virtcca_mig_info_t *migvm_info, mi
         return TSI_ERROR;
     }
 
+    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[0]);
+    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[1]);
+    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[2]);
+    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[3]);
     printf("the local msk is 0x%lx\n", attest_info->msk[0]);
     printf("the local msk is 0x%lx\n", attest_info->msk[1]);
     printf("the local msk is 0x%lx\n", attest_info->msk[2]);
@@ -85,9 +98,22 @@ int set_migration_bind_slot_and_mask(tsi_ctx *ctx, virtcca_mig_info_t *migvm_inf
         return NULL_INPUT;
     }
 
+    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[0]);
+    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[1]);
+    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[2]);
+    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[3]);
+    printf("the local msk is 0x%lx\n", attest_info->msk[0]);
+    printf("the local msk is 0x%lx\n", attest_info->msk[1]);
+    printf("the local msk is 0x%lx\n", attest_info->msk[2]);
+    printf("the local msk is 0x%lx\n", attest_info->msk[3]);
+
     migvm_info->size = sizeof(migration_info_t);
     printf("migvm_info->size: %zu\n", migvm_info->size);
     migvm_info->ops = OP_MIGRATE_SET_SLOT;
+    if (attest_info == NULL) {
+        printf("Failed to allocate memory for migration_info: out of memory\n");
+        return TSI_ERROR;
+    }
     migvm_info->mig_info = attest_info;
 
     ret = ioctl(ctx->fd, TMM_GET_MIGRATION_INFO, migvm_info);
@@ -95,6 +121,15 @@ int set_migration_bind_slot_and_mask(tsi_ctx *ctx, virtcca_mig_info_t *migvm_inf
         printf("Failed to get migration info. errno: %d\n", errno);
         return TSI_ERROR;
     }
+
+    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[0]);
+    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[1]);
+    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[2]);
+    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[3]);
+    printf("the local msk is 0x%lx\n", attest_info->msk[0]);
+    printf("the local msk is 0x%lx\n", attest_info->msk[1]);
+    printf("the local msk is 0x%lx\n", attest_info->msk[2]);
+    printf("the local msk is 0x%lx\n", attest_info->msk[3]);
 
     return TSI_SUCCESS;
 }
@@ -126,6 +161,7 @@ int get_migration_binded_rds(tsi_ctx *ctx, virtcca_mig_info_t *migvm_info, migra
             if (attest_info->pending_guest_rds->guest_rd[i] != 0) {
                 printf("Pending guest rd %u: 0x%llx\n", i,
                        (unsigned long long)attest_info->pending_guest_rds->guest_rd[i]);
+                migvm_info->guest_rd = attest_info->pending_guest_rds->guest_rd[i];
             }
         }
     } else {

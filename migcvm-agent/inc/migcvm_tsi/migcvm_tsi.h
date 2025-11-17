@@ -65,6 +65,7 @@ typedef struct migration_info {
     bool set_key;
     unsigned short slot_status;
     unsigned long long msk[4];
+    unsigned long long rand_iv[4];
     pending_guest_rd_t *pending_guest_rds;
 } migration_info_t;
 

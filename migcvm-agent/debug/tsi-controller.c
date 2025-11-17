@@ -87,7 +87,7 @@ static int switch_request_function(tsi_ctx *ctx, int function_to_test,
     return ret;
 }
 
-int main(int argc, char *argv[])
+static int test_key_gen()
 {
     tsi_ctx *ctx = NULL;
     virtcca_mig_info_t *migvm_info = NULL;
@@ -96,22 +96,7 @@ int main(int argc, char *argv[])
     int ret;
     unsigned long long guest_rd = 0;
     unsigned long long msk_value = 0;
-    int function_to_test = 0; /* 1 for get_migration_info, 2 for set_migration_bind_slot */
-
-    /* Parse command line arguments */
-    if (argc < MIN_REQUIRED_ARGS) {
-        printf("Usage: %s <function> <guest_rd> <msk>\n", argv[0]);
-        printf("  function: 1 for get_migration_info, 2 for set_migration_bind_slot\n");
-        printf("  guest_rd: guest_rd value in hex (e.g., 0x20000000)\n");
-        printf("  msk: msk value in hex (e.g., 0x111)\n");
-        return -1;
-    }
-
-    function_to_test = atoi(argv[1]);
-    guest_rd = strtoull(argv[2], NULL, 0);
-    msk_value = strtoull(argv[3], NULL, 0);
-    printf("using guest_rd: 0x%llx\n", guest_rd);
-    printf("using msk: 0x%llx\n", msk_value);
+    unsigned long long rand_iv = 0;
 
     /* Initialize TSI context */
     ctx = tsi_new_ctx();
@@ -127,14 +112,95 @@ int main(int argc, char *argv[])
         tsi_free_ctx(ctx);
         return -1;
     }
+    memset(migvm_info, 0, sizeof(virtcca_mig_info_t));
     migvm_info->guest_rd = guest_rd;
     attest_info = (migration_info_t *)malloc(sizeof(migration_info_t));
+    if (attest_info == NULL) {
+        printf("Failed to allocate memory for attest_info: out of memory\n");
+        tsi_free_ctx(ctx);
+        return -1;
+    }
+    memset(attest_info, 0, sizeof(migration_info_t));
     pending_guest_rds = (pending_guest_rd_t *)malloc(sizeof(pending_guest_rd_t));
     if (!pending_guest_rds) {
         perror("Failed to allocate pending_guest_rds");
         return -1;
     }
+    memset(pending_guest_rds, 0, sizeof(pending_guest_rd_t));
     attest_info->msk[0] = msk_value;
+    attest_info->rand_iv[0] = rand_iv;
+    attest_info->pending_guest_rds = pending_guest_rds;
+    migvm_info->guest_rd = attest_info->pending_guest_rds->guest_rd[0];
+    ret = switch_request_function(ctx, 4, attest_info, migvm_info);
+    ret = switch_request_function(ctx, 1, attest_info, migvm_info);
+    ret = switch_request_function(ctx, 2, attest_info, migvm_info);
+    free(migvm_info);
+    free(attest_info);
+    free(pending_guest_rds);
+    return ret;
+}
+
+
+int main(int argc, char *argv[])
+{
+    tsi_ctx *ctx = NULL;
+    virtcca_mig_info_t *migvm_info = NULL;
+    migration_info_t *attest_info = NULL;
+    pending_guest_rd_t *pending_guest_rds = NULL;
+    int ret;
+    unsigned long long guest_rd = 0;
+    unsigned long long msk_value = 0;
+    unsigned long long rand_iv = 0;
+    int function_to_test = 0; /* 1 for get_migration_info, 2 for set_migration_bind_slot */
+
+    /* Parse command line arguments */
+    if (argc < MIN_REQUIRED_ARGS) {
+        printf("Usage: %s <function> <guest_rd> <msk>\n", argv[0]);
+        printf("  function: 1 for get_migration_info, 2 for set_migration_bind_slot\n");
+        printf("  guest_rd: guest_rd value in hex (e.g., 0x20000000)\n");
+        printf("  msk: msk value in hex (e.g., 0x111)\n");
+        printf("  rand_iv: rand_iv value in hex (e.g., 0x0)\n");
+        return -1;
+    }
+
+    function_to_test = atoi(argv[1]);
+    guest_rd = strtoull(argv[2], NULL, 0);
+    msk_value = strtoull(argv[3], NULL, 0);
+    rand_iv = strtoull(argv[4], NULL, 0);
+    printf("using guest_rd: 0x%llx\n", guest_rd);
+    printf("using msk: 0x%llx\n", msk_value);
+    printf("using rand_iv: 0x%llx\n", rand_iv);
+    /* Initialize TSI context */
+    ctx = tsi_new_ctx();
+    if (ctx == NULL) {
+        printf("Failed to create TSI context\n");
+        return -1;
+    }
+
+    printf("using guest_rd: 0x%llx\n", guest_rd);
+    migvm_info = (virtcca_mig_info_t *)malloc(sizeof(virtcca_mig_info_t));
+    if (migvm_info == NULL) {
+        printf("Failed to allocate memory for migvm_info: out of memory\n");
+        tsi_free_ctx(ctx);
+        return -1;
+    }
+    memset(migvm_info, 0, sizeof(virtcca_mig_info_t));
+    migvm_info->guest_rd = guest_rd;
+    attest_info = (migration_info_t *)malloc(sizeof(migration_info_t));
+    if (attest_info == NULL) {
+        printf("Failed to allocate memory for attest_info: out of memory\n");
+        tsi_free_ctx(ctx);
+        return -1;
+    }
+    memset(attest_info, 0, sizeof(migration_info_t));
+    pending_guest_rds = (pending_guest_rd_t *)malloc(sizeof(pending_guest_rd_t));
+    if (!pending_guest_rds) {
+        perror("Failed to allocate pending_guest_rds");
+        return -1;
+    }
+    memset(pending_guest_rds, 0, sizeof(pending_guest_rd_t));
+    attest_info->msk[0] = msk_value;
+    attest_info->rand_iv[0] = rand_iv;
     attest_info->pending_guest_rds = pending_guest_rds;
     ret = switch_request_function(ctx, function_to_test, attest_info, migvm_info);
     free(migvm_info);

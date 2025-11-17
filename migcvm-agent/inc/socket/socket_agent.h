@@ -58,7 +58,8 @@ typedef struct {
     char* platform_ref_json_file;
     /* guest cvm info */
     unsigned long long guest_rd;
-    unsigned long long msk[4];
+    unsigned long long msk[4]; /* encrypted msk */
+    unsigned long long rand_iv[4];
     bool success;
 } mig_agent_args;
 
@@ -82,4 +83,6 @@ static void payload_encode_ull(struct socket_msg *msg, unsigned long long in);
 void payload_decode_all(const struct socket_msg *msg, socket_payload_t *out);
 void payload_decode_one_type(const struct socket_msg *msg, socket_payload_t *out);
 int rats_tls_server_startup(mig_agent_args *args);
+ssize_t readn(int fd, void *buf, size_t n);
+ssize_t writen(int fd, const void *buf, size_t n);
 #endif
