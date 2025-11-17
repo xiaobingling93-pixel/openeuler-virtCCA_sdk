@@ -210,15 +210,15 @@ free:
 static int recieve_and_save_msk(rats_tls_handle handle, mig_agent_args *args)
 {
     int ret = ENCLAVE_ATTESTER_ERR_UNKNOWN;
-    unsigned long long msk[4];
-    size_t len = sizeof(msk);
+    unsigned long long msk_and_randiv[8];
+    size_t len = sizeof(msk_and_randiv);
     virtcca_mig_info_t *migvm_info = NULL;
     migration_info_t *attest_info = NULL;
     tsi_ctx *virtcca_server_ctx = tsi_new_ctx();
     RTLS_INFO("calling recieve_and_save_msk\n");
-    ret = rats_tls_receive(handle, msk, &len);
-    if (ret != RATS_TLS_ERR_NONE || len != sizeof(msk)) {
-        RTLS_ERR("Failed to receive valid MSK\n");
+    ret = rats_tls_receive(handle, msk_and_randiv, &len);
+    if (ret != RATS_TLS_ERR_NONE || len != sizeof(msk_and_randiv)) {
+        RTLS_ERR("Failed to receive valid MSK and RAND iv\n");
         return ret;
     }
 
@@ -237,8 +237,10 @@ static int recieve_and_save_msk(rats_tls_handle handle, mig_agent_args *args)
         goto out;
     };
     attest_info->pending_guest_rds = NULL;
-    memcpy(attest_info->msk, msk, sizeof(msk));
-    memcpy(args->msk, msk, sizeof(msk));
+    memcpy(attest_info->msk, msk_and_randiv, sizeof(attest_info->msk));
+    memcpy(attest_info->rand_iv, msk_and_randiv + 4, sizeof(attest_info->rand_iv));
+    memcpy(args->msk, msk_and_randiv, sizeof(args->msk));
+    memcpy(args->rand_iv, msk_and_randiv + 4, sizeof(args->rand_iv));
     attest_info->slot_status = SLOT_IS_READY;
 
     /* Set migration bind slot and mask : SLOT_IS_READY*/
@@ -1451,13 +1453,14 @@ int rats_tls_client_startup(mig_agent_args *args)
     /* virtCCA insert: Migration session key exchange */
     RTLS_INFO("Sent to Server MSK\n");
 
-    unsigned long long msk[4];
+    unsigned long long msk_and_randiv[8];
     /* Process MIG_MSK_SEND */
     if (strncmp(buf, MIG_MSK_ACK, strlen(MIG_MSK_ACK)) == 0) {
         RTLS_INFO("Received MIG_MSK_ACK, transmit msk\n");
-        memcpy(msk, args->msk, sizeof(msk));
-        len = sizeof(msk);
-        ret = rats_tls_transmit(handle, msk, &len);
+        memcpy(msk_and_randiv, args->msk, sizeof(args->msk));
+        memcpy(msk_and_randiv + 4, args->rand_iv, sizeof(args->rand_iv));
+        len = sizeof(msk_and_randiv);
+        ret = rats_tls_transmit(handle, msk_and_randiv, &len);
         if (ret != RATS_TLS_ERR_NONE) {
             RTLS_ERR("Failed to transmit %#x\n", ret);
             goto err;
