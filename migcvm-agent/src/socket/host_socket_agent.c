@@ -142,8 +142,8 @@ int socket_agent_start_with_handler(const struct socket_agent_cfg *cfg,
         return TSI_ERROR_STATE;
     }
 
-    printf("Listening for VSOCK connections on port %d...\n", sa.svm_port);
     while (start_listening) {
+        printf("Listening for VSOCK connections on port %d...\n", sa.svm_port);
         calling_handler(listen_fd, handler, cfg->args, cfg);
     }
     close(listen_fd);
@@ -200,5 +200,4 @@ void payload_decode_all(const struct socket_msg *msg, socket_payload_t *out)
     strncpy(out->char_payload, msg->payload.char_payload, copy_len);
     out->char_payload[copy_len] = '\0';
     out->ull_payload = msg->payload.ull_payload;
-    out->payload_char_len = msg->payload.payload_char_len;
 }

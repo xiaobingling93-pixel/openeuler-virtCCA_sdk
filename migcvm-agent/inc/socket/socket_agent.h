@@ -16,22 +16,18 @@
 #define PAYLOAD_TYPE_NONE     0
 #define PAYLOAD_TYPE_CHAR     1
 #define PAYLOAD_TYPE_ULL      2
-#define VSOCK_MSG_REQUEST 0xa
 #define VSOCK_MSG_ACK     0xb
+#pragma pack(push, 1)
 typedef struct socket_payload {
     char            char_payload[MAX_PAYLOAD_SIZE];
     unsigned long long ull_payload;
-    unsigned int    payload_char_len;
 } socket_payload_t;
-
-#pragma pack(push, 1)
 typedef struct socket_msg {
     socket_payload_t payload;
     unsigned long long session_id;
     char            cmd[16];
     unsigned int    payload_type;
     unsigned int    payload_char_len;
-    unsigned int    msg_type;
     unsigned int    success;
 } socket_msg_t;
 #pragma pack(pop)

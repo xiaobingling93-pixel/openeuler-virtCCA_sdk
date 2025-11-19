@@ -118,7 +118,7 @@ int set_migration_bind_slot_and_mask(tsi_ctx *ctx, virtcca_mig_info_t *migvm_inf
 
     ret = ioctl(ctx->fd, TMM_GET_MIGRATION_INFO, migvm_info);
     if (ret != 0) {
-        printf("Failed to get migration info. errno: %d\n", errno);
+        printf("Failed to set migration info. errno: %d\n", errno);
         return TSI_ERROR;
     }
 
@@ -152,7 +152,7 @@ int get_migration_binded_rds(tsi_ctx *ctx, virtcca_mig_info_t *migvm_info, migra
 
     ret = ioctl(ctx->fd, TMM_GET_MIGRATION_INFO, migvm_info);
     if (ret != 0) {
-        printf("Failed to get migration info: (errno=%d)\n", errno);
+        printf("Failed to get migration info binding rds: (errno=%d)\n", errno);
         return TSI_ERROR;
     }
 
