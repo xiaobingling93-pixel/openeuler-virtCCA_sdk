@@ -121,7 +121,7 @@ static void ras_tls_handler_client(const struct socket_msg *msg, int conn_fd, mi
     }
     if (strcmp(msg->cmd, "START_CLIENT") == 0) {
         payload_decode_all(msg, &payload);
-        if (payload.payload_char_len > 0) {
+        if (msg->payload_char_len > 0) {
             strncpy(host_srv_ip, payload.char_payload, MAX_PAYLOAD_SIZE - 1);
         }
         args->guest_rd = payload.ull_payload;
@@ -191,7 +191,7 @@ out:
         ack_msg.success = 0;
     }
     strncpy(ack_msg.cmd, "START_CLIENT_ACK", sizeof(ack_msg.cmd));
-    ack_msg.msg_type = VSOCK_MSG_ACK;
+    ack_msg.payload_type = VSOCK_MSG_ACK;
     ack_msg.session_id = msg->session_id;
 
     if (writen(conn_fd, &ack_msg, sizeof(ack_msg)) != sizeof(ack_msg)) {
@@ -223,7 +223,8 @@ static void ras_tls_handler_server(const struct socket_msg *msg, int conn_fd, mi
 {
     socket_payload_t payload;
     memset(&payload, 0, sizeof(socket_payload_t));
-    socket_msg_t ack_msg = {0};
+    socket_msg_t ack_msg;
+    memset(&ack_msg, 0, sizeof(socket_msg_t));
     ack_msg.success = 1;
 
     if (strcmp(msg->cmd, "START_SERVER") != 0) {
@@ -244,20 +245,34 @@ static void ras_tls_handler_server(const struct socket_msg *msg, int conn_fd, mi
 
     printf("[SERVER] Server thread ready, listening on port: %d\n", args->port);
     printf("[SERVER] Starting RATS-TLS server...\n");
-
-    if (args->guest_rd == 0) {
-        goto out;
-    }
     printf("[SERVER] Using guest_rd: 0x%llx\n", args->guest_rd);
 
     /* rats-tls server startup */
     if (args->guest_rd == 0) {
         ack_msg.success = 0;
     }
-    rats_tls_server_startup(args);
+    
     printf("[SERVER]server close");
+
+    strncpy(ack_msg.cmd, "START_SERVER_ACK", sizeof(ack_msg.cmd));
+    ack_msg.payload_type = VSOCK_MSG_ACK;
+    ack_msg.session_id = msg->session_id;
+
 out:
-    shutdown(conn_fd, SHUT_WR);
+    if (writen(conn_fd, &ack_msg, sizeof(ack_msg)) != sizeof(ack_msg)) {
+        ack_msg.success = 0;
+        printf("Failed to send ACK for START_SERVER: %s\n", strerror(errno));
+    } else {
+        printf("ACK sent successfully\n");
+        shutdown(conn_fd, SHUT_WR);
+        char tmp[8];
+        readn(conn_fd, tmp, sizeof(tmp));
+    }
+
+    close(conn_fd);
+    if (ack_msg.success == 1) {
+        rats_tls_server_startup(args);
+    }
     return;
 }
 

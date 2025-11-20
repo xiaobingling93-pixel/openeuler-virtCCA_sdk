@@ -58,15 +58,11 @@ typedef struct pending_guest_rd_s {
 } pending_guest_rd_t;
 
 typedef struct migration_info {
-    /* Algorithm to use for measurements */
-    unsigned long long measurement_algo;
-    /* cvm measurement */
-    unsigned char measurement[MEASUREMENT_SLOT_NR][MAX_MEASUREMENT_SIZE];
-    bool set_key;
-    unsigned short slot_status;
     unsigned long long msk[4];
     unsigned long long rand_iv[4];
     pending_guest_rd_t *pending_guest_rds;
+    unsigned short slot_status;
+    bool set_key;
 } migration_info_t;
 
 typedef struct virtcca_migvm_info {
