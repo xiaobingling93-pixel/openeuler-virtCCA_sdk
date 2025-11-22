@@ -60,6 +60,7 @@ typedef struct pending_guest_rd_s {
 typedef struct migration_info {
     unsigned long long msk[4];
     unsigned long long rand_iv[4];
+    unsigned long long tag[2];
     pending_guest_rd_t *pending_guest_rds;
     unsigned short slot_status;
     bool set_key;

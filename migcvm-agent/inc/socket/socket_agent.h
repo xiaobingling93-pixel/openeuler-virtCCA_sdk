@@ -56,6 +56,7 @@ typedef struct {
     unsigned long long guest_rd;
     unsigned long long msk[4]; /* encrypted msk */
     unsigned long long rand_iv[4];
+    unsigned long long tag[2];
     bool success;
 } mig_agent_args;
 
