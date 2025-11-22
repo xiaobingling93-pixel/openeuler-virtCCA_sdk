@@ -115,7 +115,7 @@ static void ras_tls_handler_client(const struct socket_msg *msg, int conn_fd, mi
 
     host_srv_ip = calloc(MAX_PAYLOAD_SIZE, 1);
     if (!host_srv_ip) {
-        printf("Failed to allocate host_srv_ip\n");
+        printf("[CLIENT] Failed to allocate host_srv_ip\n");
         ret = TSI_ERROR_STATE;
         goto out;
     }
@@ -126,37 +126,37 @@ static void ras_tls_handler_client(const struct socket_msg *msg, int conn_fd, mi
         }
         args->guest_rd = payload.ull_payload;
         host_srv_ip[MAX_PAYLOAD_SIZE - 1] = '\0';
-        printf("Received START_CLIENT with peer IP: %s, rd: 0x%llx\n",
+        printf("[CLIENT] Received START_CLIENT with peer IP: %s, rd: 0x%llx\n",
                host_srv_ip, args->guest_rd);
     } else {
-        printf("Unknown command from host: %s\n", msg->cmd);
+        printf("[CLIENT] Unknown command from host: %s\n", msg->cmd);
         ret = TSI_ERROR_INPUT;
         goto out;
     }
-    printf("peer IP: %s\n", args->srv_ip);
+    printf("[CLIENT] peer IP: %s\n", args->srv_ip);
     if (strcmp(args->srv_ip, "0.0.0.0") == 0 || args->guest_rd == 0) {
         ret = TSI_ERROR_INPUT;
         goto out;
     }
-    printf("using guest_rd: 0x%llx\n", args->guest_rd);
+    printf("[CLIENT] using guest_rd: 0x%llx\n", args->guest_rd);
     migvm_info = (virtcca_mig_info_t *)malloc(sizeof(virtcca_mig_info_t));
     if (!migvm_info) {
-        printf("Failed to initialize migvm_info\n");
+        printf("[CLIENT] Failed to initialize migvm_info\n");
         ret = TSI_ERROR_STATE;
         goto out;
     }
     migvm_info->guest_rd = args->guest_rd;
     attest_info = (migration_info_t *)malloc(sizeof(migration_info_t));
     if (!attest_info) {
-        printf("Failed to initialize attest_info\n");
+        printf("[CLIENT] Failed to initialize attest_info\n");
         ret = TSI_ERROR_STATE;
         goto out;
-    };
+    }
     attest_info->pending_guest_rds = NULL;
 
     ret = rand_iv_init(args);
     if (ret) {
-        printf("random error 0x%08x\n", ret);
+        printf("[CLIENT] random error 0x%08x\n", ret);
         goto out;
     }
 
@@ -164,25 +164,26 @@ static void ras_tls_handler_client(const struct socket_msg *msg, int conn_fd, mi
     /* Get migration info and mask(get msk to dst) */
     ret = get_migration_info_and_mask(virtcca_client_ctx, migvm_info, attest_info);
     if (ret == TSI_SUCCESS) {
-        printf("get_migration_info succeeded\n");
+        printf("[CLIENT] get_migration_info succeeded\n");
     } else {
-        printf("get_migration_info failed with error: 0x%08x\n", ret);
+        printf("[CLIENT] get_migration_info failed with error: 0x%08x\n", ret);
         goto out;
     }
     memcpy(args->msk, attest_info->msk, sizeof(attest_info->msk));
-    printf("peer IP: %s\n", args->srv_ip);
+    memcpy(args->tag, attest_info->tag, sizeof(attest_info->tag));
+    printf("[CLIENT] peer IP: %s\n", args->srv_ip);
     ret = rats_tls_client_startup(args);
     if (ret != 0) {
-        printf("rats_tls_client_startup failed with error: %d\n", ret);
+        printf("[CLIENT] rats_tls_client_startup failed with error: %d\n", ret);
         goto out;
     }
     attest_info->slot_status = SLOT_IS_READY;
     /* Set migration bind slot and mask : SLOT_IS_READY */
     ret = set_migration_bind_slot_and_mask(virtcca_client_ctx, migvm_info, attest_info);
     if (ret == TSI_SUCCESS) {
-        printf("get_migration_info succeeded\n");
+        printf("[CLIENT] get_migration_info succeeded\n");
     } else {
-        printf("get_migration_info failed with error: 0x%08x\n", ret);
+        printf("[CLIENT] get_migration_info failed with error: 0x%08x\n", ret);
         goto out;
     }
 
@@ -195,9 +196,9 @@ out:
     ack_msg.session_id = msg->session_id;
 
     if (writen(conn_fd, &ack_msg, sizeof(ack_msg)) != sizeof(ack_msg)) {
-        printf("Failed to send ACK for START_CLIENT: %s\n", strerror(errno));
+        printf("[CLIENT] Failed to send ACK for START_CLIENT: %s\n", strerror(errno));
     } else {
-        printf("ACK sent successfully\n");
+        printf("[CLIENT] ACK sent successfully\n");
         shutdown(conn_fd, SHUT_WR);
         char tmp[8];
         readn(conn_fd, tmp, sizeof(tmp));
@@ -228,21 +229,19 @@ static void ras_tls_handler_server(const struct socket_msg *msg, int conn_fd, mi
     ack_msg.success = 1;
 
     if (strcmp(msg->cmd, "START_SERVER") != 0) {
-        printf("Unknown command from host: %s\n", msg->cmd);
+        printf("[SERVER] Unknown command from host: %s\n", msg->cmd);
         ack_msg.success = 0;
         goto out;
     }
 
     if (msg->payload_type != PAYLOAD_TYPE_ULL) {
-        printf("Received host START_SERVER with no payload\n");
+        printf("[SERVER] Received host START_SERVER with no payload\n");
         ack_msg.success = 0;
         goto out;
     }
 
     payload_decode_one_type(msg, &payload);
     args->guest_rd = payload.ull_payload;
-    printf("Received host START_SERVER with rd: %d\n", args->guest_rd);
-
     printf("[SERVER] Server thread ready, listening on port: %d\n", args->port);
     printf("[SERVER] Starting RATS-TLS server...\n");
     printf("[SERVER] Using guest_rd: 0x%llx\n", args->guest_rd);
@@ -251,19 +250,17 @@ static void ras_tls_handler_server(const struct socket_msg *msg, int conn_fd, mi
     if (args->guest_rd == 0) {
         ack_msg.success = 0;
     }
-    
-    printf("[SERVER]server close");
+    printf("[SERVER]server close\n");
 
+out:
     strncpy(ack_msg.cmd, "START_SERVER_ACK", sizeof(ack_msg.cmd));
     ack_msg.payload_type = VSOCK_MSG_ACK;
     ack_msg.session_id = msg->session_id;
-
-out:
     if (writen(conn_fd, &ack_msg, sizeof(ack_msg)) != sizeof(ack_msg)) {
         ack_msg.success = 0;
-        printf("Failed to send ACK for START_SERVER: %s\n", strerror(errno));
+        printf("[SERVER] Failed to send ACK for START_SERVER: %s\n", strerror(errno));
     } else {
-        printf("ACK sent successfully\n");
+        printf("[SERVER] ACK sent successfully\n");
         shutdown(conn_fd, SHUT_WR);
         char tmp[8];
         readn(conn_fd, tmp, sizeof(tmp));
@@ -278,7 +275,7 @@ out:
 
 static void* server_thread_func(void* arg)
 {
-    printf("Server thread started\n");
+    printf("[SERVER] Server thread started\n");
     mig_agent_args* args = (mig_agent_args*)arg;
     char *srv_ip = strdup("0.0.0.0");
     mig_agent_init(args);

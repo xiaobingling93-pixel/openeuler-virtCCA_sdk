@@ -210,45 +210,47 @@ free:
 static int recieve_and_save_msk(rats_tls_handle handle, mig_agent_args *args)
 {
     int ret = ENCLAVE_ATTESTER_ERR_UNKNOWN;
-    unsigned long long msk_and_randiv[8];
-    size_t len = sizeof(msk_and_randiv);
+    unsigned long long migrate_key_package[10];
+    size_t len = sizeof(migrate_key_package);
     virtcca_mig_info_t *migvm_info = NULL;
     migration_info_t *attest_info = NULL;
     tsi_ctx *virtcca_server_ctx = tsi_new_ctx();
-    RTLS_INFO("calling recieve_and_save_msk\n");
-    ret = rats_tls_receive(handle, msk_and_randiv, &len);
-    if (ret != RATS_TLS_ERR_NONE || len != sizeof(msk_and_randiv)) {
-        RTLS_ERR("Failed to receive valid MSK and RAND iv\n");
+    RTLS_INFO("[SERVER] calling recieve_and_save_msk\n");
+    ret = rats_tls_receive(handle, migrate_key_package, &len);
+    if (ret != RATS_TLS_ERR_NONE || len != sizeof(migrate_key_package)) {
+        RTLS_ERR("[SERVER] Failed to receive valid MSK and RAND iv\n");
         return ret;
     }
 
-    printf("using guest_rd: 0x%llx\n", args->guest_rd);
+    printf("[SERVER] using guest_rd: 0x%llx\n", args->guest_rd);
     migvm_info = (virtcca_mig_info_t *)malloc(sizeof(virtcca_mig_info_t));
     if (!migvm_info) {
-        printf("Failed to initialize migvm_info\n");
+        printf("[SERVER] Failed to initialize migvm_info\n");
         ret = RATS_TLS_ERR_UNKNOWN;
         goto out;
     }
     migvm_info->guest_rd = args->guest_rd;
     attest_info = (migration_info_t *)malloc(sizeof(migration_info_t));
     if (!attest_info) {
-        printf("Failed to initialize attest_info\n");
+        printf("[SERVER] Failed to initialize attest_info\n");
         ret = RATS_TLS_ERR_UNKNOWN;
         goto out;
     };
     attest_info->pending_guest_rds = NULL;
-    memcpy(attest_info->msk, msk_and_randiv, sizeof(attest_info->msk));
-    memcpy(attest_info->rand_iv, msk_and_randiv + 4, sizeof(attest_info->rand_iv));
-    memcpy(args->msk, msk_and_randiv, sizeof(args->msk));
-    memcpy(args->rand_iv, msk_and_randiv + 4, sizeof(args->rand_iv));
+    memcpy(attest_info->msk, migrate_key_package, sizeof(attest_info->msk));
+    memcpy(attest_info->rand_iv, migrate_key_package + 4, sizeof(attest_info->rand_iv));
+    memcpy(attest_info->tag, migrate_key_package + 8, sizeof(attest_info->tag));
+    memcpy(args->msk, migrate_key_package, sizeof(args->msk));
+    memcpy(args->rand_iv, migrate_key_package + 4, sizeof(args->rand_iv));
+    memcpy(args->tag, migrate_key_package + 8, sizeof(args->tag));
     attest_info->slot_status = SLOT_IS_READY;
 
     /* Set migration bind slot and mask : SLOT_IS_READY*/
     ret = set_migration_bind_slot_and_mask(virtcca_server_ctx, migvm_info, attest_info);
     if (ret == 0) {
-        printf("set_migration_bind_slot_and_mask succeeded\n");
+        printf("[SERVER] set_migration_bind_slot_and_mask succeeded\n");
     } else {
-        printf("get_migration_info failed with error: 0x%08x\n", ret);
+        printf("[SERVER] get_migration_info failed with error: 0x%08x\n", ret);
         goto out;
     }
 
@@ -447,8 +449,8 @@ static int user_callback(void *args)
 
     cert_info_t cert_info;
     /* Detect AIK certificate type and configure certificate chain accordingly */
-    // cert_type_t aik_cert_type = detect_aik_cert_type(DEFAULT_AIK_CERT_PEM_FILENAME);
-    // configure_cert_info_by_type(&cert_info, aik_cert_type);
+    cert_type_t aik_cert_type = detect_aik_cert_type(DEFAULT_AIK_CERT_PEM_FILENAME);
+    configure_cert_info_by_type(&cert_info, aik_cert_type);
 
     /*
      * Determine if we have platform token or CVM-only token
@@ -468,16 +470,16 @@ static int user_callback(void *args)
         RTLS_INFO("CVM-only token detected, using backward compatibility mode\n");
     }
     
-    // ret = verify_cca_token_signatures(&cert_info,
-    //                             platform_cose,
-    //                             token.cvm_cose,
-    //                             token.cvm_token.pub_key,
-    //                             platform_challenge,
-    //                             token.cvm_token.pub_key_hash_algo_id);
-    // if (!ret) {
-    //     RTLS_ERR("Token signature verification failed");
-    //     return false;
-    // }
+    ret = verify_cca_token_signatures(&cert_info,
+                                      platform_cose,
+                                      token.cvm_cose,
+                                      token.cvm_token.pub_key,
+                                      platform_challenge,
+                                      token.cvm_token.pub_key_hash_algo_id);
+    if (!ret) {
+        RTLS_ERR("Token signature verification failed");
+        return false;
+    }
     RTLS_DEBUG("Token signatures verified successfully");
 
     /* Step 2: Verify RIM */
@@ -737,34 +739,6 @@ static int tc_attr_set_echo(bool enbale)
     if (tcsetattr(STDIN_FILENO, TCSANOW, &tty) < 0) {
         RTLS_ERR("tcsetattr failed, err: %s\n", strerror(errno));
         return ENCLAVE_VERIFIER_ERR_UNKNOWN;
-    }
-
-    return RATS_TLS_ERR_BASE;
-}
-
-static int deal_passwd(char password[MAX_PASSWD_LEN])
-{
-    int i = 0;
-    char ch;
-
-    RTLS_INFO("Enter remote disk image password: ");
-    if (tc_attr_set_echo(false)) {
-        return ENCLAVE_VERIFIER_ERR_UNKNOWN;
-    }
-    while ((ch = getchar()) != '\n' && ch != EOF) {
-        if (i > MAX_PASSWD_LEN - 1) {
-            RTLS_ERR("Input passwd too long,\n");
-            return ENCLAVE_VERIFIER_ERR_UNKNOWN;
-        }
-        password[i++] = ch;
-    }
-    putchar('\n');
-    if (tc_attr_set_echo(true)) {
-        return ENCLAVE_VERIFIER_ERR_UNKNOWN;
-    }
-    
-    for (i = 0; i < MAX_PASSWD_LEN; i++) {
-        password[i] = '\0';
     }
 
     return RATS_TLS_ERR_BASE;
@@ -1453,14 +1427,15 @@ int rats_tls_client_startup(mig_agent_args *args)
     /* virtCCA insert: Migration session key exchange */
     RTLS_INFO("Sent to Server MSK\n");
 
-    unsigned long long msk_and_randiv[8];
+    unsigned long long migrate_key_package[10];
     /* Process MIG_MSK_SEND */
     if (strncmp(buf, MIG_MSK_ACK, strlen(MIG_MSK_ACK)) == 0) {
         RTLS_INFO("Received MIG_MSK_ACK, transmit msk\n");
-        memcpy(msk_and_randiv, args->msk, sizeof(args->msk));
-        memcpy(msk_and_randiv + 4, args->rand_iv, sizeof(args->rand_iv));
-        len = sizeof(msk_and_randiv);
-        ret = rats_tls_transmit(handle, msk_and_randiv, &len);
+        memcpy(migrate_key_package, args->msk, sizeof(args->msk));
+        memcpy(migrate_key_package + 4, args->rand_iv, sizeof(args->rand_iv));
+        memcpy(migrate_key_package + 8, args->tag, sizeof(args->tag));
+        len = sizeof(migrate_key_package);
+        ret = rats_tls_transmit(handle, migrate_key_package, &len);
         if (ret != RATS_TLS_ERR_NONE) {
             RTLS_ERR("Failed to transmit %#x\n", ret);
             goto err;
