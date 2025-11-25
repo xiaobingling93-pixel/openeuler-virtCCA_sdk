@@ -19,7 +19,6 @@
 #include <rats-tls/log.h>
 #include <rats-tls/claim.h>
 #include "utils.h"
-#include "common.h"
 #include "socket_agent.h"
 #include "migcvm_tsi.h"
 #include "rats_tls_handler.h"
@@ -53,8 +52,52 @@ static int rand_iv_init(mig_agent_args *args)
     unsigned long long key[4];
     if (getrandom(key, sizeof(key), 0) < 0) {
         perror("getrandom");
+        return -1;
     }
     memcpy(args->rand_iv, key, sizeof(key));
+    return 0;
+}
+
+static int safe_strdup(char **dest, const char *src)
+{
+    char *tmp = strdup(src);
+    if (!tmp) {
+        perror("strdup failed");
+        return -1;
+    }
+    *dest = tmp;
+    return 0;
+}
+
+static void mig_agent_exit(mig_agent_args *args)
+{
+    if (!args) {
+        return 0;
+    }
+    if (args->srv_ip) {
+        free(args->srv_ip);
+        args->srv_ip = NULL;
+    }
+    if (args->attester_type) {
+        free(args->attester_type);
+        args->attester_type = NULL;
+    }
+    if (args->verifier_type) {
+        free(args->verifier_type);
+        args->verifier_type = NULL;
+    }
+    if (args->tls_type) {
+        free(args->tls_type);
+        args->tls_type = NULL;
+    }
+    if (args->crypto_type) {
+        free(args->crypto_type);
+        args->crypto_type = NULL;
+    }
+    if (args->digest_file) {
+        free(args->digest_file);
+        args->digest_file = NULL;
+    }
     return 0;
 }
 
@@ -64,15 +107,25 @@ static int mig_agent_init(mig_agent_args *args)
         return -1;
     }
     args->agent_type = 0;
+    if (safe_strdup(&args->attester_type, "") != 0) {
+        goto err;
+    }
+    if (safe_strdup(&args->verifier_type, "") != 0) {
+        goto err;
+    }
+    if (safe_strdup(&args->tls_type, "openssl") != 0) {
+        goto err;
+    }
+    if (safe_strdup(&args->crypto_type, "openssl") != 0) {
+        goto err;
+    }
+    if (safe_strdup(&args->digest_file, "") != 0) {
+        goto err;
+    }
 
-    args->attester_type = strdup("");
-    args->verifier_type = strdup("");
-    args->tls_type = strdup("");
-    args->crypto_type = strdup("");
     args->port = MIGCVM_PORT;
-    args->digest_file = strdup("");
     args->log_level = RATS_TLS_LOG_LEVEL_INFO;
-    args->mutual = false;
+    args->mutual = true;
     args->provide_endorsements = false;
     args->use_firmware = false;
     args->dump_eventlog = false;
@@ -83,17 +136,10 @@ static int mig_agent_init(mig_agent_args *args)
     args->platform_ref_json_file = NULL;
 
     return 0;
-}
 
-static int mig_agent_exit(mig_agent_args *args)
-{
-    free(args->srv_ip);
-    free(args->attester_type);
-    free(args->verifier_type);
-    free(args->tls_type);
-    free(args->crypto_type);
-    free(args->digest_file);
-    return 0;
+err:
+    mig_agent_exit(args);
+    return -1;
 }
 
 static void ras_tls_handler_client(const struct socket_msg *msg, int conn_fd, mig_agent_args *args)
@@ -104,15 +150,25 @@ static void ras_tls_handler_client(const struct socket_msg *msg, int conn_fd, mi
     memset(&payload, 0, sizeof(socket_payload_t));
     socket_msg_t ack_msg;
     memset(&ack_msg, 0, sizeof(socket_msg_t));
+
     /* tsi context */
-    tsi_ctx *virtcca_client_ctx = tsi_new_ctx();
     char* host_srv_ip;
     virtcca_mig_info_t *migvm_info = NULL;
     migration_info_t *attest_info = NULL;
 
-    mig_agent_init(args);
-    ack_msg.success = 1;
+    tsi_ctx *virtcca_client_ctx = tsi_new_ctx();
+    if (!virtcca_client_ctx) {
+        ret = TSI_ERROR_STATE;
+        goto out;
+    }
+    ret = mig_agent_init(args);
+    if (!ret) {
+        ack_msg.success = 1;
+    } else {
+        goto out;
+    }
 
+    /* now the host srv_ip rely qemu input, temp is not use */
     host_srv_ip = calloc(MAX_PAYLOAD_SIZE, 1);
     if (!host_srv_ip) {
         printf("[CLIENT] Failed to allocate host_srv_ip\n");
@@ -126,19 +182,18 @@ static void ras_tls_handler_client(const struct socket_msg *msg, int conn_fd, mi
         }
         args->guest_rd = payload.ull_payload;
         host_srv_ip[MAX_PAYLOAD_SIZE - 1] = '\0';
-        printf("[CLIENT] Received START_CLIENT with peer IP: %s, rd: 0x%llx\n",
-               host_srv_ip, args->guest_rd);
+        printf("[CLIENT] Received START_CLIENT signal");
     } else {
         printf("[CLIENT] Unknown command from host: %s\n", msg->cmd);
         ret = TSI_ERROR_INPUT;
         goto out;
     }
-    printf("[CLIENT] peer IP: %s\n", args->srv_ip);
+
     if (strcmp(args->srv_ip, "0.0.0.0") == 0 || args->guest_rd == 0) {
         ret = TSI_ERROR_INPUT;
         goto out;
     }
-    printf("[CLIENT] using guest_rd: 0x%llx\n", args->guest_rd);
+
     migvm_info = (virtcca_mig_info_t *)malloc(sizeof(virtcca_mig_info_t));
     if (!migvm_info) {
         printf("[CLIENT] Failed to initialize migvm_info\n");
@@ -181,9 +236,9 @@ static void ras_tls_handler_client(const struct socket_msg *msg, int conn_fd, mi
     /* Set migration bind slot and mask : SLOT_IS_READY */
     ret = set_migration_bind_slot_and_mask(virtcca_client_ctx, migvm_info, attest_info);
     if (ret == TSI_SUCCESS) {
-        printf("[CLIENT] get_migration_info succeeded\n");
+        printf("[CLIENT] set_migration_bind_slot_and_mask succeeded\n");
     } else {
-        printf("[CLIENT] get_migration_info failed with error: 0x%08x\n", ret);
+        printf("[CLIENT] set_migration_bind_slot_and_mask failed with error: 0x%08x\n", ret);
         goto out;
     }
 
@@ -203,7 +258,6 @@ out:
         char tmp[8];
         readn(conn_fd, tmp, sizeof(tmp));
     }
-    close(conn_fd);
 
     if (attest_info) {
         free(attest_info);
@@ -244,13 +298,12 @@ static void ras_tls_handler_server(const struct socket_msg *msg, int conn_fd, mi
     args->guest_rd = payload.ull_payload;
     printf("[SERVER] Server thread ready, listening on port: %d\n", args->port);
     printf("[SERVER] Starting RATS-TLS server...\n");
-    printf("[SERVER] Using guest_rd: 0x%llx\n", args->guest_rd);
 
     /* rats-tls server startup */
     if (args->guest_rd == 0) {
         ack_msg.success = 0;
     }
-    printf("[SERVER]server close\n");
+    printf("[SERVER] server close\n");
 
 out:
     strncpy(ack_msg.cmd, "START_SERVER_ACK", sizeof(ack_msg.cmd));
@@ -266,7 +319,6 @@ out:
         readn(conn_fd, tmp, sizeof(tmp));
     }
 
-    close(conn_fd);
     if (ack_msg.success == 1) {
         rats_tls_server_startup(args);
     }
@@ -277,9 +329,10 @@ static void* server_thread_func(void* arg)
 {
     printf("[SERVER] Server thread started\n");
     mig_agent_args* args = (mig_agent_args*)arg;
-    char *srv_ip = strdup("0.0.0.0");
-    mig_agent_init(args);
-    args->srv_ip = srv_ip;
+    if (mig_agent_init(args)) {
+        printf("[SERVER] Error initialize mig-agent args...\n");
+        return NULL;
+    }
 
     struct socket_agent_cfg *socket_cfg_server = malloc(sizeof(*socket_cfg_server));
     if (!socket_cfg_server) return NULL;
@@ -313,120 +366,210 @@ static void* client_thread_func(void* arg)
     return NULL;
 }
 
-static void init_rim_ref(const char *hex_str)
+static int init_rim_ref(const char *hex_str)
 {
     if (hex_to_bytes((unsigned char *)hex_str, strlen(hex_str), g_rim_ref, &g_rim_ref_size) != 0) {
         printf("Failed to initialize g_rim_ref\n");
+        return -1;
     }
+    return 0;
 }
 
-static char* parse_input(int argc, char* argv[], const char* default_ip, const char* default_rim)
+/*
+ * parse_input
+ *  -c client_ip  : remote server ip
+ *  -s server_ip  : local server ip
+ *  -r rim_ref    : RIM hex
+ *
+ * default: client_ip = "127.0.0.1", server_ip = "127.0.0.1"
+ */
+static void parse_input(int argc, char* argv[],
+                        char** client_ip_out,
+                        char** server_ip_out)
 {
     int opt;
-    char* ip = NULL;
-    char* rim = NULL;
+    char *client_ip = NULL;
+    char *server_ip = NULL;
+    char *rim = NULL;
 
-    if (default_ip != NULL) {
-        ip = strdup(default_ip);
-    } else {
-        ip = strdup("0.0.0.0");
-    }
-    if (ip == NULL) {
-        perror("Failed to allocate memory for IP");
+    client_ip = strdup("127.0.0.1");
+    if (!client_ip) {
+        perror("strdup for client_ip");
         exit(EXIT_FAILURE);
     }
 
-    if (default_rim != NULL) {
-        rim = strdup(default_rim);
-    } else {
-        rim = strdup("cd0e1a1ae54ebbbbdb7793af0f2abac3f4aa148aeedebb071e8d5c27e46b4ba6");
-    }
-    if (rim == NULL) {
-        perror("Failed to allocate memory for RIM");
-        free(ip);
+    server_ip = strdup("127.0.0.1");
+    if (!server_ip) {
+        perror("strdup for server_ip");
+        free(client_ip);
         exit(EXIT_FAILURE);
     }
 
-    while ((opt = getopt(argc, argv, "i:r:")) != -1) {
+    rim = strdup("6f48536a80ce1b34adee94f44af1ba236f36dcaadf1eb983086f5df19cd4eaad");
+    if (!rim) {
+        perror("strdup for rim");
+        free(client_ip);
+        free(server_ip);
+        exit(EXIT_FAILURE);
+    }
+
+    while ((opt = getopt(argc, argv, "c:s:r:")) != -1) {
         switch (opt) {
-            case 'i':
-                free(ip);
-                ip = strdup(optarg);
-                if (ip == NULL) {
-                    perror("Failed to allocate memory for IP");
-                    exit(EXIT_FAILURE);
+            case 'c':
+                if (!optarg) {
+                    fprintf(stderr, "Missing argument for -c\n");
+                    goto cleanup_error;
+                }
+                free(client_ip);
+                client_ip = strdup(optarg);
+                if (!client_ip) {
+                    perror("Failed to allocate memory for client_ip");
+                    goto cleanup_error;
+                }
+                break;
+            case 's':
+                if (!optarg) {
+                    fprintf(stderr, "Missing argument for -s\n");
+                    goto cleanup_error;
+                }
+                free(server_ip);
+                server_ip = strdup(optarg);
+                if (!server_ip) {
+                    perror("Failed to allocate memory for server_ip");
+                    goto cleanup_error;
                 }
                 break;
             case 'r':
+                if (!optarg) {
+                    fprintf(stderr, "Missing argument for -r\n");
+                    goto cleanup_error;
+                }
                 free(rim);
                 rim = strdup(optarg);
-                if (rim == NULL) {
+                if (!rim) {
                     perror("Failed to allocate memory for RIM");
-                    free(ip);
-                    exit(EXIT_FAILURE);
+                    goto cleanup_error;
                 }
                 break;
             default:
-                fprintf(stderr, "Usage: %s [-i server_ip] [-r rim_ref]\n", argv[0]);
-                free(ip);
-                free(rim);
-                exit(EXIT_FAILURE);
+                fprintf(stderr, "Usage: %s [-c client_ip] [-s server_ip] [-r rim_ref]\n",
+                        argv[0]);
+                goto cleanup_error;
         }
     }
-    init_rim_ref(rim);
+
+    if (init_rim_ref(rim)) {
+        fprintf(stderr, "RIM init failed\n");
+        goto cleanup_error;
+    }
     free(rim);
-    return ip;
+
+    *client_ip_out = client_ip;
+    *server_ip_out = server_ip;
+    return;
+
+cleanup_error:
+    if (client_ip) {
+        free(client_ip);
+    }
+    if (server_ip) {
+        free(server_ip);
+    }
+    if (rim) {
+        free(rim);
+    }
+    exit(EXIT_FAILURE);
 }
 
 int main(int argc, char *argv[])
 {
     int ret = 0;
     pthread_t server_thread, client_thread;
-    char* client_srv_ip = parse_input(argc, argv, "0.0.0.0", NULL);
-    int vsock_fd;
+    char *client_ip = NULL;
+    char *server_ip = NULL;
+    int vsock_fd = -1;
+
+    mig_agent_args *server_args = NULL;
+    mig_agent_args *client_args = NULL;
+
+    parse_input(argc, argv, &client_ip, &server_ip);
 
     vsock_fd = open("/dev/vsock", O_RDWR);
-    ret = ioctl(vsock_fd, IOCTL_VM_SOCKETS_GET_LOCAL_CID, &vsock_cid);
-    if (ret < 0) {
-        printf("IOCTL_VM_SOCKETS_GET_LOCAL_CID fail!");
+    if (vsock_fd < 0) {
+        perror("open /dev/vsock");
+        ret = EXIT_FAILURE;
+        goto cleanup;
     }
 
-    mig_agent_args* server_args = (mig_agent_args*)malloc(sizeof(mig_agent_args));
-    if (server_args == NULL) {
-        printf("Failed to allocate memory for server_args\n");
-        exit(EXIT_FAILURE);
+    if (ioctl(vsock_fd, IOCTL_VM_SOCKETS_GET_LOCAL_CID, &vsock_cid) < 0) {
+        perror("IOCTL_VM_SOCKETS_GET_LOCAL_CID");
+        ret = EXIT_FAILURE;
+        goto cleanup;
     }
-    memset(server_args, 0, sizeof(mig_agent_args));
 
-    mig_agent_args* client_args = (mig_agent_args*)malloc(sizeof(mig_agent_args));
-    if (client_args == NULL) {
-        printf("Failed to allocate memory for client_args\n");
-        free(server_args);
-        exit(EXIT_FAILURE);
+    server_args = calloc(1, sizeof(*server_args));
+    if (!server_args) {
+        perror("malloc server_args");
+        ret = EXIT_FAILURE;
+        goto cleanup;
     }
-    memset(client_args, 0, sizeof(mig_agent_args));
-    client_args->srv_ip = strdup(client_srv_ip);
 
-    printf("Starting server and client threads with server IP: %s...\n", client_args->srv_ip);
-    printf("Starting server and client threads...\n");
+    client_args = calloc(1, sizeof(*client_args));
+    if (!client_args) {
+        perror("malloc client_args");
+        ret = EXIT_FAILURE;
+        goto cleanup;
+    }
+
+    server_args->srv_ip = strdup(server_ip);
+    if (!server_args->srv_ip) {
+        perror("strdup server_ip");
+        ret = EXIT_FAILURE;
+        goto cleanup;
+    }
+
+    client_args->srv_ip = strdup(client_ip);
+    if (!client_args->srv_ip) {
+        perror("strdup client_ip");
+        ret = EXIT_FAILURE;
+        goto cleanup;
+    }
+
+    printf("Starting server thread with listen IP: %s\n", server_args->srv_ip);
+    printf("Starting client thread with peer IP:   %s\n", client_args->srv_ip);
 
     if (pthread_create(&server_thread, NULL, server_thread_func, server_args) != 0) {
-        perror("Failed to create server thread");
-        return -1;
+        perror("pthread_create server");
+        ret = -1;
+        goto cleanup;
     }
 
     if (pthread_create(&client_thread, NULL, client_thread_func, client_args) != 0) {
-        perror("Failed to create client thread");
+        perror("pthread_create client");
         pthread_join(server_thread, NULL);
-        return -1;
+        ret = -1;
+        goto cleanup;
     }
 
     pthread_join(server_thread, NULL);
     pthread_join(client_thread, NULL);
 
-    free(server_args);
-    free(client_args);
-    free(client_srv_ip);
+cleanup:
+    if (server_args) {
+        mig_agent_exit(server_args);
+        free(server_args);
+    }
+    if (client_args) {
+        mig_agent_exit(client_args);
+        free(client_args);
+    }
+
+    free(client_ip);
+    free(server_ip);
+
+    if (vsock_fd >= 0) {
+        close(vsock_fd);
+    }
 
     return ret;
 }

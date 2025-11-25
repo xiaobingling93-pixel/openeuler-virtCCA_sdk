@@ -34,9 +34,6 @@ void tsi_free_ctx(tsi_ctx *ctx)
     if (ctx == NULL) {
         return;
     }
-    if (ctx->fd != -1) {
-        close(ctx->fd);
-    }
     close(ctx->fd);
     free(ctx);
 }
@@ -51,20 +48,7 @@ int get_migration_info_and_mask(tsi_ctx *ctx, virtcca_mig_info_t *migvm_info, mi
     migvm_info->ops = OP_MIGRATE_GET_ATTR;
     migvm_info->size = sizeof(migration_info_t);
     printf("migvm_info->size: %zu\n", migvm_info->size);
-    if (attest_info == NULL) {
-        printf("Failed to allocate memory for migration_info: out of memory\n");
-        return TSI_ERROR;
-    }
     migvm_info->mig_info = attest_info;
-
-    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[0]);
-    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[1]);
-    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[2]);
-    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[3]);
-    printf("the local msk is 0x%lx\n", attest_info->msk[0]);
-    printf("the local msk is 0x%lx\n", attest_info->msk[1]);
-    printf("the local msk is 0x%lx\n", attest_info->msk[2]);
-    printf("the local msk is 0x%lx\n", attest_info->msk[3]);
 
     ret = ioctl(ctx->fd, TMM_GET_MIGRATION_INFO, migvm_info);
     if (ret != 0) {
@@ -73,15 +57,6 @@ int get_migration_info_and_mask(tsi_ctx *ctx, virtcca_mig_info_t *migvm_info, mi
         printf("Failed to get migration info: %s (errno=%d)\n", error_message, errno);
         return TSI_ERROR;
     }
-
-    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[0]);
-    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[1]);
-    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[2]);
-    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[3]);
-    printf("the local msk is 0x%lx\n", attest_info->msk[0]);
-    printf("the local msk is 0x%lx\n", attest_info->msk[1]);
-    printf("the local msk is 0x%lx\n", attest_info->msk[2]);
-    printf("the local msk is 0x%lx\n", attest_info->msk[3]);
 
     if (attest_info->set_key) {
         printf("This is a source VM.\n");
@@ -98,22 +73,9 @@ int set_migration_bind_slot_and_mask(tsi_ctx *ctx, virtcca_mig_info_t *migvm_inf
         return NULL_INPUT;
     }
 
-    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[0]);
-    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[1]);
-    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[2]);
-    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[3]);
-    printf("the local msk is 0x%lx\n", attest_info->msk[0]);
-    printf("the local msk is 0x%lx\n", attest_info->msk[1]);
-    printf("the local msk is 0x%lx\n", attest_info->msk[2]);
-    printf("the local msk is 0x%lx\n", attest_info->msk[3]);
-
     migvm_info->size = sizeof(migration_info_t);
     printf("migvm_info->size: %zu\n", migvm_info->size);
     migvm_info->ops = OP_MIGRATE_SET_SLOT;
-    if (attest_info == NULL) {
-        printf("Failed to allocate memory for migration_info: out of memory\n");
-        return TSI_ERROR;
-    }
     migvm_info->mig_info = attest_info;
 
     ret = ioctl(ctx->fd, TMM_GET_MIGRATION_INFO, migvm_info);
@@ -121,15 +83,6 @@ int set_migration_bind_slot_and_mask(tsi_ctx *ctx, virtcca_mig_info_t *migvm_inf
         printf("Failed to set migration info. errno: %d\n", errno);
         return TSI_ERROR;
     }
-
-    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[0]);
-    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[1]);
-    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[2]);
-    printf("the local rand_iv is 0x%lx\n", attest_info->rand_iv[3]);
-    printf("the local msk is 0x%lx\n", attest_info->msk[0]);
-    printf("the local msk is 0x%lx\n", attest_info->msk[1]);
-    printf("the local msk is 0x%lx\n", attest_info->msk[2]);
-    printf("the local msk is 0x%lx\n", attest_info->msk[3]);
 
     return TSI_SUCCESS;
 }

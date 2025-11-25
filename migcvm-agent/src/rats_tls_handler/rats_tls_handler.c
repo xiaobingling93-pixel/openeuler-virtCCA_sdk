@@ -24,7 +24,6 @@
 #include "token_parse.h"
 #include "token_validate.h"
 #include "platform_verify.h"
-#include "common.h"
 #include "ima_measure.h"
 
 #include "token_parse.h"
@@ -212,9 +211,16 @@ static int recieve_and_save_msk(rats_tls_handle handle, mig_agent_args *args)
     int ret = ENCLAVE_ATTESTER_ERR_UNKNOWN;
     unsigned long long migrate_key_package[10];
     size_t len = sizeof(migrate_key_package);
+
+    /* tsi context */
     virtcca_mig_info_t *migvm_info = NULL;
     migration_info_t *attest_info = NULL;
+
     tsi_ctx *virtcca_server_ctx = tsi_new_ctx();
+    if (!virtcca_server_ctx) {
+        goto out;
+    }
+
     RTLS_INFO("[SERVER] calling recieve_and_save_msk\n");
     ret = rats_tls_receive(handle, migrate_key_package, &len);
     if (ret != RATS_TLS_ERR_NONE || len != sizeof(migrate_key_package)) {
@@ -222,7 +228,6 @@ static int recieve_and_save_msk(rats_tls_handle handle, mig_agent_args *args)
         return ret;
     }
 
-    printf("[SERVER] using guest_rd: 0x%llx\n", args->guest_rd);
     migvm_info = (virtcca_mig_info_t *)malloc(sizeof(virtcca_mig_info_t));
     if (!migvm_info) {
         printf("[SERVER] Failed to initialize migvm_info\n");
@@ -250,12 +255,15 @@ static int recieve_and_save_msk(rats_tls_handle handle, mig_agent_args *args)
     if (ret == 0) {
         printf("[SERVER] set_migration_bind_slot_and_mask succeeded\n");
     } else {
-        printf("[SERVER] get_migration_info failed with error: 0x%08x\n", ret);
+        printf("[SERVER] set_migration_bind_slot_and_mask failed with error: 0x%08x\n", ret);
         goto out;
     }
 
     ret = RATS_TLS_ERR_NONE;
 out:
+    if (virtcca_server_ctx) {
+        tsi_free_ctx(virtcca_server_ctx);
+    }
     if (attest_info) {
         free(attest_info);
     }
@@ -1017,7 +1025,7 @@ int rats_tls_server_startup(mig_agent_args *args)
     strcpy(conf.crypto_type, args->crypto_type);
     int sockfd = -1;
 
-    conf.cert_algo = RATS_TLS_CERT_ALGO_DEFAULT;
+    conf.cert_algo = RATS_TLS_CERT_ALGO_RSA_3072_SHA256;
     conf.flags |= RATS_TLS_CONF_FLAGS_SERVER;
     if (args->mutual)
         conf.flags |= RATS_TLS_CONF_FLAGS_MUTUAL;
@@ -1171,7 +1179,7 @@ int rats_tls_client_startup(mig_agent_args *args)
     strcpy(conf.verifier_type, args->verifier_type);
     strcpy(conf.tls_type, args->tls_type);
     strcpy(conf.crypto_type, args->crypto_type);
-    conf.cert_algo = RATS_TLS_CERT_ALGO_DEFAULT;
+    conf.cert_algo = RATS_TLS_CERT_ALGO_RSA_3072_SHA256;
     if (args->mutual)
         conf.flags |= RATS_TLS_CONF_FLAGS_MUTUAL;
     if (args->provide_endorsements)
