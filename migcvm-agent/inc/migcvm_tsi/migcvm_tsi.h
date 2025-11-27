@@ -51,7 +51,6 @@ tsi_ctx *tsi_new_ctx(void);
  */
 void tsi_free_ctx(tsi_ctx *ctx);
 
-#define MAX_MEASUREMENT_SIZE                (64U)
 #define MEASUREMENT_SLOT_NR        (5U)
 typedef struct pending_guest_rd_s {
     unsigned long long guest_rd[MAX_BIND_VM];

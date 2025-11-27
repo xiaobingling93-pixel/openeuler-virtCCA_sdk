@@ -19,6 +19,9 @@ static int start_listening = 1;
 
 ssize_t readn(int fd, void *buf, size_t n)
 {
+    if (!buf || n == 0) {
+        return 0;
+    }
     size_t left = n;
     char *p = buf;
     while (left > 0) {
@@ -27,6 +30,7 @@ ssize_t readn(int fd, void *buf, size_t n)
             if (errno == EINTR) {
                 continue;
             }
+            perror("read");
             return -1;
         } else if (r == 0) {
             break;
@@ -39,6 +43,9 @@ ssize_t readn(int fd, void *buf, size_t n)
 
 ssize_t writen(int fd, const void *buf, size_t n)
 {
+    if (!buf || n == 0) {
+        return 0;
+    }
     size_t left = n;
     const char *p = buf;
     while (left > 0) {
@@ -47,6 +54,7 @@ ssize_t writen(int fd, const void *buf, size_t n)
             if (errno == EINTR) {
                 continue;
             }
+            perror("write");
             return -1;
         }
         left -= r;
@@ -57,10 +65,15 @@ ssize_t writen(int fd, const void *buf, size_t n)
 
 static void default_msg_handler(const struct socket_msg *msg, int conn_fd)
 {
+    if (!msg) {
+        fprintf(stderr, "default_msg_handler: msg is NULL\n");
+        return;
+    }
     printf("Received: cmd='%s', payload_type=%d, payload_char_len=%u\n",
            msg->cmd, msg->payload_type, msg->payload_char_len);
     const char *resp = "ACK";
-    if (write(conn_fd, resp, strlen(resp) + 1) == -1) {
+    ssize_t written = writen(conn_fd, resp, strlen(resp) + 1);
+    if (written < 0) {
         perror("Failed to send ACK (ignored)");
     }
 }
@@ -73,15 +86,32 @@ static void calling_handler(const int listen_fd, socket_msg_handler handler,
     struct sockaddr_vm local_sa = {0};
     socklen_t local_len = sizeof(local_sa);
     struct socket_msg msg;
+    memset(&msg, 0, sizeof(msg));
+
+    if (!cfg) {
+        fprintf(stderr, "calling_handler: cfg is NULL\n");
+        return;
+    }
+    if (!args) {
+        fprintf(stderr, "calling_handler: args is NULL\n");
+        return;
+    }
 
     int conn_fd = accept(listen_fd, (struct sockaddr *)&peer_sa, &peer_len);
     if (conn_fd < 0) {
         perror("accept failed");
         return;
     }
-    getsockname(conn_fd, (struct sockaddr *)&local_sa, &local_len);
-    printf("Accepted: listener port=%u, local port=%u, peer cid=%u, peer port=%u\n",
-        cfg->port, local_sa.svm_port, peer_sa.svm_cid, peer_sa.svm_port);
+    if (getsockname(conn_fd, (struct sockaddr *)&local_sa, &local_len) == 0) {
+        printf("Accepted: listener port=%u, local port=%u, "
+               "peer cid=%u, peer port=%u\n",
+               cfg->port, local_sa.svm_port,
+               peer_sa.svm_cid, peer_sa.svm_port);
+    } else {
+        perror("getsockname failed");
+        close(conn_fd);
+        return;
+    }
 
     ssize_t bytes_read = readn(conn_fd, &msg, sizeof(msg));
     if (bytes_read == sizeof(msg)) {
@@ -89,6 +119,8 @@ static void calling_handler(const int listen_fd, socket_msg_handler handler,
             printf("Handling message: cmd=%s, payload_type=%d\n",
                    msg.cmd, msg.payload_type);
             handler(&msg, conn_fd, args);
+        } else {
+            default_msg_handler(&msg, conn_fd);
         }
     } else if (bytes_read < 0) {
         printf("read failed: %s (errno=%d)\n", strerror(errno), errno);
@@ -106,6 +138,12 @@ int socket_agent_start_with_handler(const struct socket_agent_cfg *cfg,
 {
     int listen_fd;
     char error_message[256] = {0};
+
+    if (!cfg) {
+        fprintf(stderr, "socket_agent_start_with_handler: cfg is NULL\n");
+        return TSI_ERROR_INPUT;
+    }
+
     struct sockaddr_vm sa = {
         .svm_family = AF_VSOCK,
         .svm_cid = cfg->cid,
@@ -121,7 +159,7 @@ int socket_agent_start_with_handler(const struct socket_agent_cfg *cfg,
 
     /* allow reuse of local addresses */
     int opt = 1;
-    if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+    if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) != 0) {
         perror("setsockopt failed");
         close(listen_fd);
         return TSI_ERROR_STATE;
@@ -129,7 +167,7 @@ int socket_agent_start_with_handler(const struct socket_agent_cfg *cfg,
 
     printf("Trying to bind: CID=%u, Port=%d\n", sa.svm_cid, sa.svm_port);
     if (bind(listen_fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
-        printf("bind failed: (errno=%d)\n", errno);
+        fprintf(stderr, "bind failed: %s (errno=%d)\n", strerror(errno), errno);
         close(listen_fd);
         return TSI_ERROR_INPUT;
     }
@@ -137,7 +175,7 @@ int socket_agent_start_with_handler(const struct socket_agent_cfg *cfg,
     printf("Successfully bound to port %d\n", sa.svm_port);
     if (listen(listen_fd, cfg->backlog) < 0) {
         strerror_r(errno, error_message, sizeof(error_message));
-        printf("listen failed: (errno=%d)\n", errno);
+        fprintf(stderr, "listen failed: %s (errno=%d)\n", error_message, errno);
         close(listen_fd);
         return TSI_ERROR_STATE;
     }
@@ -152,37 +190,53 @@ int socket_agent_start_with_handler(const struct socket_agent_cfg *cfg,
 
 void payload_encode_all(struct socket_msg *msg, socket_payload_t *in)
 {
+    if (!msg || !in) {
+        return;
+    }
     msg->payload_type = PAYLOAD_TYPE_NONE;
-    strncpy(msg->payload.char_payload, in->char_payload, MAX_PAYLOAD_SIZE);
+    strncpy(msg->payload.char_payload, in->char_payload, MAX_PAYLOAD_SIZE - 1);
+    msg->payload.char_payload[MAX_PAYLOAD_SIZE - 1] = '\0';
+
     msg->payload.ull_payload = in->ull_payload;
-    msg->payload_char_len = strlen(in->char_payload) + 1;
+    msg->payload_char_len = strnlen(in->char_payload, MAX_PAYLOAD_SIZE - 1) + 1;
 }
 
 void payload_encode_char(struct socket_msg *msg, const char *in)
 {
+    if (!msg || !in) {
+        return;
+    }
     msg->payload_type = PAYLOAD_TYPE_CHAR;
-    strncpy(msg->payload.char_payload, in, MAX_PAYLOAD_SIZE);
-    msg->payload_char_len = strlen(in) + 1;
+    strncpy(msg->payload.char_payload, in, MAX_PAYLOAD_SIZE - 1);
+    msg->payload.char_payload[MAX_PAYLOAD_SIZE - 1] = '\0';
+    msg->payload_char_len = strnlen(in, MAX_PAYLOAD_SIZE - 1) + 1;
 }
 
 void payload_encode_ull(struct socket_msg *msg, unsigned long long in)
 {
+    if (!msg) {
+        return;
+    }
     msg->payload_type = PAYLOAD_TYPE_ULL;
     msg->payload.ull_payload = in;
 }
 
 void payload_decode_one_type(const struct socket_msg *msg, socket_payload_t *out)
 {
-    if (!out) {
+    if (!msg || !out) {
         return;
     }
 
     if (msg->payload_type == PAYLOAD_TYPE_NONE) {
         return;
     }
-
+    size_t copy_len = msg->payload_char_len;
+    if (copy_len >= MAX_PAYLOAD_SIZE) {
+        copy_len = MAX_PAYLOAD_SIZE - 1;
+    }
     if (msg->payload_type == PAYLOAD_TYPE_CHAR) {
-        strncpy(out->char_payload, msg->payload.char_payload, msg->payload_char_len);
+        strncpy(out->char_payload, msg->payload.char_payload, copy_len);
+        out->char_payload[copy_len] = '\0';
     } else if (msg->payload_type == PAYLOAD_TYPE_ULL) {
         out->ull_payload = msg->payload.ull_payload;
     }
@@ -190,6 +244,10 @@ void payload_decode_one_type(const struct socket_msg *msg, socket_payload_t *out
 
 void payload_decode_all(const struct socket_msg *msg, socket_payload_t *out)
 {
+    if (!msg || !out) {
+        return;
+    }
+
     if (msg->payload_type != PAYLOAD_TYPE_NONE) {
         memset(out, 0, sizeof(*out));
     }

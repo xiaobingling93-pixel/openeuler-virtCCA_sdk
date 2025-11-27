@@ -61,39 +61,30 @@ cp build/migcvm-agent   ${CVM_PATH}/home/
 4. 运行
 源机密虚机
 ```bash
-./migcvm-agent
+./migcvm-agent -s ${local-ip} -c ${remote-ip} -r ${RIM}
 ```
 
 目的机密虚机
 ```bash
-./migcvm-agent -r ${RIM}
-```
-
-宿主机
-```bash
-cd build
-./socket-tool -c ${SRC_CID} -p ${SRC_VSOCK_PORT} -t 1 -i ${SRC_IP}
-./socket-tool -c ${DST_CID} -p ${DST_VSOCK_PORT} -t 2 -i ${SRC_IP}
+./migcvm-agent -s ${local-ip} -c ${remote-ip} -r ${RIM}
 ```
 
 ## 
-```
-.
- CMakeLists.txt        # CMake
- build.sh              # 
- debug/                # 
-    socket-tool.c     # 
-    tsi-test.c        # TSI
- migcvm_tsi/           # TSI
-    migcvm_tsi.c
-    tsi.h
- src/         # migcvm-agent
-     xxx
-```
-
-## 
-DH
-1. xxxxxx
+通信矩阵
+1. 源设备：热迁移源端MIG-CVM机密虚拟机
+2. 源IP地址：源端MIG-CVM机密虚拟机IP地址
+3. 源端口：1024~65535（默认值1234）
+4. 目的设备：目标端MIG-CVM机密虚拟机
+5. 目的IP地址：目标端MIG-CVM机密虚拟机IP地址
+6. 目的端口（侦听）：1234
+7. 协议：TCP
+8. 端口说明：用于RATS-TLS信道内部密文秘钥传输监听端口
+9. 侦听端口是否可更改：否
+10. 认证方式：RATS-TLS
+11. 加密方式：RATS_TLS_CERT_ALGO_RSA_3072_SHA256
+12. 所属平面：控制面
+13. 版本：所有版本
+14. 特殊场景：无
 
 ## 
 - CMake (>= 3.10)
