@@ -225,7 +225,8 @@ static int recieve_and_save_msk(rats_tls_handle handle, mig_agent_args *args)
     ret = rats_tls_receive(handle, migrate_key_package, &len);
     if (ret != RATS_TLS_ERR_NONE || len != sizeof(migrate_key_package)) {
         RTLS_ERR("[SERVER] Failed to receive valid MSK and RAND iv\n");
-        return ret;
+        ret = RATS_TLS_ERR_UNKNOWN;
+        goto out;
     }
 
     migvm_info = (virtcca_mig_info_t *)malloc(sizeof(virtcca_mig_info_t));
@@ -422,6 +423,10 @@ static int handle_eventlogs_command(void);
 
 static int user_callback(void *args)
 {
+    if (!args) {
+        RTLS_ERR("the agent arg is NULL\n");
+        return ENCLAVE_VERIFIER_ERR_INVALID;
+    }
     rtls_evidence_t *ev = (rtls_evidence_t *)args;
     bool ret = true;
     FILE *fp;
@@ -446,6 +451,11 @@ static int user_callback(void *args)
     RTLS_DEBUG("Starting token verification\n");
     cca_token_t token = {0};
     cca_token_buf_t cca_token_buf = {0};
+
+    if (ev->cca.evidence_sz > MAX_TOKEN_SIZE) {
+        RTLS_ERR("token length is invalid\n");
+        return ENCLAVE_VERIFIER_ERR_CBOR;
+    }
     memcpy(&cca_token_buf, ev->cca.evidence, ev->cca.evidence_sz);
     
     ret = parse_cca_attestation_token(&token, cca_token_buf.buf, cca_token_buf.buf_size);
@@ -1016,14 +1026,17 @@ static char* extract_json_string(const char* json, const char* key)
 int rats_tls_server_startup(mig_agent_args *args)
 {
     rats_tls_conf_t conf;
-    rats_tls_err_t ret;
+    rats_tls_err_t ret = RATS_TLS_ERR_NONE;
+    int sockfd = -1;
+    int connd = -1;
+    rats_tls_handle handle = NULL;
+
     memset(&conf, 0, sizeof(conf));
     conf.log_level = args->log_level;
     strcpy(conf.attester_type, args->attester_type);
     strcpy(conf.verifier_type, args->verifier_type);
     strcpy(conf.tls_type, args->tls_type);
     strcpy(conf.crypto_type, args->crypto_type);
-    int sockfd = -1;
 
     conf.cert_algo = RATS_TLS_CERT_ALGO_RSA_3072_SHA256;
     conf.flags |= RATS_TLS_CONF_FLAGS_SERVER;
@@ -1036,13 +1049,15 @@ int rats_tls_server_startup(mig_agent_args *args)
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
         RTLS_ERR("Failed to call socket()");
-        return -1;
+        ret = RATS_TLS_ERR_INVALID;
+        goto out;
     }
 
     int reuse = 1;
     if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (const void *)&reuse, sizeof(int)) < 0) {
-        RTLS_ERR("Failed to call setsockopt()");
-        return -1;
+        RTLS_ERR("Failed to call setsockopt(SO_REUSEADDR)");
+        ret = RATS_TLS_ERR_INVALID;
+        goto out;
     }
 
     /* Set keepalive options */
@@ -1051,23 +1066,27 @@ int rats_tls_server_startup(mig_agent_args *args)
     int tcp_keepalive_intvl = 10;
     int tcp_keepalive_probes = 5;
     if (setsockopt(sockfd, SOL_SOCKET, SO_KEEPALIVE, &flag, sizeof(flag)) < 0) {
-        RTLS_ERR("Failed to call setsockopt()");
-        return -1;
+        RTLS_ERR("Failed to call setsockopt(SO_KEEPALIVE)");
+        ret = RATS_TLS_ERR_INVALID;
+        goto out;
     }
     if (setsockopt(sockfd, SOL_TCP, TCP_KEEPIDLE, &tcp_keepalive_time,
                    sizeof(tcp_keepalive_time)) < 0) {
-        RTLS_ERR("Failed to call setsockopt()");
-        return -1;
+        RTLS_ERR("Failed to call setsockopt(TCP_KEEPIDLE)");
+        ret = RATS_TLS_ERR_INVALID;
+        goto out;
     }
     if (setsockopt(sockfd, SOL_TCP, TCP_KEEPINTVL, &tcp_keepalive_intvl,
                    sizeof(tcp_keepalive_intvl)) < 0) {
-        RTLS_ERR("Failed to call setsockopt()");
-        return -1;
+        RTLS_ERR("Failed to call setsockopt(TCP_KEEPINTVL)");
+        ret = RATS_TLS_ERR_INVALID;
+        goto out;
     }
     if (setsockopt(sockfd, SOL_TCP, TCP_KEEPCNT, &tcp_keepalive_probes,
                    sizeof(tcp_keepalive_probes)) < 0) {
-        RTLS_ERR("Failed to call setsockopt()");
-        return -1;
+        RTLS_ERR("Failed to call setsockopt(TCP_KEEPCNT)");
+        ret = RATS_TLS_ERR_INVALID;
+        goto out;
     }
 
     struct sockaddr_in s_addr;
@@ -1079,85 +1098,81 @@ int rats_tls_server_startup(mig_agent_args *args)
     /* Bind the server socket */
     if (bind(sockfd, (struct sockaddr *)&s_addr, sizeof(s_addr)) == -1) {
         RTLS_ERR("Failed to call bind()");
-        return -1;
+        ret = RATS_TLS_ERR_INVALID;
+        goto out;
     }
 
     /* Listen for a new connection, allow 5 pending connections */
     if (listen(sockfd, 5) == -1) {
         RTLS_ERR("Failed to call listen()");
-        return -1;
+        ret = RATS_TLS_ERR_INVALID;
+        goto out;
     }
 
-    rats_tls_handle handle;
     ret = rats_tls_init(&conf, &handle);
     if (ret != RATS_TLS_ERR_NONE) {
         RTLS_ERR("Failed to initialize rats tls %#x\n", ret);
-        goto err;
+        goto out;
     }
 
     ret = rats_tls_set_verification_callback(&handle, NULL);
     if (ret != RATS_TLS_ERR_NONE) {
         RTLS_ERR("Failed to set verification callback %#x\n", ret);
-        goto err;
+        goto out;
     }
 
-    while (start_listening) {
-        RTLS_INFO("Waiting for a connection ...\n");
+    RTLS_INFO("Waiting for a connection ...\n");
+    /* Accept client connections */
+    struct sockaddr_in c_addr;
+    socklen_t size = sizeof(c_addr);
 
-        /* Accept client connections */
-        struct sockaddr_in c_addr;
-        socklen_t size = sizeof(c_addr);
-
-        int connd = accept(sockfd, (struct sockaddr *)&c_addr, &size);
-        if (connd < 0) {
-            RTLS_ERR("Failed to call accept()");
-            continue;
-        }
-
-        ret = rats_tls_negotiate(handle, connd);
-        if (ret != RATS_TLS_ERR_NONE) {
-            RTLS_ERR("Failed to negotiate %#x\n", ret);
-            goto close_connd;
-        }
-
-        RTLS_DEBUG("Client connected successfully\n");
-        ret = deal_client_req(handle, args);
-        if (ret != RATS_TLS_ERR_NONE && ret != 0x68) {
-            RTLS_ERR("Client verify failed %#x\n", ret);
-        } else {
-            RTLS_INFO("Client verify success, do other jobs.\n");
-            close(connd);
-            break;
-        }
-
-    close_connd:
-        close(connd);
+    connd = accept(sockfd, (struct sockaddr *)&c_addr, &size);
+    if (connd < 0) {
+        RTLS_ERR("Failed to call accept()");
+        ret = RATS_TLS_ERR_INVALID;
+        goto out;
     }
 
-    shutdown(sockfd, SHUT_RDWR);
-    close(sockfd);
-
-    if (rats_tls_cleanup(handle) != RATS_TLS_ERR_NONE) {
-        RTLS_ERR("Failed to cleanup\n");
-        return RATS_TLS_ERR_INVALID;
+    ret = rats_tls_negotiate(handle, connd);
+    if (ret != RATS_TLS_ERR_NONE) {
+        RTLS_ERR("Failed to negotiate %#x\n", ret);
+        goto out;
     }
 
-    if (ret == 0x68) {
-        return 0x68;
+    RTLS_DEBUG("Client connected successfully\n");
+    ret = deal_client_req(handle, args);
+    if (ret != RATS_TLS_ERR_NONE && ret != 0x68) {
+        RTLS_ERR("Client verify failed %#x\n", ret);
+        goto out;
     } else {
-        return 0x67;
+        RTLS_INFO("Client verify success, do other jobs.\n");
+        goto out;
     }
 
-err:
-    /* Ignore the error code of cleanup in order to return the prepositional error */
-    if (sockfd != -1) {
+out:
+    if (connd >= 0) {
+        close(connd);
+        connd = -1;
+    }
+    if (sockfd >= 0) {
         shutdown(sockfd, SHUT_RDWR);
         close(sockfd);
         sockfd = -1;
     }
-    rats_tls_cleanup(handle);
+    if (handle) {
+        rats_tls_err_t cleanup_ret = rats_tls_cleanup(handle);
+        if (cleanup_ret != RATS_TLS_ERR_NONE)
+            RTLS_ERR("Failed to cleanup rats-tls %#x\n", cleanup_ret);
+    }
+
     RTLS_INFO("server cleanup!\n");
-    return -1;
+    if (ret == 0x68) {
+        return 0x68;
+    } else if (ret == RATS_TLS_ERR_NONE) {
+        return 0x67;
+    } else {
+        return -1;
+    }
 }
 
 int rats_tls_client_startup(mig_agent_args *args)
@@ -1165,7 +1180,7 @@ int rats_tls_client_startup(mig_agent_args *args)
     int ret;
     rats_tls_conf_t conf;
     rats_tls_handle handle = NULL;
-
+    int sockfd = -1;
     /* Create static configuration storage */
     static mig_agent_args static_args;
     static claim_t static_claim;
@@ -1195,10 +1210,11 @@ int rats_tls_client_startup(mig_agent_args *args)
     RTLS_INFO("Setting up custom claims with args=%p", &static_args);
 
     /* Create socket and connect */
-    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
         RTLS_ERR("failed to call socket()\n");
-        return -1;
+        ret = RATS_TLS_ERR_INVALID;
+        goto err;
     }
 
     struct sockaddr_in s_addr;
@@ -1208,12 +1224,13 @@ int rats_tls_client_startup(mig_agent_args *args)
 
     if (inet_pton(AF_INET, args->srv_ip, &s_addr.sin_addr) != 1) {
         RTLS_ERR("invalid server address\n");
-        ret = -1;
+        ret = RATS_TLS_ERR_INVALID;
         goto err;
     }
 
     if ((ret = connect(sockfd, (struct sockaddr *)&s_addr, sizeof(s_addr))) == -1) {
         RTLS_ERR("failed to call connect()\n");
+        ret = RATS_TLS_ERR_INVALID;
         goto err;
     }
 
@@ -1460,7 +1477,10 @@ err:
         }
         rats_tls_cleanup(handle);
     }
-    shutdown(sockfd, SHUT_RDWR);
-    close(sockfd);
+    if (sockfd >= 0) {
+        shutdown(sockfd, SHUT_RDWR);
+        close(sockfd);
+        sockfd = -1;
+    }
     return ret;
 }
