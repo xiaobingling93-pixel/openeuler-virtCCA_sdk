@@ -72,7 +72,7 @@ static int safe_strdup(char **dest, const char *src)
 static void mig_agent_exit(mig_agent_args *args)
 {
     if (!args) {
-        return 0;
+        return;
     }
     if (args->srv_ip) {
         free(args->srv_ip);
@@ -98,7 +98,7 @@ static void mig_agent_exit(mig_agent_args *args)
         free(args->digest_file);
         args->digest_file = NULL;
     }
-    return 0;
+    return;
 }
 
 static int mig_agent_init(mig_agent_args *args)

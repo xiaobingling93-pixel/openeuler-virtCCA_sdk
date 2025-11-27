@@ -211,6 +211,10 @@ static uint64_t parse_platform_claims(platform_claims_t *claim,
                     claim->sw_comp_cnts = item.val.uCount;
                     comps = (sw_comp_claims_t *)malloc(claim->sw_comp_cnts *
                                                        sizeof(sw_comp_claims_t));
+                    if (!comps) {
+                        printf("malloc comps failed\n");
+                        return VIRTCCA_ERROR;
+                    }
                     for (int i = 0; i < claim->sw_comp_cnts; i++) {
                         if (parse_claims_sw_comp(&comps[i], &decode_context, &item)) {
                             printf("Failed parsing software component %d\n", i);
