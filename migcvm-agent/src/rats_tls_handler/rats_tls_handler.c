@@ -39,6 +39,8 @@
 #include "migcvm_tsi.h"
 #include "rats_tls_handler.h"
 
+#include "integrity_check_handler.h"
+
 #define    MIG_TYPE_SERVER 1
 #define    MIG_TYPE_CLIENT 2
 #define    MIG_MSK_ACK "MSK_ACK"
@@ -1029,8 +1031,10 @@ int rats_tls_server_startup(mig_agent_args *args)
     rats_tls_err_t ret = RATS_TLS_ERR_NONE;
     int sockfd = -1;
     int connd = -1;
-    rats_tls_handle handle = NULL;
+    unsigned long long guest_rd = 0;
+    rats_tls_handle *handle = NULL;
 
+    guest_rd = args->guest_rd;
     memset(&conf, 0, sizeof(conf));
     conf.log_level = args->log_level;
     strcpy(conf.attester_type, args->attester_type);
@@ -1109,13 +1113,19 @@ int rats_tls_server_startup(mig_agent_args *args)
         goto out;
     }
 
-    ret = rats_tls_init(&conf, &handle);
+    handle = (rats_tls_handle *)malloc(sizeof(rats_tls_handle));
+    if (!handle) {
+        RTLS_ERR("Failed malloc handle\n");
+        goto out;
+    }
+
+    ret = rats_tls_init(&conf, handle);
     if (ret != RATS_TLS_ERR_NONE) {
         RTLS_ERR("Failed to initialize rats tls %#x\n", ret);
         goto out;
     }
 
-    ret = rats_tls_set_verification_callback(&handle, NULL);
+    ret = rats_tls_set_verification_callback(handle, NULL);
     if (ret != RATS_TLS_ERR_NONE) {
         RTLS_ERR("Failed to set verification callback %#x\n", ret);
         goto out;
@@ -1133,20 +1143,37 @@ int rats_tls_server_startup(mig_agent_args *args)
         goto out;
     }
 
-    ret = rats_tls_negotiate(handle, connd);
+    ret = rats_tls_negotiate(*handle, connd);
     if (ret != RATS_TLS_ERR_NONE) {
         RTLS_ERR("Failed to negotiate %#x\n", ret);
         goto out;
     }
 
     RTLS_DEBUG("Client connected successfully\n");
-    ret = deal_client_req(handle, args);
+    ret = deal_client_req(*handle, args);
     if (ret != RATS_TLS_ERR_NONE && ret != 0x68) {
         RTLS_ERR("Client verify failed %#x\n", ret);
         goto out;
     } else {
         RTLS_INFO("Client verify success, do other jobs.\n");
-        goto out;
+        /* Create a thread for integrity verification */
+        integrity_socket_t *params = (integrity_socket_t *)malloc(sizeof(integrity_socket_t));
+        if (params) {
+            memset(params, 0, sizeof(integrity_socket_t));
+            params->guest_rd = guest_rd;
+            params->socket_fd = sockfd;
+            params->connd_fd = connd;
+            params->handle = handle;
+            params->is_server = true;
+            pthread_t tid;
+            pthread_create(&tid, NULL, io_thread, params);
+            pthread_detach(tid);
+            if (ret == 0x68) {
+                return 0x68;
+            } else {
+                return 0x67;
+            }
+        }
     }
 
 out:
@@ -1159,10 +1186,12 @@ out:
         close(sockfd);
         sockfd = -1;
     }
+
     if (handle) {
-        rats_tls_err_t cleanup_ret = rats_tls_cleanup(handle);
+        rats_tls_err_t cleanup_ret = rats_tls_cleanup(*handle);
         if (cleanup_ret != RATS_TLS_ERR_NONE)
             RTLS_ERR("Failed to cleanup rats-tls %#x\n", cleanup_ret);
+        free(handle);
     }
 
     RTLS_INFO("server cleanup!\n");
@@ -1179,8 +1208,9 @@ int rats_tls_client_startup(mig_agent_args *args)
 {
     int ret;
     rats_tls_conf_t conf;
-    rats_tls_handle handle = NULL;
+    rats_tls_handle *handle = NULL;
     int sockfd = -1;
+
     /* Create static configuration storage */
     static mig_agent_args static_args;
     static claim_t static_claim;
@@ -1234,14 +1264,20 @@ int rats_tls_client_startup(mig_agent_args *args)
         goto err;
     }
 
-    ret = rats_tls_init(&conf, &handle);
+    handle = (rats_tls_handle *)malloc(sizeof(rats_tls_handle));
+    if (!handle) {
+        RTLS_ERR("Failed malloc handle\n");
+        goto err;
+    }
+
+    ret = rats_tls_init(&conf, handle);
     if (ret != RATS_TLS_ERR_NONE) {
         RTLS_ERR("Failed to initialize rats tls %#x\n", ret);
         goto err;
     }
 
     /* Ensure configuration is correctly copied to handle */
-    rtls_core_context_t *ctx = (rtls_core_context_t *)handle;
+    rtls_core_context_t *ctx = (rtls_core_context_t *)*handle;
     if (!ctx->config.custom_claims) {
         RTLS_ERR("Failed to set custom claims in handle\n");
         ret = RATS_TLS_ERR_INVALID;
@@ -1249,13 +1285,13 @@ int rats_tls_client_startup(mig_agent_args *args)
     }
     RTLS_DEBUG("Custom claims set in handle: %p", ctx->config.custom_claims->value);
 
-    ret = rats_tls_set_verification_callback(&handle, user_callback);
+    ret = rats_tls_set_verification_callback(handle, user_callback);
     if (ret != RATS_TLS_ERR_NONE) {
         RTLS_ERR("Failed to set verification callback %#x\n", ret);
         goto err;
     }
 
-    ret = rats_tls_negotiate(handle, sockfd);
+    ret = rats_tls_negotiate(*handle, sockfd);
     if (ret != RATS_TLS_ERR_NONE) {
         RTLS_ERR("Failed to negotiate %#x\n", ret);
         goto err;
@@ -1266,7 +1302,7 @@ int rats_tls_client_startup(mig_agent_args *args)
         RTLS_INFO("Starting Platform SW Components verification...");
         
         /* Get token from verifier context */
-        rtls_core_context_t *ctx = (rtls_core_context_t *)handle;
+        rtls_core_context_t *ctx = (rtls_core_context_t *)*handle;
         if (!ctx || !ctx->verifier || !ctx->verifier->verifier_private) {
             RTLS_ERR("Failed to get verifier context for platform verification\n");
             ret = RATS_TLS_ERR_INVALID;
@@ -1313,7 +1349,7 @@ int rats_tls_client_startup(mig_agent_args *args)
     }
 
     /* Handle IMA verification */
-    if ((ret = deal_ima(handle, &static_args)) != RATS_TLS_ERR_NONE) {
+    if ((ret = deal_ima(*handle, &static_args)) != RATS_TLS_ERR_NONE) {
         RTLS_ERR("Verify IMA measurement failed %#x\n", ret);
         goto err;
     }
@@ -1323,7 +1359,7 @@ int rats_tls_client_startup(mig_agent_args *args)
         RTLS_INFO("Starting firmware verification process\n");
         
         /* Request and receive CCEL table and event log */
-        ret = request_and_save_firmware_data(handle);
+        ret = request_and_save_firmware_data(*handle);
         if (ret != RATS_TLS_ERR_NONE) {
             RTLS_ERR("Failed to get firmware data %#x\n", ret);
             goto err;
@@ -1355,7 +1391,7 @@ int rats_tls_client_startup(mig_agent_args *args)
         RTLS_INFO("Verifying REM values from token...\n");
 
         /* Get token from verifier context */
-        rtls_core_context_t *ctx = (rtls_core_context_t *)handle;
+        rtls_core_context_t *ctx = (rtls_core_context_t *)*handle;
         if (!ctx || !ctx->verifier || !ctx->verifier->verifier_private) {
             RTLS_ERR("Failed to get verifier context\n");
             ret = RATS_TLS_ERR_INVALID;
@@ -1423,14 +1459,14 @@ int rats_tls_client_startup(mig_agent_args *args)
         RTLS_INFO("Firmware verification completed successfully\n\n");
     }
 
-    if ((ret = deal_fde_key(handle, args->use_fde, args->rootfs_key_file)) != RATS_TLS_ERR_NONE) {
+    if ((ret = deal_fde_key(*handle, args->use_fde, args->rootfs_key_file)) != RATS_TLS_ERR_NONE) {
         RTLS_ERR("deal fde key failed %#x\n", ret);
         goto err;
     }
     
     const char *msg = MIG_MSK_SEND;
     size_t len = strlen(msg);
-    ret = rats_tls_transmit(handle, (void *)msg, &len);
+    ret = rats_tls_transmit(*handle, (void *)msg, &len);
     if (ret != RATS_TLS_ERR_NONE || len != strlen(msg)) {
         RTLS_ERR("Failed to transmit %#x\n", ret);
         goto err;
@@ -1438,7 +1474,7 @@ int rats_tls_client_startup(mig_agent_args *args)
 
     char buf[256] = {0};
     len = sizeof(buf);
-    ret = rats_tls_receive(handle, buf, &len);
+    ret = rats_tls_receive(*handle, buf, &len);
     if (ret != RATS_TLS_ERR_NONE) {
         RTLS_ERR("Failed to receive %#x\n", ret);
         goto err;
@@ -1460,22 +1496,36 @@ int rats_tls_client_startup(mig_agent_args *args)
         memcpy(migrate_key_package + 4, args->rand_iv, sizeof(args->rand_iv));
         memcpy(migrate_key_package + 8, args->tag, sizeof(args->tag));
         len = sizeof(migrate_key_package);
-        ret = rats_tls_transmit(handle, migrate_key_package, &len);
+        ret = rats_tls_transmit(*handle, migrate_key_package, &len);
         if (ret != RATS_TLS_ERR_NONE) {
             RTLS_ERR("Failed to transmit %#x\n", ret);
             goto err;
         }
     }
 
+    /* Create a thread for integrity verification */
+    integrity_socket_t *params = (integrity_socket_t *)malloc(sizeof(integrity_socket_t));
+    if (!params) {
+        goto err;
+    }
+    memset(params, 0, sizeof(integrity_socket_t));
+    params->guest_rd = args->guest_rd;
+    params->socket_fd = sockfd;
+    params->handle = handle;
+    pthread_t tid;
+    pthread_create(&tid, NULL, io_thread, params);
+    pthread_detach(tid);
+    return ret;
 err:
     if (handle) {
         /* Clear custom_claims before cleanup to prevent freeing static memory */
-        rtls_core_context_t *ctx = (rtls_core_context_t *)handle;
+        rtls_core_context_t *ctx = (rtls_core_context_t *)*handle;
         if (ctx) {
             ctx->config.custom_claims = NULL;
             ctx->config.custom_claims_length = 0;
+            rats_tls_cleanup(*handle);
         }
-        rats_tls_cleanup(handle);
+        free(handle);
     }
     if (sockfd >= 0) {
         shutdown(sockfd, SHUT_RDWR);
