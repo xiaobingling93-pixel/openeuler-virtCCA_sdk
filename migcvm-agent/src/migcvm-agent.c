@@ -44,20 +44,6 @@ do { \
     dst = src; \
 } while(0)
 
-static int rand_iv_init(mig_agent_args *args)
-{
-    if (!args) {
-        return -1;
-    }
-    unsigned long long key[4];
-    if (getrandom(key, sizeof(key), 0) < 0) {
-        perror("getrandom");
-        return -1;
-    }
-    memcpy(args->rand_iv, key, sizeof(key));
-    return 0;
-}
-
 static int safe_strdup(char **dest, const char *src)
 {
     char *tmp = strdup(src);
@@ -209,13 +195,6 @@ static void ras_tls_handler_client(const struct socket_msg *msg, int conn_fd, mi
     }
     attest_info->pending_guest_rds = NULL;
 
-    ret = rand_iv_init(args);
-    if (ret) {
-        printf("[CLIENT] random error 0x%08x\n", ret);
-        goto out;
-    }
-
-    memcpy(attest_info->rand_iv, args->rand_iv, sizeof(attest_info->rand_iv));
     /* Get migration info and mask(get msk to dst) */
     ret = get_migration_info_and_mask(virtcca_client_ctx, migvm_info, attest_info);
     if (ret == TSI_SUCCESS) {
@@ -226,6 +205,7 @@ static void ras_tls_handler_client(const struct socket_msg *msg, int conn_fd, mi
     }
     memcpy(args->msk, attest_info->msk, sizeof(attest_info->msk));
     memcpy(args->tag, attest_info->tag, sizeof(attest_info->tag));
+    memcpy(args->rand_iv, attest_info->rand_iv, sizeof(attest_info->rand_iv));
     printf("[CLIENT] peer IP: %s\n", args->srv_ip);
     ret = rats_tls_client_startup(args);
     if (ret != 0) {
@@ -239,7 +219,6 @@ static void ras_tls_handler_client(const struct socket_msg *msg, int conn_fd, mi
         printf("[CLIENT] set_migration_bind_slot_and_mask succeeded\n");
     } else {
         printf("[CLIENT] set_migration_bind_slot_and_mask failed with error: 0x%08x\n", ret);
-        goto out;
     }
 
 out:
@@ -258,6 +237,10 @@ out:
         char tmp[8];
         readn(conn_fd, tmp, sizeof(tmp));
     }
+    args->guest_rd = 0;
+    memset(args->msk, 0, sizeof(args->msk));
+    memset(args->tag, 0, sizeof(args->tag));
+    memset(args->rand_iv, 0, sizeof(args->rand_iv));
 
     if (attest_info) {
         free(attest_info);
