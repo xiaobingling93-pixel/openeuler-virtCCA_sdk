@@ -246,9 +246,6 @@ static int recieve_and_save_msk(rats_tls_handle handle, mig_agent_args *args)
     memcpy(attest_info->msk, migrate_key_package, sizeof(attest_info->msk));
     memcpy(attest_info->rand_iv, migrate_key_package + 4, sizeof(attest_info->rand_iv));
     memcpy(attest_info->tag, migrate_key_package + 8, sizeof(attest_info->tag));
-    memcpy(args->msk, migrate_key_package, sizeof(args->msk));
-    memcpy(args->rand_iv, migrate_key_package + 4, sizeof(args->rand_iv));
-    memcpy(args->tag, migrate_key_package + 8, sizeof(args->tag));
     attest_info->slot_status = SLOT_IS_READY;
 
     /* Set migration bind slot and mask : SLOT_IS_READY*/
@@ -262,6 +259,10 @@ static int recieve_and_save_msk(rats_tls_handle handle, mig_agent_args *args)
 
     ret = RATS_TLS_ERR_NONE;
 out:
+    args->guest_rd = 0;
+    memset(args->msk, 0, sizeof(args->msk));
+    memset(args->tag, 0, sizeof(args->tag));
+    memset(args->rand_iv, 0, sizeof(args->rand_iv));
     if (virtcca_server_ctx) {
         tsi_free_ctx(virtcca_server_ctx);
     }
