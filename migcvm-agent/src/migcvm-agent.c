@@ -141,6 +141,8 @@ static void ras_tls_handler_client(const struct socket_msg *msg, int conn_fd, mi
     char* host_srv_ip;
     virtcca_mig_info_t *migvm_info = NULL;
     migration_info_t *attest_info = NULL;
+    pending_guest_rd_t *pending_list_buf = NULL;
+    bool guest_rd_legal = false;
 
     tsi_ctx *virtcca_client_ctx = tsi_new_ctx();
     if (!virtcca_client_ctx) {
@@ -193,7 +195,33 @@ static void ras_tls_handler_client(const struct socket_msg *msg, int conn_fd, mi
         ret = TSI_ERROR_STATE;
         goto out;
     }
-    attest_info->pending_guest_rds = NULL;
+
+    pending_list_buf = (pending_guest_rd_t *)malloc(sizeof(pending_guest_rd_t));
+    if (!pending_list_buf) {
+        printf("[CLIENT] Failed to initialize pending_list_buf\n");
+        ret = TSI_ERROR_STATE;
+        goto out;
+    }
+
+    attest_info->pending_guest_rds = pending_list_buf;
+    ret = get_migration_binded_rds(virtcca_client_ctx, migvm_info, attest_info);
+    if (ret == TSI_SUCCESS) {
+        printf("[CLIENT] get_migration_binded_rds succeeded\n");
+    } else {
+        printf("[CLIENT] get_migration_binded_rds failed with error: 0x%08x\n", ret);
+        goto out;
+    }
+
+    for (int i = 0; i < MAX_BIND_VM; i++) {
+        if (pending_list_buf->guest_rd[i] == migvm_info->guest_rd) {
+            guest_rd_legal = true;
+        }
+    }
+    if (!guest_rd_legal) {
+        printf("[CLIENT] guest rd is ilegal\n");
+        ret = TSI_ERROR_STATE;
+        goto out;
+    }
 
     /* Get migration info and mask(get msk to dst) */
     ret = get_migration_info_and_mask(virtcca_client_ctx, migvm_info, attest_info);
@@ -213,6 +241,7 @@ static void ras_tls_handler_client(const struct socket_msg *msg, int conn_fd, mi
         goto out;
     }
     attest_info->slot_status = SLOT_IS_READY;
+    attest_info->set_key = true;
     /* Set migration bind slot and mask : SLOT_IS_READY */
     ret = set_migration_bind_slot_and_mask(virtcca_client_ctx, migvm_info, attest_info);
     if (ret == TSI_SUCCESS) {
@@ -242,6 +271,9 @@ out:
     memset(args->tag, 0, sizeof(args->tag));
     memset(args->rand_iv, 0, sizeof(args->rand_iv));
 
+    if (pending_list_buf) {
+        free(pending_list_buf);
+    }
     if (attest_info) {
         free(attest_info);
     }

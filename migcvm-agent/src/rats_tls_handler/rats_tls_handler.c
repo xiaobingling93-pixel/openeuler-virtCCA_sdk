@@ -43,7 +43,9 @@
 #define    MIG_TYPE_CLIENT 2
 #define    MIG_MSK_ACK "MSK_ACK"
 #define    MIG_MSK_SEND "MSK_SEND"
-
+#define    DST_CAN_MIGRATE "DST_CAN_MIGRATE"
+#define    DST_CANNOT_MIGRATE "DST_CANNOT_MIGRATE"
+#define    VIRTCCA_TOKEN_SIZE 4104
 static int start_listening = 1;
 
 static rats_tls_err_t read_ima_measurements(uint8_t **value, size_t *size)
@@ -206,7 +208,7 @@ free:
     return ret;
 }
 
-static int recieve_and_save_msk(rats_tls_handle handle, mig_agent_args *args)
+static int receive_and_save_msk(rats_tls_handle handle, mig_agent_args *args)
 {
     int ret = ENCLAVE_ATTESTER_ERR_UNKNOWN;
     unsigned long long migrate_key_package[10];
@@ -215,13 +217,15 @@ static int recieve_and_save_msk(rats_tls_handle handle, mig_agent_args *args)
     /* tsi context */
     virtcca_mig_info_t *migvm_info = NULL;
     migration_info_t *attest_info = NULL;
+    pending_guest_rd_t* pending_list_buf = NULL;
+    bool guest_rd_legal = false;
 
     tsi_ctx *virtcca_server_ctx = tsi_new_ctx();
     if (!virtcca_server_ctx) {
         goto out;
     }
 
-    RTLS_INFO("[SERVER] calling recieve_and_save_msk\n");
+    RTLS_INFO("[SERVER] calling receive_and_save_msk\n");
     ret = rats_tls_receive(handle, migrate_key_package, &len);
     if (ret != RATS_TLS_ERR_NONE || len != sizeof(migrate_key_package)) {
         RTLS_ERR("[SERVER] Failed to receive valid MSK and RAND iv\n");
@@ -242,13 +246,42 @@ static int recieve_and_save_msk(rats_tls_handle handle, mig_agent_args *args)
         ret = RATS_TLS_ERR_UNKNOWN;
         goto out;
     };
-    attest_info->pending_guest_rds = NULL;
+
+    pending_list_buf = (pending_guest_rd_t *)malloc(sizeof(pending_guest_rd_t));
+    if (!pending_list_buf) {
+        printf("[SERVER] Failed to initialize pending_list_buf\n");
+        ret = RATS_TLS_ERR_UNKNOWN;
+        goto out;
+    }
+
+    attest_info->pending_guest_rds = pending_list_buf;
+    ret = get_migration_binded_rds(virtcca_server_ctx, migvm_info, attest_info);
+    if (ret == TSI_SUCCESS) {
+        printf("[SERVER] get_migration_binded_rds succeeded\n");
+    } else {
+        printf("[SERVER] get_migration_binded_rds failed with error: 0x%08x\n", ret);
+        goto out;
+    }
+
+    for (int i = 0; i < MAX_BIND_VM; i++) {
+        if (pending_list_buf->guest_rd[i] == migvm_info->guest_rd) {
+            guest_rd_legal = true;
+            printf("[SERVER] guest rd is legal\n");
+        }
+    }
+
+    if (!guest_rd_legal) {
+        printf("[SERVER] guest rd is ilegal\n");
+        ret = RATS_TLS_ERR_UNKNOWN;
+        goto out;
+    }
+
     memcpy(attest_info->msk, migrate_key_package, sizeof(attest_info->msk));
     memcpy(attest_info->rand_iv, migrate_key_package + 4, sizeof(attest_info->rand_iv));
     memcpy(attest_info->tag, migrate_key_package + 8, sizeof(attest_info->tag));
     attest_info->slot_status = SLOT_IS_READY;
-
-    /* Set migration bind slot and mask : SLOT_IS_READY*/
+    attest_info->set_key = false;
+    /* Set migration bind slot and mask : SLOT_IS_READY */
     ret = set_migration_bind_slot_and_mask(virtcca_server_ctx, migvm_info, attest_info);
     if (ret == 0) {
         printf("[SERVER] set_migration_bind_slot_and_mask succeeded\n");
@@ -265,6 +298,9 @@ out:
     memset(args->rand_iv, 0, sizeof(args->rand_iv));
     if (virtcca_server_ctx) {
         tsi_free_ctx(virtcca_server_ctx);
+    }
+    if (pending_list_buf) {
+        free(pending_list_buf);
     }
     if (attest_info) {
         free(attest_info);
@@ -368,7 +404,7 @@ static int deal_client_req(rats_tls_handle handle, mig_agent_args *args)
             RTLS_ERR("Failed to transmit %#x\n", ret);
             return ret;
         }
-        return recieve_and_save_msk(handle, args);  /* Return success directly */
+        return receive_and_save_msk(handle, args);  /* Return success directly */
     }
 
     strcpy(buf, "Attestation Failed, Continue.....");
@@ -453,8 +489,8 @@ static int user_callback(void *args)
     cca_token_t token = {0};
     cca_token_buf_t cca_token_buf = {0};
 
-    if (ev->cca.evidence_sz > MAX_TOKEN_SIZE) {
-        RTLS_ERR("token length is invalid\n");
+    if (ev->cca.evidence_sz > VIRTCCA_TOKEN_SIZE) {
+        RTLS_ERR("token length is invalid, the length is %d\n", ev->cca.evidence_sz);
         return ENCLAVE_VERIFIER_ERR_CBOR;
     }
     memcpy(&cca_token_buf, ev->cca.evidence, ev->cca.evidence_sz);
