@@ -350,7 +350,8 @@ void* io_thread(void* arg)
     while (1) {
         // tsi interface
         ret = ioctl(tsi_fd, TMM_GET_MIGVM_MEM_CHECKSUM, &params->guest_rd);
-        if ((ret == TSI_ERROR_FAILED) || (params->is_server == 0 && ret == TSI_SUCCESS)) {
+        if ((params->is_server == 0 && ret == TSI_ERROR_FAILED) ||
+        (params->is_server == 0 && ret == TSI_SUCCESS) || ret == TSI_ERROR_INPUT) {
             send_close_notification(params->handle);
             close_connection(epoll_fd, socket_fd, params->handle);
             usleep(WAIT_TIME_OUT);
@@ -388,7 +389,8 @@ void* io_thread(void* arg)
             // receive handle
             if (events[i].events & EPOLLIN) {
                 ret = handle_recv_event(epoll_fd, socket_fd, tsi_fd, params, &share_queue);
-                if (ret < 0 || ret == TSI_ERROR_FAILED || (params->is_server == 0 && ret == TSI_SUCCESS)) {
+                if (ret < 0 || (params->is_server == 0 && ret == TSI_ERROR_FAILED) ||
+                (params->is_server == 0 && ret == TSI_SUCCESS) || ret == TSI_ERROR_INPUT) {
                     if (ret != RECV_CLOSE_REQ) {
                         send_close_notification(params->handle);
                     }
