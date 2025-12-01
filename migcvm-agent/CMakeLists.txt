@@ -1,3 +1,7 @@
+/*
+ * Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+ */
+
 cmake_minimum_required(VERSION 3.5.1)
 project(migcvm-agent)
 set(CMAKE_C_FLAGS "-fPIE ${CMAKE_C_FLAGS}")
@@ -8,7 +12,8 @@ add_subdirectory(src/migcvm_tsi)
 
 set(SOURCES src/migcvm-agent.c
     src/socket/host_socket_agent.c
-    src/rats_tls_handler/rats_tls_handler.c)
+    src/rats_tls_handler/rats_tls_handler.c
+    src/integrity_check/integrity_check_handler.c)
 
 add_executable(${PROJECT_NAME} ${SOURCES})
 
@@ -18,6 +23,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     inc/socket/
     inc/migcvm_tsi
     inc/rats_tls_handler
+    inc/integrity_check
     inc
 )
 
