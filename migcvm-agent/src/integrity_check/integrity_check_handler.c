@@ -95,7 +95,7 @@ static int enqueue_recv_data(mig_integrity_share_queue_s *q, uint8_t *buffer, ui
     return 1;
 }
 
-static nt send_queue_data(rats_tls_handle *handle, mig_integrity_share_queue_s *q)
+static int send_queue_data(rats_tls_handle *handle, mig_integrity_share_queue_s *q)
 {
     int ret = 0;
     uint64_t send_len = *(q->send_offset);
