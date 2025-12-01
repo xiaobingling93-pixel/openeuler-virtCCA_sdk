@@ -1,7 +1,3 @@
-/*
- * Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
- */
-
 cmake_minimum_required(VERSION 3.5.1)
 project(migcvm-agent)
 set(CMAKE_C_FLAGS "-fPIE ${CMAKE_C_FLAGS}")
