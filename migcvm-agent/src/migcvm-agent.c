@@ -188,6 +188,7 @@ static void ras_tls_handler_client(const struct socket_msg *msg, int conn_fd, mi
         ret = TSI_ERROR_STATE;
         goto out;
     }
+    memset(migvm_info, 0, sizeof(virtcca_mig_info_t));
     migvm_info->guest_rd = args->guest_rd;
     attest_info = (migration_info_t *)malloc(sizeof(migration_info_t));
     if (!attest_info) {
@@ -195,6 +196,7 @@ static void ras_tls_handler_client(const struct socket_msg *msg, int conn_fd, mi
         ret = TSI_ERROR_STATE;
         goto out;
     }
+    memset(attest_info, 0, sizeof(migration_info_t));
 
     pending_list_buf = (pending_guest_rd_t *)malloc(sizeof(pending_guest_rd_t));
     if (!pending_list_buf) {
@@ -202,6 +204,7 @@ static void ras_tls_handler_client(const struct socket_msg *msg, int conn_fd, mi
         ret = TSI_ERROR_STATE;
         goto out;
     }
+    memset(pending_list_buf, 0, sizeof(pending_guest_rd_t));
 
     attest_info->pending_guest_rds = pending_list_buf;
     ret = get_migration_binded_rds(virtcca_client_ctx, migvm_info, attest_info);
@@ -266,15 +269,19 @@ out:
         char tmp[8];
         readn(conn_fd, tmp, sizeof(tmp));
     }
-    args->guest_rd = 0;
-    memset(args->msk, 0, sizeof(args->msk));
-    memset(args->tag, 0, sizeof(args->tag));
-    memset(args->rand_iv, 0, sizeof(args->rand_iv));
 
-    if (pending_list_buf) {
-        free(pending_list_buf);
+    if (args) {
+        args->guest_rd = 0;
+        memset(args->msk, 0, sizeof(args->msk));
+        memset(args->tag, 0, sizeof(args->tag));
+        memset(args->rand_iv, 0, sizeof(args->rand_iv));
     }
+
     if (attest_info) {
+        if (attest_info->pending_guest_rds) {
+            free(attest_info->pending_guest_rds);
+            attest_info->pending_guest_rds = NULL;
+        }
         free(attest_info);
     }
     if (migvm_info) {
@@ -286,6 +293,7 @@ out:
     if (host_srv_ip) {
         free(host_srv_ip);
     }
+
     return;
 }
 

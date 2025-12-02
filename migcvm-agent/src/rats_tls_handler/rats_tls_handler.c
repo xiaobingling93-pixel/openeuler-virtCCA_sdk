@@ -230,6 +230,7 @@ static int receive_and_save_msk(rats_tls_handle handle, mig_agent_args *args)
     RTLS_INFO("[SERVER] calling receive_and_save_msk\n");
     ret = rats_tls_receive(handle, migrate_key_package, &len);
     if (ret != RATS_TLS_ERR_NONE || len != sizeof(migrate_key_package)) {
+        memset(migrate_key_package, 0, sizeof(migrate_key_package));
         RTLS_ERR("[SERVER] Failed to receive valid MSK and RAND iv\n");
         ret = RATS_TLS_ERR_UNKNOWN;
         goto out;
@@ -241,13 +242,16 @@ static int receive_and_save_msk(rats_tls_handle handle, mig_agent_args *args)
         ret = RATS_TLS_ERR_UNKNOWN;
         goto out;
     }
+    memset(migvm_info, 0, sizeof(virtcca_mig_info_t));
     migvm_info->guest_rd = args->guest_rd;
+
     attest_info = (migration_info_t *)malloc(sizeof(migration_info_t));
     if (!attest_info) {
         printf("[SERVER] Failed to initialize attest_info\n");
         ret = RATS_TLS_ERR_UNKNOWN;
         goto out;
     };
+    memset(attest_info, 0, sizeof(migration_info_t));
 
     pending_list_buf = (pending_guest_rd_t *)malloc(sizeof(pending_guest_rd_t));
     if (!pending_list_buf) {
@@ -255,6 +259,7 @@ static int receive_and_save_msk(rats_tls_handle handle, mig_agent_args *args)
         ret = RATS_TLS_ERR_UNKNOWN;
         goto out;
     }
+    memset(pending_list_buf, 0, sizeof(pending_guest_rd_t));
 
     attest_info->pending_guest_rds = pending_list_buf;
     ret = get_migration_binded_rds(virtcca_server_ctx, migvm_info, attest_info);
@@ -277,6 +282,7 @@ static int receive_and_save_msk(rats_tls_handle handle, mig_agent_args *args)
         ret = RATS_TLS_ERR_UNKNOWN;
         goto out;
     }
+    attest_info->set_key = false;
 
     memcpy(attest_info->msk, migrate_key_package, sizeof(attest_info->msk));
     memcpy(attest_info->rand_iv, migrate_key_package + 4, sizeof(attest_info->rand_iv));
@@ -294,22 +300,27 @@ static int receive_and_save_msk(rats_tls_handle handle, mig_agent_args *args)
 
     ret = RATS_TLS_ERR_NONE;
 out:
-    args->guest_rd = 0;
-    memset(args->msk, 0, sizeof(args->msk));
-    memset(args->tag, 0, sizeof(args->tag));
-    memset(args->rand_iv, 0, sizeof(args->rand_iv));
-    if (virtcca_server_ctx) {
-        tsi_free_ctx(virtcca_server_ctx);
+    if (args) {
+        args->guest_rd = 0;
+        memset(args->msk, 0, sizeof(args->msk));
+        memset(args->tag, 0, sizeof(args->tag));
+        memset(args->rand_iv, 0, sizeof(args->rand_iv));
     }
-    if (pending_list_buf) {
-        free(pending_list_buf);
-    }
+
     if (attest_info) {
+        if (attest_info->pending_guest_rds) {
+            free(attest_info->pending_guest_rds);
+            attest_info->pending_guest_rds = NULL;
+        }
         free(attest_info);
     }
     if (migvm_info) {
         free(migvm_info);
     }
+    if (virtcca_server_ctx) {
+        tsi_free_ctx(virtcca_server_ctx);
+    }
+
     return ret;
 }
 
@@ -406,7 +417,11 @@ static int deal_client_req(rats_tls_handle handle, mig_agent_args *args)
             RTLS_ERR("Failed to transmit %#x\n", ret);
             return ret;
         }
-        return receive_and_save_msk(handle, args);  /* Return success directly */
+        ret = receive_and_save_msk(handle, args);  /* Return success directly */
+        if (ret != RATS_TLS_ERR_NONE) {
+            RTLS_ERR("Failed to save MSK\n");
+        }
+        return ret;
     }
 
     strcpy(buf, "Attestation Failed, Continue.....");
@@ -491,20 +506,20 @@ static int user_callback(void *args)
     cca_token_t token = {0};
     cca_token_buf_t cca_token_buf = {0};
 
-    if (ev->cca.evidence_sz > VIRTCCA_TOKEN_SIZE) {
+    if (ev->cca.evidence_sz == 0 || ev->cca.evidence_sz > VIRTCCA_TOKEN_SIZE) {
         RTLS_ERR("token length is invalid, the length is %d\n", ev->cca.evidence_sz);
-        return ENCLAVE_VERIFIER_ERR_CBOR;
+        return false;
     }
     memcpy(&cca_token_buf, ev->cca.evidence, ev->cca.evidence_sz);
     
     ret = parse_cca_attestation_token(&token, cca_token_buf.buf, cca_token_buf.buf_size);
     if (ret != VIRTCCA_SUCCESS) {
         RTLS_ERR("failed to parse virtcca token\n");
-        return ENCLAVE_VERIFIER_ERR_CBOR;
+        return false;
     }
     RTLS_DEBUG("Token parsed successfully\n");
 
-    cert_info_t cert_info;
+    cert_info_t cert_info = {0};
     /* Detect AIK certificate type and configure certificate chain accordingly */
     cert_type_t aik_cert_type = detect_aik_cert_type(DEFAULT_AIK_CERT_PEM_FILENAME);
     configure_cert_info_by_type(&cert_info, aik_cert_type);
@@ -1535,6 +1550,7 @@ int rats_tls_client_startup(mig_agent_args *args)
         len = sizeof(migrate_key_package);
         ret = rats_tls_transmit(*handle, migrate_key_package, &len);
         if (ret != RATS_TLS_ERR_NONE) {
+            memset(migrate_key_package, 0, sizeof(migrate_key_package));
             RTLS_ERR("Failed to transmit %#x\n", ret);
             goto err;
         }
