@@ -8,7 +8,8 @@ add_subdirectory(src/migcvm_tsi)
 
 set(SOURCES src/migcvm-agent.c
     src/socket/host_socket_agent.c
-    src/rats_tls_handler/rats_tls_handler.c)
+    src/rats_tls_handler/rats_tls_handler.c
+    src/integrity_check/integrity_check_handler.c)
 
 add_executable(${PROJECT_NAME} ${SOURCES})
 
@@ -18,6 +19,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     inc/socket/
     inc/migcvm_tsi
     inc/rats_tls_handler
+    inc/integrity_check
     inc
 )
 
