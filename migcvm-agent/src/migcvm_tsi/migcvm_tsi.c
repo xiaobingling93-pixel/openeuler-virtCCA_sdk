@@ -52,9 +52,7 @@ int get_migration_info_and_mask(tsi_ctx *ctx, virtcca_mig_info_t *migvm_info, mi
 
     ret = ioctl(ctx->fd, TMM_GET_MIGRATION_INFO, migvm_info);
     if (ret != 0) {
-        char error_message[256] = {0};
-        strerror_r(errno, error_message, sizeof(error_message));
-        printf("Failed to get migration info: %s (errno=%d)\n", error_message, errno);
+        printf("Failed to get migration info: (errno=%d)\n", errno);
         return TSI_ERROR;
     }
 
@@ -96,7 +94,7 @@ int get_migration_binded_rds(tsi_ctx *ctx, virtcca_mig_info_t *migvm_info, migra
 
     migvm_info->ops = OP_MIGRATE_PEEK_RDS;
     migvm_info->size = sizeof(migration_info_t);
-    printf("migvm_info->size: %zu\n", migvm_info->size);
+
     if (attest_info->pending_guest_rds == NULL) {
         printf("Failed to allocate memory for get_migration_binded_rds: out of memory\n");
         return TSI_ERROR;
@@ -109,16 +107,8 @@ int get_migration_binded_rds(tsi_ctx *ctx, virtcca_mig_info_t *migvm_info, migra
         return TSI_ERROR;
     }
 
-    if (attest_info->pending_guest_rds) {
-        for (unsigned int i = 0; i < MAX_BIND_VM; ++i) {
-            if (attest_info->pending_guest_rds->guest_rd[i] != 0) {
-                printf("Pending guest rd %u: 0x%llx\n", i,
-                       (unsigned long long)attest_info->pending_guest_rds->guest_rd[i]);
-                migvm_info->guest_rd = attest_info->pending_guest_rds->guest_rd[i];
-            }
-        }
-    } else {
-        printf("the pending_guest_rds is not set\n");
+    if (!attest_info->pending_guest_rds) {
+        return TSI_ERROR;
     }
 
     return TSI_SUCCESS;
