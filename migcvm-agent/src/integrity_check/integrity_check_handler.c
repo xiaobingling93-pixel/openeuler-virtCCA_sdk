@@ -57,7 +57,7 @@ typedef struct {
 static int enable_epollout(int epoll_fd, int fd)
 {
     struct epoll_event ev;
-    ev.events = EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP | EPOLLET;
+    ev.events = EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP;
     ev.data.fd = fd;
     return epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
 }
@@ -66,7 +66,7 @@ static int enable_epollout(int epoll_fd, int fd)
 static int disable_epollout(int epoll_fd, int fd)
 {
     struct epoll_event ev;
-    ev.events = EPOLLIN | EPOLLERR | EPOLLHUP | EPOLLET;
+    ev.events = EPOLLIN | EPOLLERR | EPOLLHUP;
     ev.data.fd = fd;
     return epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
 }
