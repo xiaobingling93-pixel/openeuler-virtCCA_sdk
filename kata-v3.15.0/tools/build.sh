@@ -602,6 +602,7 @@ docker push $REGISTRY_DOMAIN:$REGISTRY_PORT/busybox:latest
 
 # 9. Compile kata-deploy image
 echo "===== Compiling kata-deploy ====="
+rm -rf ~/.docker
 cd "$KATA_SRC_DIR/tools/packaging/kata-deploy/local-build"
 export USE_CACHE="no"
 export AGENT_POLICY=no
@@ -707,7 +708,22 @@ set -e
 # 3. Verify deployment
 echo "===== Verifying cluster status ====="
 sleep 15
-kubectl get pods -A
+for i in {1..30}; do
+    # Check Pod status (exclude Completed and Succeeded)
+    pods_not_ready=$(kubectl get pods -A -o jsonpath='{range .items[*]}{.status.phase}{"\n"}{end}' | grep -vE "Running|Succeeded|Completed" | wc -l)
+
+    if [ $pods_not_ready -eq 0 ]; then
+        echo "All components ready"
+        break
+    fi
+
+    sleep 10
+    echo "Waiting for components to initialize...(${i}0s)"
+
+    # Debug information: show current status
+    echo "=== Pod status ==="
+    kubectl get pods -A
+done
 
 # 4. Create test Pod
 echo "===== Creating test Pod ====="
