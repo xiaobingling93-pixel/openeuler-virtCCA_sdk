@@ -328,7 +328,6 @@ LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/path/to/kcal/lib ./bin/main --config $(pwd)/
 
 ```bash
 cd /home/admin/dev/psi
-
 # 服务端
 LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/path/to/kcal/lib ./bin/main --config $(pwd)/examples/pir/config/kcal_pir_sender.json
 # 客户端
