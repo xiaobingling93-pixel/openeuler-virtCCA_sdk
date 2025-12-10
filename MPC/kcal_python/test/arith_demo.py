@@ -49,17 +49,24 @@ def psi_demo(is_server: bool):
 
     context = kcal.Context.create(config, on_send_data, on_recv_data)
 
-    op = kcal.create_operator(context, kcal.AlgorithmsType.PSI)
-
+    makeshare_op = kcal.create_operator(context, kcal.AlgorithmsType.NAKESHARE)
+    revealshare_op = kcal.create_operator(context, kcal.AlgorithmsType.NAKESHARE)
+    mul_op = kcal.create_operator(context, kcal.AlgorithmsType.MUL)
     input0 = ["4", "3", "2", "1"]
     input1 = ["1", "3", "4", "5"]
     output = []
     import time
     start_time = time.time()
     if is_server:
-        op.run(input0, output, kcal.TeeMode.OUTPUT_INDEX)
+        makeshare_op.run()
+        makeshare_op.run()
+        mul_op.run()
+        revealshare_op.run()
     else:
-        op.run(input1, output, kcal.TeeMode.OUTPUT_INDEX)
+        makeshare_op.run()
+        makeshare_op.run()
+        mul_op.run()
+        revealshare_op.run()
     print(len(output))
     end_time = time.time()
     duration_ms = (end_time - start_time) * 1000  # ms

@@ -38,8 +38,18 @@ def on_recv_data(node_info: dict, buffer: memoryview) -> int:
     s = get_fd(node_info)
     return socket_util.recv_data(s, buffer)
 
+def shake_hand(nodeId:int):
+    node_info = dict(nodeId = 1 - nodeId)
+    s = get_fd(node_info)
+    data_buffer = bytearray(b"hello")
+    if s == _server_socket:
+        socket_util.send_data(s, memoryview(data_buffer))
+        socket_util.recv_data(s, memoryview(data_buffer))
+    else:
+        socket_util.recv_data(s, memoryview(data_buffer))
+        socket_util.send_data(s, memoryview(data_buffer))
 
-def psi_demo(is_server: bool):
+def pir_demo(is_server: bool):
     config = kcal.Config()
     config.nodeId = 0 if is_server else 1
     config.worldSize = 2
@@ -49,22 +59,31 @@ def psi_demo(is_server: bool):
 
     context = kcal.Context.create(config, on_send_data, on_recv_data)
 
-    op = kcal.create_operator(context, kcal.AlgorithmsType.PSI)
+    op = kcal.create_operator(context, kcal.AlgorithmsType.PIR)
 
-    input0 = ["4", "3", "2", "1"]
-    input1 = ["1", "3", "4", "5"]
+    key = ["aaaa", "bbbb", "cccc", "dddd"]
+    value = ["1111111", "22222222222", "33333333333", "44444444"]
+    query = ["aaaa", "abcd"]
     output = []
     import time
-    start_time = time.time()
     if is_server:
-        op.run(input0, output, kcal.TeeMode.OUTPUT_INDEX)
+        start_time = time.time()
+        op.ServerPreProcess(key, value)
+        end_time = time.time()
+        duration_ms = (end_time - start_time) * 1000  # ms
+        print(f"ServerPreprocess run cost: {duration_ms:.2f} ms")
+        start_time = time.time()
+        op.ServerAnswer()
+        end_time = time.time()
+        duration_ms = (end_time - start_time) * 1000  # ms
+        print(f"ServerAnswer run cost: {duration_ms:.2f} ms")
     else:
-        op.run(input1, output, kcal.TeeMode.OUTPUT_INDEX)
-    print(len(output))
-    end_time = time.time()
-    duration_ms = (end_time - start_time) * 1000  # ms
-    print(f"run cost: {duration_ms:.2f} ms")
-
+        start_time = time.time()
+        op.ClientQuery(query, output, kcal.DummyMode.NORMAL)
+        end_time = time.time()
+        duration_ms = (end_time - start_time) * 1000  # ms
+        print(f"ClientQuery run cost: {duration_ms:.2f} ms")
+        print("query result: ", output)
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="KCAL python wrapper demo.")
@@ -82,11 +101,11 @@ def main(argv=None):
     global _client_socket, _server_socket
     if args.server:
         _client_socket = socket_util.init_server(args.host, args.port)
-        psi_demo(True)
+        pir_demo(True)
         _client_socket.close()
     elif args.client:
         _server_socket = socket_util.init_client(args.host, args.port)
-        psi_demo(False)
+        pir_demo(False)
         _server_socket.close()
 
 

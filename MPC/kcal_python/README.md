@@ -92,7 +92,7 @@ pip install *.whl --force-reinstall
 为方便演示, 这里仅在一台机器上进行测试, 实际情况在两台分离部署的`cvm`内进行测试, 将`test`目录直接拷贝进`cvm`内的`/home/admin/dev`下, 连接`cvm`, 并打开两个终端, 分别运行以下指令, 即可进行`PSI`的测试, 数据量按需修改`test/demo.py`文件
 
 ```bash
+# 若使用虚拟环境，需要 export PYTHONPATH=path/to/myvenv/lib64/python3.11/site-packfages:$PYTHONPATH
 python test/demo.py --server --host "127.0.0.1" -p 9090
 python test/demo.py --client --host "127.0.0.1" -p 9090
 ```
-

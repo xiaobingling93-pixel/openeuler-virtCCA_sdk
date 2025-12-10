@@ -32,6 +32,7 @@
     # clone 仓库，并创建一个本地分支
     git clone --branch "v0.6.0.dev250507" https://github.com/secretflow/psi.git
 
+
     # 进到蚂蚁 psi 目录下
     cd /home/admin/dev/psi
     git switch -c kcal-on-v0.6.0
@@ -61,9 +62,11 @@
     # bazel build //... --copt=-Wno-error=sign-compare -c opt
 
     # 创建临时目录 bin，存放 main 可执行文件
+    # 编译完成后，会在 bazel-bin/psi/apps/psi_launcher 目录下生成 main 可执行文件
     mkdir bin
     cp ./bazel-bin/psi/apps/psi_launcher/main ./bin/main
     ```
+
 
 
 
@@ -178,6 +181,7 @@ scp /tmp/receiver_input.csv \
 配置文件已在`patch`中提供，只需修改下列说明的部分进行测试
 
 下面以`kcal_sender.json`为例
+下面以`kcal_sender.json`为例
 
 ```json
 {
@@ -190,11 +194,13 @@ scp /tmp/receiver_input.csv \
       },
       "role": "ROLE_SENDER",
       "broadcast_result": true
+      "broadcast_result": true
     },
     "input_config": {
       "type": "IO_TYPE_FILE_CSV",
       "path": "/tmp/sender_input.csv"					// 当前参与方运行 psi 算法的数据输入文件位置，按需修改
     },
+    "output_config": {
     "output_config": {
       "type": "IO_TYPE_FILE_CSV",						// 文件类型不需修改
       "path": "/tmp/kcal_sender_output.csv"				// 两方运行完 psi 算法后，最终交集文件的输出位置，按需修改
@@ -242,10 +248,12 @@ scp /tmp/receiver_input.csv \
 
 ```bash
 cd /home/admin/dev/psi
-
+# 调用已经复制到./bin/下的可执行程序 main，指定使用的kcal包的lib路径
 # 参与方 receiver
 LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/path/to/kcal/lib ./bin/main --config $(pwd)/examples/psi/config/kcal_receiver.json
+LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/path/to/kcal/lib ./bin/main --config $(pwd)/examples/psi/config/kcal_receiver.json
 # 参与方 sender
+LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/path/to/kcal/lib ./bin/main --config $(pwd)/examples/psi/config/kcal_sender.json
 LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/path/to/kcal/lib ./bin/main --config $(pwd)/examples/psi/config/kcal_sender.json
 ```
 
@@ -330,7 +338,9 @@ LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/path/to/kcal/lib ./bin/main --config $(pwd)/
 cd /home/admin/dev/psi
 # 服务端
 LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/path/to/kcal/lib ./bin/main --config $(pwd)/examples/pir/config/kcal_pir_sender.json
+LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/path/to/kcal/lib ./bin/main --config $(pwd)/examples/pir/config/kcal_pir_sender.json
 # 客户端
+LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/path/to/kcal/lib ./bin/main --config $(pwd)/examples/pir/config/kcal_pir_receiver.json
 LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/path/to/kcal/lib ./bin/main --config $(pwd)/examples/pir/config/kcal_pir_receiver.json
 ```
 
