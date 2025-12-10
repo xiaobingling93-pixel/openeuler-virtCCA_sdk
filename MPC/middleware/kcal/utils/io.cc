@@ -34,13 +34,31 @@ int DataHelper::BuildDgString(const std::vector<std::string> &strings, DG_String
     return DG_SUCCESS;
 }
 
+void DataHelper::ReleaseDgPairList(DG_PairList *pairList)
+{
+    if (pairList) {
+        for (size_t i = 0; i < pairList->size; i++) {
+            if (pairList->dgPair[i].key) {
+                delete[] pairList->dgPair[i].key->str;
+                delete pairList->dgPair[i].key;
+            };
+            if (pairList->dgPair[i].value) {
+                delete[] pairList->dgPair[i].value->str;
+                delete pairList->dgPair[i].value;
+            };
+        }
+        delete [] pairList->dgPair;
+        pairList = nullptr;
+    }
+}
+
 void DataHelper::ReleaseOutput(DG_TeeOutput **output)
 {
     if (output == nullptr || *output == nullptr) {
         return;
     }
     if ((*output)->dataType == MPC_STRING && (*output)->data.strings != nullptr) {
-        for (int i = 0; i < (*output)->size; ++i) {
+        for (size_t i = 0; i < (*output)->size; ++i) {
             delete[] (*output)->data.strings[i].str;
         }
         delete[] (*output)->data.strings;
@@ -142,4 +160,10 @@ KcalInput *KcalInput::Create()
     return input.release();
 }
 
+KcalPairList *KcalPairList::Create()
+{
+    std::unique_ptr<DG_PairList> pairList = std::make_unique<DG_PairList>();
+    std::unique_ptr<KcalPairList> input = std::make_unique<KcalPairList>(pairList.release());
+    return input.release();
+}
 } // namespace kcal::io

@@ -27,6 +27,7 @@ public:
 
     static void ReleaseOutput(DG_TeeOutput **output);
     static void ReleaseMpcShare(DG_MpcShare **share);
+    static void ReleaseDgPairList(DG_PairList *pairList);
 };
 
 class KcalMpcShare {
@@ -85,6 +86,17 @@ private:
 
 using KcalOutput = KcalInput;
 
+class KcalPairList {
+public:
+    KcalPairList() = default;
+    explicit KcalPairList(DG_PairList *pairList) : pairList_(pairList) {};
+    ~KcalPairList() {DataHelper::ReleaseDgPairList(pairList_);};
+    static KcalPairList *Create();
+    DG_PairList *Get() {return pairList_;};
+    DG_PairList **GetSecondaryPointer() {return &pairList_;};
+private:
+    DG_PairList *pairList_ = nullptr;
+};
 } // namespace kcal::io
 
 #endif // KCAL_MIDDLEWARE_IO_H

@@ -28,41 +28,41 @@ class Add(Arithmetic):
 class AlgorithmsType:
     """
     Members:
-    
+
       PSI
-    
+
       PIR
-    
+
       MAKE_SHARE
-    
+
       REVEAL_SHARE
-    
+
       ADD
-    
+
       SUB
-    
+
       MUL
-    
+
       DIV
-    
+
       LESS
-    
+
       LESS_EQUAL
-    
+
       GREATER
-    
+
       GREATER_EQUAL
-    
+
       EQUAL
-    
+
       NO_EQUAL
-    
+
       SUM
-    
+
       AVG
-    
+
       MAX
-    
+
       MIN
     """
     ADD: typing.ClassVar[AlgorithmsType]  # value = <AlgorithmsType.ADD: 5>
@@ -213,9 +213,9 @@ class Div(Arithmetic):
 class DummyMode:
     """
     Members:
-    
+
       NORMAL
-    
+
       DUMMY
     """
     DUMMY: typing.ClassVar[DummyMode]  # value = <DummyMode.DUMMY: 1>
@@ -418,7 +418,7 @@ class Pir(OperatorBase):
     def ServerAnswer(self) -> int:
         ...
 
-    def ServerPreProcess(self, arg0: DG_PairList) -> int:
+    def ServerPreProcess(self, arg0: Input, arg1: Input) -> int:
         ...
 
     def __init__(self) -> None:
@@ -444,9 +444,9 @@ class RevealShare(Arithmetic):
 class ShareType:
     """
     Members:
-    
+
       FIX_POINT
-    
+
       NON_FIX_POINT
     """
     FIX_POINT: typing.ClassVar[ShareType]  # value = <ShareType.FIX_POINT: 0>
@@ -512,9 +512,9 @@ class Sum(Arithmetic):
 class TeeMode:
     """
     Members:
-    
+
       OUTPUT_INDEX
-    
+
       OUTPUT_STRING
     """
     OUTPUT_INDEX: typing.ClassVar[TeeMode]  # value = <TeeMode.OUTPUT_INDEX: 1>

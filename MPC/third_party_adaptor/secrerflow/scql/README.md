@@ -4,7 +4,7 @@
 
 ## 前置条件
 1. 需获取 `kcal` 包，含 `include`和`lib`目录，获取链接: [https://www.hikunpeng.com/developer/download](https://www.hikunpeng.com/developer/download)
-2. 需要`bazel`编译构建工具，编译环境依赖参考: [devtools/dockerfiles/release-ci-aarch64.DockerFile at main · secretflow/devtools](https://github.com/secretflow/devtools/blob/main/dockerfiles/release-ci-aarch64.DockerFile)
+2. 需要`bazel`编译构建工具，编译环境依赖参考: [devtools/dockerfiles/release-ci-aarch64.DockerFile at main · secretflow/devtools](https://github.com/secretflow/devtools/blob/main/dockerfiles/release-ci-aarch64.DockerFile)，构建中的工具链 (如gcc) 也需要切换使用bazel编译环境依赖的，通常在 /root/miniforge3/bin/conda 下
 3. 运行环境为`virtCCA cvm，前提是用户已经启动两个 virtCCA 的机密虚机（cvm1、cvm2）`
 
 ## 中间件使能和部署步骤
@@ -25,11 +25,11 @@
 
    ```bash
    cd /home/admin/dev
-   
+
    # clone 0.9.3b1 tag 的代码
    git clone --branch "0.9.3b1" https://github.com/secretflow/scql.git
    cd scql && git switch -c local
-   
+
    # 应用 patch
    git apply /home/admin/dev/virtCCA_sdk/MPC/third_party_adaptor/secrerflow/scql/patches/kcal.patch
    ```
@@ -40,7 +40,7 @@
    # 假设 kcal 库已下载解压在 /opt/kcal 目录下
    cp -r /opt/kcal/include /home/admin/dev/scql/engine/third_party/kcal/
    cp -r /opt/kcal/lib /home/admin/dev/scql/engine/third_party/kcal/
-   
+
    # 引入中间件
    cp -r /home/admin/dev/virtCCA_sdk/MPC/middleware /home/admin/dev/scql/engine/third_party/kcal_middleware
    ```
@@ -49,10 +49,11 @@
 
    ```bash
    cd /home/admin/dev/scql
-   
+
    # -DEXECUTE_IN_KCAL, 该宏为使能 kcal 加速库
    bazel build //engine/exe:scqlengine -c opt --copt=-DEXECUTE_IN_KCAL --define disable_tcmalloc=true
-   
+   # 若需要指定编译器参考
+   # bazel build //engine/exe:scqlengine --compiler=/root/miniforge3/bin/gcc -c opt --copt=-DEXECUTE_IN_KCAL --define disable_tcmalloc=true
    # 创建临时目录 bin，存放 scqlengine 可执行文件
    mkdir bin; cp ./bazel-bin/engine/exe/scqlengine ./bin/
    ```
@@ -75,6 +76,7 @@
 
      替换实际的部署`virtCCA`机器的ip，\<virtCCA engine alice ip\>
 
+     若查询时超时报错，可以将 timeout 的 120s 调大以避免超时报错
      ```yaml
      intra_server:
        protocol: http
@@ -148,7 +150,7 @@
      ```bash
      # alice 下的配置文件修改 mysql 的 host ip 为宿主机 ip <parent host>
      --embed_router_conf={"datasources":[{"id":"ds001","name":"mysql db","kind":"MYSQL","connection_str":"db=alice;user=root;password=__MYSQL_ROOT_PASSWD__;host=<parent host>;auto-reconnect=true"}],"rules":[{"db":"*","table":"*","datasource_id":"ds001"}]}
-     
+
      # bob 下的配置文件修改 mysql 的 host ip 为宿主机 ip <parent host>
      --embed_router_conf={"datasources":[{"id":"ds001","name":"mysql db","kind":"MYSQL","connection_str":"db=alice;user=root;password=__MYSQL_ROOT_PASSWD__;host=mysql;auto-reconnect=true"}],"rules":[{"db":"*","table":"*","datasource_id":"ds001"}]}
      ```
@@ -219,18 +221,18 @@
   ```bash
   #!/bin/bash
   set -e
-  
+
   cur_dir=$(cd $(dirname "$0") && pwd) && cd $cur_dir
-  
+
   sender_ip="xxx.xxx.xxx.xxx"
   receiver_ip="xxx.xxx.xxx.xxx"
   work_dir="/home/admin"
-  
+
   chmod +x ${cur_dir}/bin/*
-  
+
   ssh -t root@${sender_ip} "mkdir -p /home/admin/bin /home/admin/engine/conf /home/admin/tls /home/admin/lib"
   ssh -t root@${receiver_ip} "mkdir -p /home/admin/bin /home/admin/engine/conf /home/admin/tls /home/admin/lib"
-  
+
   LIB_FILES=(
     /opt/kcal/lib/libdata_guard_common.so
     /opt/kcal/lib/libdata_guard.so
@@ -239,7 +241,7 @@
     /opt/kcal/lib/libmpc_tee.so
     /opt/kcal/lib/libsecurec.so
   )
-  
+
   # engine alice 部署
   scp ${cur_dir}/bin/scqlengine root@${sender_ip}:${work_dir}/bin/
   scp ${cur_dir}/examples/p2p-tutorial/engine/alice/conf/gflags.conf root@${sender_ip}:${work_dir}/engine/conf/gflags.conf
@@ -285,17 +287,34 @@ bazel build //engine/exe:scqlengine -c opt --define disable_tcmalloc=true
 
    + 这里修改教程第一步`create project`命令，以及后面授权 CCL`grant xxx` 命令，其它保持不变
 
+```bash
+# 创建工程和表
+./brokerctl create project --project-id "demo" --project-conf '{"spu_runtime_cfg":{"protocol":"SEMI2K","field":"FM64","fxp_fraction_bits":"3","max_concurrency":"16"},"session_expire_seconds":"86400"}' --host http://localhost:8081
+./brokerctl get project --host http://localhost:8081
+./brokerctl invite bob --project-id "demo" --host http://localhost:8081
+./brokerctl get invitation --host http://localhost:8082
+# bob decide to join the project with invitation-id 1
+./brokerctl process invitation 1 --response "accept" --project-id "demo" --host http://localhost:8082
+# check the project, its members should contain alice and bob
+./brokerctl get project --host http://localhost:8081
+# create table for alice
+./brokerctl create table ta --project-id "demo" --columns "ID string, credit_rank int, income int, age int" --ref-table alice.user_credit --db-type mysql --host http://localhost:8081
+# check the table ta
+./brokerctl get table ta --host http://localhost:8081 --project-id "demo"
+# create table for bob
+./brokerctl create table tb --project-id "demo" --columns "ID string, order_amount double, is_active int" --ref-table bob.user_stats --db-type mysql --host http://localhost:8082
+# check the table tb
+./brokerctl get table tb --host http://localhost:8082 --project-id "demo"
+```
+
    ```bash
-   # 创建工程修改
-   ./brokerctl create project --project-id "demo" --project-conf '{"spu_runtime_cfg":{"protocol":"SEMI2K","field":"FM64","fxp_fraction_bits":"10","max_concurrency":"16"},"session_expire_seconds":"86400"}' --host http://localhost:8081
-   
    # CCL 授权调整
    # alice set CCL for table ta
    ./brokerctl grant alice PLAINTEXT --project-id "demo" --table-name ta --column-name ID --host http://localhost:8081
    ./brokerctl grant alice PLAINTEXT --project-id "demo" --table-name ta --column-name credit_rank --host http://localhost:8081
    ./brokerctl grant alice PLAINTEXT --project-id "demo" --table-name ta --column-name income --host http://localhost:8081
    ./brokerctl grant alice PLAINTEXT --project-id "demo" --table-name ta --column-name age --host http://localhost:8081
-   
+
    ./brokerctl grant bob PLAINTEXT_AFTER_JOIN --project-id "demo" --table-name ta --column-name ID --host http://localhost:8081
    ./brokerctl grant bob PLAINTEXT_AFTER_AGGREGATE --project-id "demo" --table-name ta --column-name credit_rank --host http://localhost:8081
    ./brokerctl grant bob PLAINTEXT_AFTER_COMPARE --project-id "demo" --table-name ta --column-name income --host http://localhost:8081
@@ -304,16 +323,16 @@ bazel build //engine/exe:scqlengine -c opt --define disable_tcmalloc=true
    ./brokerctl grant bob PLAINTEXT --project-id "demo" --table-name tb --column-name ID --host http://localhost:8082
    ./brokerctl grant bob PLAINTEXT --project-id "demo" --table-name tb --column-name order_amount --host http://localhost:8082
    ./brokerctl grant bob PLAINTEXT --project-id "demo" --table-name tb --column-name is_active --host http://localhost:8082
-   
+
    ./brokerctl grant alice PLAINTEXT_AFTER_JOIN --project-id "demo" --table-name tb --column-name ID --host http://localhost:8082
    ./brokerctl grant alice PLAINTEXT_AFTER_AGGREGATE --project-id "demo" --table-name tb --column-name is_active --host http://localhost:8082
    ./brokerctl grant alice PLAINTEXT_AFTER_COMPARE --project-id "demo" --table-name tb --column-name order_amount --host http://localhost:8082
    ```
-   
+
 2. 执行查询
-   
-这里只是演示使能`kcal`后的效果，正确性对比可以去掉`kcal`的使能然后替换`virtCCA`内部的`scqlengine`重新执行下面的`sql`语句，输出结果保持一致
-   
+
+这里只是演示使能`kcal`后的效果，正确性对比可以去掉`kcal`的使能然后替换`virtCCA`内部的`scqlengine`重新执行下面的`sql`语句，输出结果保持一致。若有超时错误，将 "./brokerctl ... --timeout 300" 调大， 单位是秒。
+
 ```bash
 ./brokerctl run "SELECT (ta.income + tb.order_amount) < tb.order_amount FROM ta INNER JOIN tb ON ta.ID = tb.ID;"  --project-id "demo" --host http://localhost:8081 --timeout 300
 ./brokerctl run "SELECT (ta.income - tb.order_amount) < tb.order_amount FROM ta INNER JOIN tb ON ta.ID = tb.ID;"  --project-id "demo" --host http://localhost:8081 --timeout 300
@@ -330,22 +349,3 @@ bazel build //engine/exe:scqlengine -c opt --define disable_tcmalloc=true
 ./brokerctl run "SELECT MAX(ta.credit_rank * tb.is_active) AS max FROM ta INNER JOIN tb ON ta.ID = tb.ID;"  --project-id "demo" --host http://localhost:8081 --timeout 300
 ./brokerctl run "SELECT MIN(ta.credit_rank * tb.is_active) AS min FROM ta INNER JOIN tb ON ta.ID = tb.ID;"  --project-id "demo" --host http://localhost:8081 --timeout 300
 ```
-   
-   
-   
-   
-   
-   
-   
-   
-   
-   
-   
-   
-   
-   
-   
-   
-   
-   
-   
