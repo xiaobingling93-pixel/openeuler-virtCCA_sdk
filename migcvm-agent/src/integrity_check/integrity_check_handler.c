@@ -2,6 +2,7 @@
  * Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
  */
 
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -10,6 +11,8 @@
 #include <errno.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <semaphore.h>
+#include <stdatomic.h>
 #include <pthread.h>
 #include <sys/mman.h>
 #include <sys/epoll.h>
@@ -21,37 +24,104 @@
 #include <rats-tls/claim.h>
 #include "integrity_check_handler.h"
 
-#define TSI_MAGIC 'T'
-#define QUEUE_IOCTL_MAGIC 'q'
-#define MIGVM_DESTROY_QUEUE _IO(QUEUE_IOCTL_MAGIC, 2)
-#define MIGVM_CREATE_QUEUE _IOWR(QUEUE_IOCTL_MAGIC, 1, unsigned long)
-#define TMM_GET_MIGVM_MEM_CHECKSUM _IOW(TSI_MAGIC, 4, unsigned long)
-
 #define TSI_SUCCESS 0
 #define TSI_ERROR_INPUT 1
 #define TSI_ERROR_STATE 2
 #define TSI_INCOMPLETE 3
 #define TSI_ERROR_FAILED 4
+#define TSI_NOTIFY 5
+
+#define SLAVE_THREAD_NUM 15
+#define TOTAL_CPU_COUNT 16
+#define MASTER_THREAD_ID 16
 
 #define MAX_EVENTS 64
 #define EPOLL_SIZE 1023
-#define TSI_PATH "/dev/tsi"
-#define DEVICE_PATH "/dev/migvm_queue_mem"
 
-#define WAIT_TIME_OUT 500000
 #define CLOSE_LENGTH 12
 #define RECV_CLOSE_REQ (-2)
+#define WAIT_TIME_OUT 500000
 
-#define QUEUE_SIZE (64 * 1024 - 8) // (64KB- 8B) queue size
+#define QUEUE_SIZE (64 * 1024 - 16) // (64KB - 16B) queue size
 #define PAGE_SIZE (4 * 1024)
 #define _64K_SIZE (16 * PAGE_SIZE)
 
+#define TOTAL_DFX_COUNT 50
+
+#define TSI_PATH "/dev/tsi"
+#define DEVICE_PATH "/dev/migvm_queue_mem"
+
 typedef struct {
-    uint8_t *send_buf;  // Send buffer base address
-    uint8_t *recv_buf;  // Receive buffer base address
+    uint8_t *send_buf;      // Send buffer base address
+    uint8_t *recv_buf;      // Receive buffer base address
     uint64_t *send_offset;  // Send queue head pointer (offset)
+    uint64_t  *send_len;    // Send len (send all data in the queue at once)
     uint64_t *recv_offset;  // Receive queue head pointer (offset)
 } mig_integrity_share_queue_s;
+
+typedef struct {
+    unsigned long guest_rd;
+    unsigned long thread_id;
+} virtcca_migvm_checksum_info_t;
+
+typedef struct {
+    int tsi_fd;
+    int thread_id;
+    unsigned long guest_rd;
+    pthread_t thread;
+    sem_t wake_sem;
+    bool thread_created;
+    void *parent;
+} thread_args_t;
+
+typedef struct {
+    unsigned long tsi_start[TOTAL_DFX_COUNT];
+    unsigned long tsi_end[TOTAL_DFX_COUNT];
+    unsigned long type[TOTAL_DFX_COUNT];
+    unsigned long tsi_index;
+    bool should_exit;
+    thread_args_t slave_args[SLAVE_THREAD_NUM];
+} io_thread_context_t;
+
+#define TSI_MAGIC 'T'
+#define QUEUE_IOCTL_MAGIC 'q'
+#define MIGVM_DESTROY_QUEUE _IO(QUEUE_IOCTL_MAGIC, 2)
+#define MIGVM_CREATE_QUEUE _IOWR(QUEUE_IOCTL_MAGIC, 1, unsigned long)
+#define TMM_GET_MIGVM_MEM_CHECKSUM _IOW(TSI_MAGIC, 4, virtcca_migvm_checksum_info_t)
+
+unsigned long get_timestamp_ns(void)
+{
+    unsigned long val, freq;
+    asm volatile("mrs %0, cntvct_el0" : "=r" (val));
+    asm volatile("mrs %0, cntfrq_el0" : "=r" (freq));
+
+    /* should never happen */
+    if (freq == 0)
+        return 0;
+
+    return 1000000000 / freq * val;
+}
+
+void record_tsi_time(io_thread_context_t *ctx, unsigned long t1, unsigned long t2, unsigned long type)
+{
+    unsigned long i = ctx->tsi_index;
+    ctx->tsi_start[i] = t1;
+    ctx->tsi_end[i] = t2;
+    ctx->type[i] = type;
+    ctx->tsi_index = (i + 1) % TOTAL_DFX_COUNT;
+}
+
+void show_tsi_time(io_thread_context_t *ctx)
+{
+    unsigned long j = ctx->tsi_index;
+    for (unsigned long i = 0; i < TOTAL_DFX_COUNT; i++) {
+        if (j == 0)
+            j = TOTAL_DFX_COUNT - 1;
+        else
+            j = j - 1;
+        printf("before notify tsi start:%lu end:%lu type:%lu\n", ctx->tsi_start[j], ctx->tsi_end[j], ctx->type[j]);
+    }
+}
 
 // Dynamically add EPOLLOUT when data needs to be sent
 static int enable_epollout(int epoll_fd, int fd)
@@ -74,19 +144,19 @@ static int disable_epollout(int epoll_fd, int fd)
 static int is_recv_queue_full(mig_integrity_share_queue_s *q, uint32_t len)
 {
     uint64_t used = *(q->recv_offset);
-    return (len > (QUEUE_SIZE - used)); // Check if remaining space is sufficient
+    // Check if remaining space is sufficient
+    return (len > (QUEUE_SIZE - used));
 }
 
 static int enqueue_recv_data(mig_integrity_share_queue_s *q, uint8_t *buffer, uint32_t len)
 {
-    // If it exceeds the end, there is a program issue
     if (*(q->recv_offset) >= QUEUE_SIZE) {
         return -1;
     }
 
     // Direct linear write (no wrap-around handling needed)
     memcpy(q->recv_buf + *(q->recv_offset), buffer, len * sizeof(uint8_t));
-    // Updatae receive offset
+    // Update receive offset
     *(q->recv_offset) += len;
 
     if (*(q->recv_offset) >= QUEUE_SIZE) {
@@ -99,35 +169,20 @@ static int send_queue_data(rats_tls_handle *handle, mig_integrity_share_queue_s 
 {
     int ret = 0;
     uint64_t send_len = *(q->send_offset);
-    size_t len = sizeof(send_len);
+    uint8_t *send_addr = q->send_buf -sizeof(uint64_t);
 
     if (send_len > QUEUE_SIZE) {
         return -1;
     }
 
-    // 1. Send data len
     size_t total_sent = 0;
-    uint8_t *len_ptr = (uint8_t*)&send_len;
-    
-    while (total_sent < sizeof(uint64_t)) {
-        size_t remaining = sizeof(uint64_t) - total_sent;
-        ret = rats_tls_transmit(*handle, len_ptr + total_sent, &remaining);
-        if (ret != RATS_TLS_ERR_NONE) {
-            printf("Failed to send len %#x\n", ret);
-            return -1;
-        }
-        if (remaining == 0) {
-            continue;
-        }
-        total_sent += remaining;
-    }
-
-    total_sent = 0;
+    *(q->send_len) = send_len;
+    send_len = send_len + sizeof(uint64_t);
     while (total_sent < send_len) {
         size_t remaining = send_len - total_sent;
-        ret = rats_tls_transmit(*handle, q->send_buf + total_sent, &remaining);
+        ret = rats_tls_transmit(*handle, send_addr + total_sent, &remaining);
         if (ret != RATS_TLS_ERR_NONE) {
-            printf("Failed to send data %#x\n", ret);
+            printf("Failed to send data %x\n", ret);
             return -1;
         }
         if (remaining == 0) {
@@ -136,31 +191,42 @@ static int send_queue_data(rats_tls_handle *handle, mig_integrity_share_queue_s 
         total_sent += remaining;
     }
 
-    // 3. Clear the send area and reset the offset
-    memset(q->send_buf, 0, send_len * sizeof(uint8_t));
+    memset(send_addr, 0, send_len * sizeof(uint8_t));
     *(q->send_offset) = 0;
     return 0;
 }
 
-static int handle_send_event(rats_tls_handle *handle, mig_integrity_share_queue_s *queue)
+static int handle_send_event(rats_tls_handle *handle, int epoll_fd, int socket_fd, mig_integrity_share_queue_s *queue)
 {
-    if (*(queue->send_offset) == 0) {
-        return 0;
+    int ret = 0;
+
+    if (enable_epollout(epoll_fd, socket_fd) < 0) {
+        printf("Failed to enable epollout\n");
+        return -1;
     }
 
-    return send_queue_data(handle, queue);
+    ret = send_queue_data(handle, queue);
+    if (ret < 0) {
+        return ret;
+    }
+
+    if (disable_epollout(epoll_fd, socket_fd) < 0) {
+        printf("Failed to disable epollout\n");
+        return -1;
+    }
+    return ret;
 }
 
 static int handle_recv_event(int epoll_fd, int socket_fd, int tsi_fd,
-    integrity_socket_t *params, mig_integrity_share_queue_s *queue)
+    integrity_socket_t *params, mig_integrity_share_queue_s *queue, int master_thread_id)
 {
     int ret = 0;
-    int tsi_ret = TSI_INCOMPLETE;
     uint64_t recv_len = 0;
-    size_t len = sizeof(uint64_t);
-
     size_t total_received = 0;
+    int tsi_ret = TSI_INCOMPLETE;
     uint8_t *len_ptr = (uint8_t*)&recv_len;
+    virtcca_migvm_checksum_info_t checksum_info;
+
     while (total_received < sizeof(uint64_t)) {
         size_t remaining = sizeof(uint64_t) - total_received;
         ret = rats_tls_receive(*params->handle, len_ptr + total_received, &remaining);
@@ -181,25 +247,16 @@ static int handle_recv_event(int epoll_fd, int socket_fd, int tsi_fd,
 
     while (is_recv_queue_full(queue, recv_len)) {
         if (*(queue->send_offset) > 0) {
-            if (enable_epollout(epoll_fd, socket_fd) < 0) {
-                printf("Recv event: Failed to enable epollout\n");
-                return -1;
-            }
-
-            if (handle_send_event(params->handle, queue) < 0) {
+            if (handle_send_event(params->handle, epoll_fd, socket_fd, queue) < 0) {
                 printf("Recv event: Failed to send data\n");
                 return -1;
             }
-
-            if (disable_epollout(epoll_fd, socket_fd) < 0) {
-                printf("Recv event: Failed to disable epollout\n");
-                return -1;
-            }
         }
-
-        tsi_ret = ioctl(tsi_fd, TMM_GET_MIGVM_MEM_CHECKSUM, &params->guest_rd);
+        checksum_info.guest_rd = params->guest_rd;
+        checksum_info.thread_id = master_thread_id;
+        tsi_ret = ioctl(tsi_fd, TMM_GET_MIGVM_MEM_CHECKSUM, &checksum_info);
         if (tsi_ret == TSI_ERROR_FAILED) {
-            return ret;
+            return tsi_ret;
         }
     }
 
@@ -236,19 +293,21 @@ static int handle_recv_event(int epoll_fd, int socket_fd, int tsi_fd,
     if (enqueue_ret < 0) {
         return enqueue_ret;
     }
+
     return tsi_ret;
 }
 
-static void close_connection(int epoll_fd, int socket_fd, rats_tls_handle *handle)
+static void close_connection(int epoll_fd, int socket_fd)
 {
-    shutdown(socket_fd, SHUT_WR);
+    if (socket_fd >= 0) {
+        shutdown(socket_fd, SHUT_WR);
 
-    struct timeval tv = {2, 0};
-    setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        struct timeval tv = {2, 0};
+        setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-    close(socket_fd);
-    if (epoll_fd >= 0) {
-        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, socket_fd, NULL);
+        if (epoll_fd >= 0) {
+            epoll_ctl(epoll_fd, EPOLL_CTL_DEL, socket_fd, NULL);
+        }
     }
 }
 
@@ -276,45 +335,224 @@ static int send_close_notification(rats_tls_handle *handle)
     return 0;
 }
 
+void* slave_io_thread(void* arg) {
+    thread_args_t *args = (thread_args_t *)arg;
+    virtcca_migvm_checksum_info_t checksum_info;
+    int ret;
+
+    printf("Thread %d started with rd=%lx init\n", args->thread_id, args->guest_rd);
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(args->thread_id, &cpuset);
+    if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset)) {
+        perror("pthread_setaffinity_np");
+        return NULL;
+    }
+
+    while(!((io_thread_context_t *)args->parent)->should_exit) {
+	sem_wait(&args->wake_sem);
+        checksum_info.guest_rd = args->guest_rd;
+        checksum_info.thread_id = args->thread_id;
+        ret = TSI_INCOMPLETE;
+	while(ret != TSI_SUCCESS) {
+	    ret = ioctl(args->tsi_fd, TMM_GET_MIGVM_MEM_CHECKSUM, &checksum_info);
+            if (ret == TSI_ERROR_INPUT || ret == TSI_ERROR_FAILED) {
+                printf("Thread %d with rd=%lx checksum failed\n", args->thread_id, args->guest_rd);
+                ((io_thread_context_t *)args->parent)->should_exit = true;
+                break;
+            }
+	}
+    }
+
+    printf("slave %d thread with rd=%lx exit\n", args->thread_id, args->guest_rd);
+    return NULL;
+}
+
+static int create_slave_thread(io_thread_context_t *ctx, integrity_socket_t *params, int tsi_fd)
+{
+    if (!ctx || !params) {
+        return -1;
+    }
+
+    ctx->should_exit = false;
+    for (int i = 0; i < SLAVE_THREAD_NUM; i++) {
+        ctx->slave_args[i].thread_id = i + 1;
+        ctx->slave_args[i].guest_rd = params->guest_rd;
+        ctx->slave_args[i].tsi_fd = tsi_fd;
+        ctx->slave_args[i].thread_created = false;
+        sem_init(&ctx->slave_args[i].wake_sem, 0, 0);
+        ctx->slave_args[i].parent = ctx;
+        if (pthread_create(&ctx->slave_args[i].thread, NULL, slave_io_thread, &ctx->slave_args[i]) != 0) {
+            printf("Failed to create slave io thread %d\n", i);
+            ctx->should_exit = true;
+            for (int j = 0; j < i; j++) {
+                sem_post(&ctx->slave_args[j].wake_sem);
+                pthread_join(ctx->slave_args[j].thread, NULL);
+                sem_destroy(&ctx->slave_args[j].wake_sem);
+                ctx->slave_args[j].thread_created = false;
+            }
+            return -1;
+        }
+        ctx->slave_args[i].thread_created = true;
+    }
+
+    usleep(100000);
+    return 0;
+}
+
+static int stop_all_slave_threads(io_thread_context_t *ctx, int count)
+{
+    if (!ctx) {
+        return -1;
+    }
+
+    printf("Stopping all slave threads...\n");
+    ctx->should_exit = true;
+    for (int i = 0; i < count; i++) {
+        if (ctx->slave_args[i].thread_created) {
+            sem_post(&ctx->slave_args[i].wake_sem);
+        }
+    }
+
+    struct timespec timeout;
+    clock_gettime(CLOCK_REALTIME, &timeout);
+    timeout.tv_sec += 2;
+
+    for (int i = 0; i < count; i++) {
+        if (ctx->slave_args[i].thread_created) {
+            int join_result = pthread_timedjoin_np(ctx->slave_args[i].thread, NULL, &timeout);
+            if (join_result != 0) {
+                printf("Thread %d join failed, forcing cancel\n", i);
+                pthread_cancel(ctx->slave_args[i].thread);
+            }
+        }
+    }
+
+    for (int i = 0; i < count; i++) {
+        if (ctx->slave_args[i].thread_created) {
+            sem_destroy(&ctx->slave_args[i].wake_sem);
+            ctx->slave_args[i].thread_created = false;
+        }
+    }
+    printf("All slave threads stopped\n");
+    return 0;
+}
+
+static int notify_all_slave_thread(io_thread_context_t *ctx)
+{
+    if (!ctx) {
+        return -1;
+    }
+
+    for (int i = 0; i < SLAVE_THREAD_NUM; i++) {
+        if (ctx->slave_args[i].thread_created && sem_post(&ctx->slave_args[i].wake_sem) != 0) {
+            printf("Failed to wakeup slave io thread %d, rd %lx\n", 
+                   ctx->slave_args[i].thread_id, ctx->slave_args[i].guest_rd);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static void cleanup_resources(integrity_socket_t *params, 
+                             mig_integrity_share_queue_s *queue,
+                             int dev_fd, int tsi_fd, int epoll_fd)
+{
+    if (params && params->handle) {
+        rtls_core_context_t *ctx = (rtls_core_context_t *)(*params->handle);
+        if (ctx) {
+            if (!params->is_server) {
+                ctx->config.custom_claims = NULL;
+                ctx->config.custom_claims_length = 0;
+            }
+        }
+        free(params->handle);
+    }
+
+    if (queue->send_len) {
+        munmap(queue->send_len, _64K_SIZE);
+        queue->send_len = NULL;
+        queue->send_buf = NULL;
+    }
+    
+    if (queue->recv_buf) {
+        munmap(queue->recv_buf, _64K_SIZE);
+        queue->recv_buf = NULL;
+    }
+
+    if (dev_fd >= 0) {
+        ioctl(dev_fd, MIGVM_DESTROY_QUEUE);
+        close(dev_fd);
+    }
+
+    if (tsi_fd >= 0) {
+        close(tsi_fd);
+    }
+
+    if (epoll_fd >= 0) {
+        close(epoll_fd);
+    }
+
+    if (params) {
+        if (params->is_server && params->connd_fd >= 0) {
+            close(params->connd_fd);
+            params->connd_fd = -1;
+        }
+
+        if (params->socket_fd >= 0) {
+            shutdown(params->socket_fd, SHUT_RDWR);
+            close(params->socket_fd);
+            params->socket_fd = -1;
+        }
+    }
+}
+
 void* io_thread(void* arg)
 {
     struct epoll_event events[MAX_EVENTS];
-    mig_integrity_share_queue_s share_queue;
+    virtcca_migvm_checksum_info_t checksum_info;
     int socket_fd = -1;
     int dev_fd = -1;
     int tsi_fd = -1;
     int epoll_fd = -1;
     int ret = TSI_SUCCESS;
+    io_thread_context_t ctx = { 0 };
+    mig_integrity_share_queue_s share_queue = {0};
+    int master_thread_id = 0;
     integrity_socket_t *params = (integrity_socket_t*)arg;
+
     if (!params) {
         printf("Params is NULL\n");
         return NULL;
     }
-    
+
+    // open device
     dev_fd = open(DEVICE_PATH, O_RDWR);
     if (dev_fd < 0) {
         printf("Failed to open device\n");
-        goto failed_alloc_dev;
+        goto cleanup;
     }
 
+    // create share mem queue
     if (ioctl(dev_fd, MIGVM_CREATE_QUEUE, &params->guest_rd) < 0) {
         printf("Failed to create first queue\n");
-        goto failed_alloc_queue;
+        goto cleanup;
     }
 
+    // mmap share memory
     share_queue.send_buf = mmap(NULL, _64K_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, dev_fd, 0);
     if (share_queue.send_buf == MAP_FAILED) {
         printf("Failed to map send_buf\n");
-        share_queue.send_buf = NULL;
-        goto failed_mmap;
+        goto cleanup;
     }
     memset(share_queue.send_buf, 0, PAGE_SIZE);
+    share_queue.send_len = (uint64_t *)share_queue.send_buf;
+    share_queue.send_buf += sizeof(uint64_t);
 
     share_queue.recv_buf = mmap(NULL, _64K_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, dev_fd, 1 * PAGE_SIZE);
     if (share_queue.recv_buf == MAP_FAILED) {
         printf("Failed to map recv_buf\n");
-        share_queue.recv_buf = NULL;
-        goto failed_mmap;
+        goto cleanup;
     }
     memset(share_queue.recv_buf, 0, PAGE_SIZE);
 
@@ -324,17 +562,21 @@ void* io_thread(void* arg)
     *(share_queue.send_offset) = 0;
     *(share_queue.recv_offset) = 0;
 
+    // open tsi device
     tsi_fd = open(TSI_PATH, O_RDWR | O_CLOEXEC);
     if (tsi_fd < 0) {
         printf("Failed to open tsi device\n");
-        goto failed_open_tsi;
+        goto cleanup;
     }
 
+    // create epoll
     epoll_fd = epoll_create1(0);
     if (epoll_fd < 0) {
-        goto failed_alloc_epoll;
+        printf("Failed to create epoll\n");
+        goto cleanup;
     }
 
+    // set socket fd
     struct epoll_event ev;
     ev.events = EPOLLIN | EPOLLERR | EPOLLHUP;
     if (params->is_server) {
@@ -342,95 +584,109 @@ void* io_thread(void* arg)
     } else {
         socket_fd = params->socket_fd;
     }
+
+    if (socket_fd < 0) {
+        printf("Invalid socket fd\n");
+        goto cleanup;
+    }
+
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, socket_fd, &ev) < 0) {
         printf("Failed to add epoll_ctl\n");
-        goto out;
+        goto cleanup;
     }
 
+    // create slave thread
+    if (create_slave_thread(&ctx, params, tsi_fd)) {
+        printf("Failed to create slave threads\n");
+        goto cleanup;
+    }
+
+    printf("IO thread started successfully\n");
+    int cpu_cores = sysconf(_SC_NPROCESSORS_ONLN);
+    if (cpu_cores > TOTAL_CPU_COUNT) {
+        master_thread_id = MASTER_THREAD_ID;
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(master_thread_id, &cpuset);
+         if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset)) {
+            perror("pthread_setaffinity_np");
+            goto cleanup;
+        }
+        printf("cpu core is more than %d\n", TOTAL_CPU_COUNT);
+    }
+
+    checksum_info.guest_rd = params->guest_rd;
+    checksum_info.thread_id = master_thread_id;
     while (1) {
-        // tsi interface
-        ret = ioctl(tsi_fd, TMM_GET_MIGVM_MEM_CHECKSUM, &params->guest_rd);
+        ret = ioctl(tsi_fd, TMM_GET_MIGVM_MEM_CHECKSUM, &checksum_info);
         if ((params->is_server == 0 && ret == TSI_ERROR_FAILED) ||
-        (params->is_server == 0 && ret == TSI_SUCCESS) || ret == TSI_ERROR_INPUT) {
+            (params->is_server == 0 && ret == TSI_SUCCESS) || 
+            ret == TSI_ERROR_INPUT) {
             send_close_notification(params->handle);
-            close_connection(epoll_fd, socket_fd, params->handle);
             usleep(WAIT_TIME_OUT);
-            goto out;
+            printf("tsi call end...\n");
+            break;
+        } else if (ret == TSI_NOTIFY) {
+            if (notify_all_slave_thread(&ctx)) {
+                printf("Failed to notify slave threads\n");
+                break;
+            }
         }
-        // send handle
+
         if (*(share_queue.send_offset) > 0) {
-            if (enable_epollout(epoll_fd, socket_fd) < 0) {
-                printf("Failed to enable epollout\n");
-                goto out;
-            }
-
-            if (handle_send_event(params->handle, &share_queue) < 0) {
+            if (handle_send_event(params->handle, epoll_fd, socket_fd, &share_queue) < 0) {
                 printf("Failed to send data\n");
-                goto out;
-            }
-
-            if (disable_epollout(epoll_fd, socket_fd) < 0) {
-                printf("Failed to disable epollout\n");
-                goto out;
+                break;
             }
         }
 
-        int timeout_ms = 100;
-        int n = epoll_wait(epoll_fd, events, MAX_EVENTS, timeout_ms);
+        int n = epoll_wait(epoll_fd, events, MAX_EVENTS, 0);
+        if (n < 0) {
+            if (errno != EINTR) {
+                printf("epoll_wait error: %s\n", strerror(errno));
+                goto cleanup;
+            }
+            continue;
+        }
+
         for (int i = 0; i < n; i++) {
-            // error handle
             if (events[i].events & (EPOLLERR | EPOLLHUP)) {
-                close(events[i].data.fd);
-                events[i].data.fd = -1;
-                epoll_ctl(epoll_fd, EPOLL_CTL_DEL, events[i].data.fd, NULL);
-                continue;
+                printf("Socket error or hang up\n");
+                goto cleanup;
             }
 
-            // receive handle
             if (events[i].events & EPOLLIN) {
-                ret = handle_recv_event(epoll_fd, socket_fd, tsi_fd, params, &share_queue);
-                if (ret < 0 || (params->is_server == 0 && ret == TSI_ERROR_FAILED) ||
-                (params->is_server == 0 && ret == TSI_SUCCESS) || ret == TSI_ERROR_INPUT) {
+                uint64_t start = get_timestamp_ns();
+                ret = handle_recv_event(epoll_fd, socket_fd, tsi_fd, params, &share_queue, master_thread_id);
+                if (ret < 0 || 
+                    (params->is_server == 0 && ret == TSI_ERROR_FAILED) ||
+                    (params->is_server == 0 && ret == TSI_SUCCESS) || 
+                    ret == TSI_ERROR_INPUT) {
                     if (ret != RECV_CLOSE_REQ) {
                         send_close_notification(params->handle);
+                        usleep(WAIT_TIME_OUT);
                     }
-                    close_connection(epoll_fd, socket_fd, params->handle);
-                    usleep(WAIT_TIME_OUT);
-                    goto out;
+                    printf("Receive close notification or event end...\n");
+                    goto cleanup;
+                } else if (ret == TSI_NOTIFY) {
+                    if (notify_all_slave_thread(&ctx)) {
+                        printf("Failed to notify slave threads\n");
+                        goto cleanup;
+                    }
                 }
+                record_tsi_time(&ctx, start, get_timestamp_ns() - start, 1);
             }
         }
     }
 
-out:
-    printf("close io thread\n");
-    close(epoll_fd);
-failed_alloc_epoll:
-    close(tsi_fd);
-failed_mmap:
-failed_open_tsi:
-    ioctl(dev_fd, MIGVM_DESTROY_QUEUE);
-failed_alloc_queue:
-    close(dev_fd);
-failed_alloc_dev:
-    if (params->handle) {
-        /* Clear custom_claims before cleanup to prevent freeing static memory */
-        rtls_core_context_t *ctx = (rtls_core_context_t *)(*params->handle);
-        if (ctx) {
-            ctx->config.custom_claims = NULL;
-            ctx->config.custom_claims_length = 0;
-            rats_tls_cleanup(*params->handle);
-        }
-        free(params->handle);
+cleanup:
+    show_tsi_time(&ctx);
+    stop_all_slave_threads(&ctx, SLAVE_THREAD_NUM);
+    close_connection(epoll_fd, socket_fd);
+    cleanup_resources(params, &share_queue, dev_fd, tsi_fd, epoll_fd);
+    if (params) {
+        free(params);
     }
-
-    if (params->is_server == true && params->connd_fd != -1)
-        close(params->connd_fd);
-
-    if (params->socket_fd != -1) {
-        shutdown(params->socket_fd, SHUT_RDWR);
-        close(params->socket_fd);
-    }
-    free(params);
+    printf("IO thread cleanup completed\n");
     return NULL;
 }

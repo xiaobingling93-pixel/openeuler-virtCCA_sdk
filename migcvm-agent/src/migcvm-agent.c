@@ -3,6 +3,7 @@
  * Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
+#define _GNU_SOURCE
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -351,6 +352,14 @@ out:
 static void* server_thread_func(void* arg)
 {
     printf("[SERVER] Server thread started\n");
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(0, &cpuset);
+    if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset)) {
+        perror("pthread_setaffinity_np");
+        return NULL;
+    }
+
     mig_agent_args* args = (mig_agent_args*)arg;
     if (mig_agent_init(args)) {
         printf("[SERVER] Error initialize mig-agent args...\n");
@@ -374,6 +383,13 @@ static void* server_thread_func(void* arg)
 static void* client_thread_func(void* arg)
 {
     printf("Client thread started\n");
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(0, &cpuset);
+    if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset)) {
+        perror("pthread_setaffinity_np");
+        return NULL;
+    }
     mig_agent_args* args = (mig_agent_args*)arg;
     struct socket_agent_cfg *socket_cfg_client = malloc(sizeof(*socket_cfg_client));
     if (!socket_cfg_client) return NULL;
@@ -514,6 +530,14 @@ int main(int argc, char *argv[])
 
     mig_agent_args *server_args = NULL;
     mig_agent_args *client_args = NULL;
+
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(0, &cpuset);
+    if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset)) {
+        perror("pthread_setaffinity_np");
+        return EXIT_FAILURE;
+    }
 
     parse_input(argc, argv, &client_ip, &server_ip);
 
