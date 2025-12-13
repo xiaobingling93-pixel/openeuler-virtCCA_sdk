@@ -340,7 +340,7 @@ void* slave_io_thread(void* arg) {
     virtcca_migvm_checksum_info_t checksum_info;
     int ret;
 
-    printf("Thread %d started with rd=%lx init\n", args->thread_id, args->guest_rd);
+    printf("Thread %d started init\n", args->thread_id);
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
     CPU_SET(args->thread_id, &cpuset);
@@ -357,14 +357,14 @@ void* slave_io_thread(void* arg) {
 	while(ret != TSI_SUCCESS) {
 	    ret = ioctl(args->tsi_fd, TMM_GET_MIGVM_MEM_CHECKSUM, &checksum_info);
             if (ret == TSI_ERROR_INPUT || ret == TSI_ERROR_FAILED) {
-                printf("Thread %d with rd=%lx checksum failed\n", args->thread_id, args->guest_rd);
+                printf("Thread %d checksum failed\n", args->thread_id);
                 ((io_thread_context_t *)args->parent)->should_exit = true;
                 break;
             }
 	}
     }
 
-    printf("slave %d thread with rd=%lx exit\n", args->thread_id, args->guest_rd);
+    printf("slave %d thread with exit\n", args->thread_id);
     return NULL;
 }
 
@@ -446,8 +446,7 @@ static int notify_all_slave_thread(io_thread_context_t *ctx)
 
     for (int i = 0; i < SLAVE_THREAD_NUM; i++) {
         if (ctx->slave_args[i].thread_created && sem_post(&ctx->slave_args[i].wake_sem) != 0) {
-            printf("Failed to wakeup slave io thread %d, rd %lx\n", 
-                   ctx->slave_args[i].thread_id, ctx->slave_args[i].guest_rd);
+            printf("Failed to wakeup slave io thread %d\n", ctx->slave_args[i].thread_id);
             return -1;
         }
     }
