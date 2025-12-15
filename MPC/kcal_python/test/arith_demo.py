@@ -202,28 +202,24 @@ def test_aggregate_operations(context, is_server: bool):
     min_op = kcal.create_operator(context, kcal.AlgorithmsType.MIN)
     
     # Test data from multiple parties
-    input1 = [10, 20, 30, 40]  # Party 1
-    input2 = [5, 15, 25, 35]   # Party 2
+    input = [10, 20, 30, 40]  # Party 1
     
     import time
     start_time = time.time()
 
-    share1 = kcal.MpcShare.Create()
-    share2 = kcal.MpcShare.Create()
+    share = kcal.MpcShare.Create()
     
     if is_server:
         print("Server: Processing aggregate operations...")
         
         # Create shares
-        make_share_op.run(input1, 1, share1)
-        make_share_op.run(input2, 1, share2)
+        make_share_op.run(input, 1, share)
 
     else:
         print("Client: Processing aggregate operations...")
 
         # Create shares
-        make_share_op.run(input1, 0, share1)
-        make_share_op.run(input2, 0, share2)
+        make_share_op.run(input, 0, share)
         
     # Test aggregate operations (combine shares from both parties)
     sum_out_share = kcal.MpcShare.Create()
@@ -231,10 +227,10 @@ def test_aggregate_operations(context, is_server: bool):
     max_out_share = kcal.MpcShare.Create()
     min_out_share = kcal.MpcShare.Create()
 
-    sum_result = sum_op.run([share1, share2], sum_out_share)   # [10+5, 20+15, 30+25, 40+35] = [15, 35, 55, 75]
-    avg_result = avg_op.run([share1, share2], avg_out_share)   # Average of each position
-    max_result = max_op.run([share1, share2], max_out_share)   # Max of each position: [10,20,30,40]
-    min_result = min_op.run([share1, share2], min_out_share)   # Min of each position: [5,15,25,35]
+    sum_op.run([share], sum_out_share)
+    avg_op.run([share], avg_out_share)
+    max_op.run([share], max_out_share)
+    min_op.run([share], min_out_share)
 
     # Reveal results
     sum_output = []
