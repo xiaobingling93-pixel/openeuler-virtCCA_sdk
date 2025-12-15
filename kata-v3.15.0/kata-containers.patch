@@ -1,4 +1,4 @@
-From cce1b78775e17756d29459cd8795076ef6dd8eb2 Mon Sep 17 00:00:00 2001
+From f04c32614af797cb41ad7a2043d1d7a1f7fc60a7 Mon Sep 17 00:00:00 2001
 From: fuju <fuju1@huawei.com>
 Date: Wed, 27 Aug 2025 08:03:56 -0400
 Subject: [PATCH] Support VirtCCA
@@ -10,12 +10,12 @@ Subject: [PATCH] Support VirtCCA
  src/runtime/Makefile                               |  22 +
  src/runtime/arch/arm64-options.mk                  |   2 +
  .../config/configuration-qemu-virtcca.toml.in      | 684 +++++++++++++++++++++
- src/runtime/pkg/govmm/qemu/qemu.go                 |  22 +-
+ src/runtime/pkg/govmm/qemu/qemu.go                 |  23 +-
  src/runtime/virtcontainers/hypervisor.go           |   5 +
  .../virtcontainers/hypervisor_linux_arm64.go       |  60 +-
  src/runtime/virtcontainers/qemu.go                 |   1 +
  src/runtime/virtcontainers/qemu_arm64.go           |  90 ++-
- 11 files changed, 874 insertions(+), 20 deletions(-)
+ 11 files changed, 875 insertions(+), 20 deletions(-)
  create mode 100644 src/runtime/config/configuration-qemu-virtcca.toml.in
 
 diff --git a/src/agent/Cargo.toml b/src/agent/Cargo.toml
@@ -856,7 +856,7 @@ index 0000000..24c025d
 +# (default: /run/kata-containers/dans)
 +dan_conf = "@DEFDANCONF@"
 diff --git a/src/runtime/pkg/govmm/qemu/qemu.go b/src/runtime/pkg/govmm/qemu/qemu.go
-index 4ff4333..66bd278 100644
+index 4ff4333..ee06bb7 100644
 --- a/src/runtime/pkg/govmm/qemu/qemu.go
 +++ b/src/runtime/pkg/govmm/qemu/qemu.go
 @@ -267,6 +267,9 @@ const (
@@ -890,7 +890,15 @@ index 4ff4333..66bd278 100644
  	}
  
  	if len(deviceParams) > 0 {
-@@ -2989,13 +2999,13 @@ func (config *Config) appendMemory() {
+@@ -1097,6 +1107,7 @@ func (netdev NetDevice) QemuParams(config *Config) []string {
+ 
+ 	if netdev.Type.QemuDeviceParam(&netdev, config) != "" {
+ 		deviceParams = netdev.QemuDeviceParams(config)
++		deviceParams = append(deviceParams, "event_idx=off")
+ 		if deviceParams != nil {
+ 			qemuParams = append(qemuParams, "-device")
+ 			qemuParams = append(qemuParams, strings.Join(deviceParams, ","))
+@@ -2989,13 +3000,13 @@ func (config *Config) appendMemory() {
  
  		memoryParams = append(memoryParams, config.Memory.Size)
  

@@ -45,9 +45,7 @@
 
     ![](figures/zh-cn_image_0000002338371705.png)
 
-7.  修改配置文件中enable\_unprivileged\_ports字段为true，sandbox\_image版本修改为3.10。
-
-    ![](figures/zh-cn_image_0000002338491549.png)
+7.  修改配置文件中sandbox\_image版本修改为3.10。
 
     ![](figures/zh-cn_image_0000002338371637.png)
 
