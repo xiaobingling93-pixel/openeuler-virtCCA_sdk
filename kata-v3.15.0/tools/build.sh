@@ -170,7 +170,6 @@ function install_containerd()
 
     # 7. Modify critical settings
     echo "Modifying core configurations..."
-    sed -i 's/enable_unprivileged_ports = false/enable_unprivileged_ports = true/' /etc/containerd/config.toml
     sed -i 's|sandbox_image = "registry.k8s.io/pause:3.8"|sandbox_image = "registry.k8s.io/pause:3.10"|' /etc/containerd/config.toml
 
     # 8. Install systemd service
