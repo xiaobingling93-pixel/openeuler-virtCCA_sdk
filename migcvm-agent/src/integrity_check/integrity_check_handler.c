@@ -349,19 +349,19 @@ void* slave_io_thread(void* arg) {
         return NULL;
     }
 
-    while(!((io_thread_context_t *)args->parent)->should_exit) {
-	sem_wait(&args->wake_sem);
+    while (!((io_thread_context_t *)args->parent)->should_exit) {
+        sem_wait(&args->wake_sem);
         checksum_info.guest_rd = args->guest_rd;
         checksum_info.thread_id = args->thread_id;
         ret = TSI_INCOMPLETE;
-	while(ret != TSI_SUCCESS) {
-	    ret = ioctl(args->tsi_fd, TMM_GET_MIGVM_MEM_CHECKSUM, &checksum_info);
+        while (ret != TSI_SUCCESS) {
+            ret = ioctl(args->tsi_fd, TMM_GET_MIGVM_MEM_CHECKSUM, &checksum_info);
             if (ret == TSI_ERROR_INPUT || ret == TSI_ERROR_FAILED) {
-                printf("Thread %d checksum failed\n", args->thread_id);
+                printf("Thread %d tsi call end, ret: %d\n", args->thread_id, ret);
                 ((io_thread_context_t *)args->parent)->should_exit = true;
                 break;
             }
-	}
+        }
     }
 
     printf("slave %d thread with exit\n", args->thread_id);
