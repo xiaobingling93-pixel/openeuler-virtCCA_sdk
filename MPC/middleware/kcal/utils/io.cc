@@ -11,6 +11,7 @@
  */
 
 #include "kcal/utils/io.h"
+
 #include <cstring>
 #include <memory>
 
@@ -47,7 +48,7 @@ void DataHelper::ReleaseDgPairList(DG_PairList *pairList)
                 delete pairList->dgPair[i].value;
             };
         }
-        delete [] pairList->dgPair;
+        delete[] pairList->dgPair;
         pairList = nullptr;
     }
 }
@@ -102,12 +103,6 @@ KcalMpcShare::~KcalMpcShare()
     }
 }
 
-KcalMpcShare *KcalMpcShare::Create()
-{
-    auto share = std::make_unique<KcalMpcShare>();
-    return share.release();
-}
-
 // ===========================
 //   KcalMpcShareSet impl
 // ===========================
@@ -119,6 +114,19 @@ KcalMpcShareSet::~KcalMpcShareSet()
             delete[] shareSet_->shareSet;
         }
         delete shareSet_;
+    }
+}
+
+KcalMpcShareSet::KcalMpcShareSet(const std::vector<std::shared_ptr<KcalMpcShare>> &shares)
+{
+    shareSet_ = new (std::nothrow) DG_MpcShareSet();
+    shareSet_->size = shares.size();
+
+    auto shareDatas = std::make_unique<DG_MpcShare[]>(shareSet_->size);
+    shareSet_->shareSet = shareDatas.release();
+
+    for (size_t i = 0; i < shares.size(); ++i) {
+        shareSet_->shareSet[i] = *shares[i]->Get();
     }
 }
 

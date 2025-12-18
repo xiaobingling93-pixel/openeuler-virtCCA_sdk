@@ -1,0 +1,58 @@
+# Others
+.envrc
+DataGuard-*
+MPC/kcal_python/include
+MPC/kcal_python/kcal
+MPC/kcal_python/Makefile
+MPC/kcal_python/dist
+MPC/kcal_python/lib
+
+# Python
+uv.lock
+.pdm-python
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment variables
+.env
+
+# Distribution / packaging
+.pytest_cache/
+.coverage
+htmlcov/
+
+# external deps
+external/
+
+# build directory
+**/build/*
+
+# AI
+CLAUDE.md
+.claude
+transcript.txt
+
+# project
+.clang
+.cache
