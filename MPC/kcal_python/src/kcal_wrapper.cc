@@ -104,7 +104,6 @@ void FeedKcalPairList(const py::list &key, const py::list &value, io::KcalPairLi
             Py_ssize_t sz;
             const char *utf8 = PyUnicode_AsUTF8AndSize(key[i].ptr(), &sz);
             if (!utf8) {
-
                 throw std::bad_alloc();
             }
             pairList->Get()->dgPair[i].key->str = strdup(utf8);
