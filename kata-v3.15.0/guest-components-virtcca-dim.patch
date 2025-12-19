@@ -1,0 +1,95 @@
+From 6c326b244f9b725f22c3b89f5b8fe027825bfe39 Mon Sep 17 00:00:00 2001
+From: xuce <xuce10@h-partners.com>
+Date: Mon, 27 Oct 2025 11:11:49 +0800
+Subject: [PATCH] virtcca support dim log
+
+Signed-off-by: xuce <xuce10@h-partners.com>
+---
+ attestation-agent/attester/src/virtcca/mod.rs | 37 ++++++++++++++++++-
+ 1 file changed, 35 insertions(+), 2 deletions(-)
+
+diff --git a/attestation-agent/attester/src/virtcca/mod.rs b/attestation-agent/attester/src/virtcca/mod.rs
+index c6207df..85ab8ca 100644
+--- a/attestation-agent/attester/src/virtcca/mod.rs
++++ b/attestation-agent/attester/src/virtcca/mod.rs
+@@ -7,6 +7,8 @@ use anyhow::*;
+ use iocuddle::{Group, Ioctl, WriteRead, Read};
+ use serde::{Deserialize, Serialize};
+ use std::path::Path;
++use std::fs::File;
++use std::io::Read as IoRead;
+ 
+ const VIRTCCA_GUEST_IOCTL: &str = "/dev/tsi";
+ const VIRTCCA_REPORT_DATA_SIZE: usize = 64;
+@@ -14,6 +16,8 @@ const MAX_DEV_CERT_SIZE: usize = 4096;
+ const GRANULE_SIZE: usize = 4096;
+ const MAX_TOKEN_GRANULE_COUNT: usize = 2;
+ 
++const DIM_LOG_FILE_PATH: &str = "/sys/kernel/security/dim/binary_runtime_measurements";
++
+ pub fn detect_platform() -> bool {
+     Path::new(VIRTCCA_GUEST_IOCTL).exists()
+ }
+@@ -21,12 +25,32 @@ pub fn detect_platform() -> bool {
+ #[derive(Debug, Default)]
+ pub struct VirtccaAttester {}
+ 
++impl VirtccaAttester {
++    fn read_dim_log_file(&self) -> Result<Vec<u8>> {
++
++        if !Path::new(DIM_LOG_FILE_PATH).exists() {
++            return Err(anyhow!("DIM log file not found at {}", DIM_LOG_FILE_PATH));
++        }
++
++        let mut file = File::open(DIM_LOG_FILE_PATH)
++            .context(format!("Failed to open DIM log file: {}", DIM_LOG_FILE_PATH))?;
++
++        let mut content = Vec::new();
++        file.read_to_end(&mut content)
++            .context(format!("Failed to read content from DIM log file: {}", DIM_LOG_FILE_PATH))?;
++
++        Ok(content)
++    }
++}
++
+ #[derive(Serialize, Deserialize)]
+ pub struct VirtccaEvidence {
+     // virtcca token
+     pub evidence_virtcca: Vec<u8>,
+     // virtcca device certificate
+-    pub dev_cert: Vec<u8>
++    pub dev_cert: Vec<u8>,
++    // dim measure log
++    pub dim_log: Vec<u8>
+ }
+ 
+ #[repr(C)]
+@@ -67,9 +91,18 @@ impl Attester for VirtccaAttester {
+                                 .ioctl(&mut fd)
+                                 .context("Get virtcca device cert failed")?;
+ 
++        let dim_log = match self.read_dim_log_file() {
++            Result::Ok(content) => content,
++            Err(err) => {
++                log::warn!("Failed to read DIM log file: {}", err);
++                Vec::new()
++            }
++        };
++
+         let evidence = VirtccaEvidence {
+             evidence_virtcca: token_cmd.token[..token_cmd.token_size as usize].to_vec(),
+             dev_cert: cert_cmd.value[..cert_cmd.size as usize].to_vec(),
++            dim_log: dim_log,
+         };
+ 
+         serde_json::to_string(&evidence).context("Serialize virtCCA evidence failed")
+@@ -88,4 +121,4 @@ mod tests {
+         let evidence = attester.get_evidence(report_data).await;
+         assert!(evidence.is_ok());
+     }
+-}
++}
+\ No newline at end of file
+-- 
+2.43.0
+
