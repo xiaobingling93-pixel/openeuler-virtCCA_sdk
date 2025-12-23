@@ -15,10 +15,34 @@
 
 namespace kcal {
 
-Pir::Pir()
+std::unique_ptr<Pir> Pir::Create(std::shared_ptr<Context> context)
 {
-    opts_ = std::make_unique<DG_PIR_Opts>();
-    *opts_ = DG_InitPirOpts();
+    auto op = std::make_unique<Pir>(std::move(context));
+
+    op->opts_ = std::make_unique<DG_PIR_Opts>();
+    *op->opts_ = DG_InitPirOpts();
+
+    int ret = op->Initialize();
+    if (ret != 0) {
+        return nullptr;
+    }
+
+    return op;
+}
+
+int Pir::Initialize()
+{
+    if (!context_ || !context_->IsValid()) {
+        return DG_ERR_MPC_INVALID_PARAM;
+    }
+
+    dgTeeCtx_ = context_->GetTeeCtx(KCAL_AlgorithmsType::PIR);
+    if (!dgTeeCtx_) {
+        return DG_ERR_MPC_INVALID_PARAM;
+    }
+
+    initialized_ = true;
+    return DG_SUCCESS;
 }
 
 Pir::~Pir()
@@ -29,15 +53,6 @@ Pir::~Pir()
         context_.reset();
         initialized_ = false;
     }
-}
-
-int Pir::GetTeeCtx(const std::shared_ptr<Context> &context)
-{
-    dgTeeCtx_ = context->GetTeeCtx(KCAL_AlgorithmsType::PIR);
-    if (!dgTeeCtx_) {
-        return DG_ERR_MPC_INVALID_PARAM;
-    }
-    return DG_SUCCESS;
 }
 
 int Pir::ServerPreProcess(DG_PairList *pairList)
@@ -51,15 +66,20 @@ int Pir::ServerPreProcess(DG_PairList *pairList)
     return opts_->offlineCalculate(dgTeeCtx_, pairList, &bucketMap_);
 }
 
-int Pir::ClientQuery(DG_TeeInput *input, DG_TeeOutput **output, DG_DummyMode dummyMode)
+int Pir::ClientQuery(const io::Input &input, io::Output &output, DG_DummyMode dummyMode)
 {
     if (!initialized_ || !dgTeeCtx_) {
         return DG_ERR_MPC_INVALID_PARAM;
     }
-    if (!input || !output) {
+    if (!input.Valid()) {
         return DG_ERR_MPC_INVALID_PARAM;
     }
-    return opts_->clientCalculate(dgTeeCtx_, dummyMode, input, output);
+    DG_TeeOutput *rawOutput = nullptr;
+    int ret = opts_->clientCalculate(dgTeeCtx_, dummyMode, input.Get(), &rawOutput);
+    if (ret == DG_SUCCESS) {
+        output.Reset(rawOutput);
+    }
+    return ret;
 }
 
 int Pir::ServerAnswer()

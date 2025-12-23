@@ -14,12 +14,36 @@
 
 namespace kcal {
 
-int MakeShare::GetTeeCtx(const std::shared_ptr<Context> &context)
+std::unique_ptr<MakeShare> MakeShare::Create(std::shared_ptr<Context> context)
 {
-    return Arithmetic::GetTeeCtx(context);
+    auto op = std::make_unique<MakeShare>(std::move(context));
+
+    op->opts_ = std::make_unique<DG_Arithmetic_Opts>();
+    *op->opts_ = DG_InitArithmeticOpts();
+
+    if (op->Initialize() != 0) {
+        return nullptr;
+    }
+
+    return op;
 }
 
-int MakeShare::Run(io::KcalInput &input, int isRecvShare, io::KcalMpcShare *&share)
+int MakeShare::Initialize()
+{
+    if (!context_ || !context_->IsValid()) {
+        return DG_ERR_MPC_INVALID_PARAM;
+    }
+
+    dgTeeCtx_ = context_->GetTeeCtx(KCAL_AlgorithmsType::ARITHMETIC);
+    if (!dgTeeCtx_) {
+        return DG_ERR_MPC_INVALID_PARAM;
+    }
+
+    initialized_ = true;
+    return DG_SUCCESS;
+}
+
+int MakeShare::Run(const io::Input &input, int isRecvShare, io::MpcShare *share)
 {
     return opts_->makeShare(dgTeeCtx_, isRecvShare, input.Get(), &share->Get());
 }

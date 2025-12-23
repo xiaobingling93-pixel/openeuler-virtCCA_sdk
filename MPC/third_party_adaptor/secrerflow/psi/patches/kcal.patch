@@ -84,7 +84,7 @@ index b4bb342..3b0eddd 100644
  
  ## Run Server with Full Mode (No Seperate Setup Stage)
 diff --git a/examples/pir/config/apsi_receiver.json b/examples/pir/config/apsi_receiver.json
-index 2c7f56b..f62177a 100644
+index 2c7f56b..3195d6d 100644
 --- a/examples/pir/config/apsi_receiver.json
 +++ b/examples/pir/config/apsi_receiver.json
 @@ -3,7 +3,7 @@
@@ -96,8 +96,15 @@ index 2c7f56b..f62177a 100644
      "log_level": "info"
    },
    "link_config": {
+@@ -19,4 +19,4 @@
+     ]
+   },
+   "self_link_party": "receiver"
+-}
++}
+\ No newline at end of file
 diff --git a/examples/pir/config/apsi_sender_online.json b/examples/pir/config/apsi_sender_online.json
-index b72e2e8..7444e5c 100644
+index b72e2e8..be9c079 100644
 --- a/examples/pir/config/apsi_sender_online.json
 +++ b/examples/pir/config/apsi_sender_online.json
 @@ -1,6 +1,6 @@
@@ -108,11 +115,18 @@ index b72e2e8..7444e5c 100644
      "db_file": "/tmp/sdb",
      "log_level": "info"
    },
+@@ -17,4 +17,4 @@
+     ]
+   },
+   "self_link_party": "sender"
+-}
++}
+\ No newline at end of file
 diff --git a/examples/pir/config/apsi_sender_setup.json b/examples/pir/config/apsi_sender_setup.json
-index e3e6991..c35b8da 100644
+index e3e6991..3f2254f 100644
 --- a/examples/pir/config/apsi_sender_setup.json
 +++ b/examples/pir/config/apsi_sender_setup.json
-@@ -1,7 +1,7 @@
+@@ -1,8 +1,8 @@
  {
    "apsi_sender_config": {
      "source_file": "/tmp/db.csv",
@@ -121,6 +135,9 @@ index e3e6991..c35b8da 100644
      "sdb_out_file": "/tmp/sdb",
      "save_db_only": true
    }
+-}
++}
+\ No newline at end of file
 diff --git a/examples/pir/config/kcal_pir_receiver.json b/examples/pir/config/kcal_pir_receiver.json
 new file mode 100644
 index 0000000..71010cf
@@ -183,34 +200,34 @@ index 9327ec7..42f2a83 100644
 +++ b/examples/psi/README.md
 @@ -7,7 +7,7 @@
  1. Compile the binary
- 
+
      ```bash
 -    bazel build //psi:main -c opt
 +    bazel build //... -c opt
      ```
- 
+
  2. Generate test data
 @@ -36,12 +36,14 @@
- 
+
      ```bash
      ./bazel-bin/psi/apps/psi_launcher/main --config $(pwd)/examples/psi/config/ecdh_receiver_recovery.json
 +    ./bazel-bin/psi/apps/psi_launcher/main --config $(pwd)/examples/psi/config/kcal_receiver.json
      ```
- 
+
      For **sender** terminal,
- 
+
      ```bash
      ./bazel-bin/psi/apps/psi_launcher/main --config $(pwd)/examples/psi/config/ecdh_sender_recovery.json
 +    ./bazel-bin/psi/apps/psi_launcher/main --config $(pwd)/examples/psi/config/kcal_sender.json
      ```
- 
+
  ## 2P UB PSI
 diff --git a/examples/psi/config/kcal_receiver.json b/examples/psi/config/kcal_receiver.json
 new file mode 100644
-index 0000000..5ba6863
+index 0000000..8a4fcd7
 --- /dev/null
 +++ b/examples/psi/config/kcal_receiver.json
-@@ -0,0 +1,43 @@
+@@ -0,0 +1,46 @@
 +{
 +  "psi_config": {
 +    "protocol_config": {
@@ -230,7 +247,10 @@ index 0000000..5ba6863
 +      "type": "IO_TYPE_FILE_CSV",
 +      "path": "/tmp/kcal_receiver_output.csv"
 +    },
-+    "keys": ["id_0", "id_1"],
++    "keys": [
++      "id_0",
++      "id_1"
++    ],
 +    "debug_options": {
 +      "trace_path": "/tmp/kcal_receiver.trace"
 +    },
@@ -254,12 +274,13 @@ index 0000000..5ba6863
 +  },
 +  "self_link_party": "receiver"
 +}
+\ No newline at end of file
 diff --git a/examples/psi/config/kcal_sender.json b/examples/psi/config/kcal_sender.json
 new file mode 100644
-index 0000000..63bc6c7
+index 0000000..fd780e2
 --- /dev/null
 +++ b/examples/psi/config/kcal_sender.json
-@@ -0,0 +1,43 @@
+@@ -0,0 +1,46 @@
 +{
 +  "psi_config": {
 +    "protocol_config": {
@@ -279,7 +300,10 @@ index 0000000..63bc6c7
 +      "type": "IO_TYPE_FILE_CSV",
 +      "path": "/tmp/kcal_sender_output.csv"
 +    },
-+    "keys": ["id_0", "id_1"],
++    "keys": [
++      "id_0",
++      "id_1"
++    ],
 +    "debug_options": {
 +      "trace_path": "/tmp/kcal_sender.trace"
 +    },
@@ -303,8 +327,9 @@ index 0000000..63bc6c7
 +  },
 +  "self_link_party": "sender"
 +}
+\ No newline at end of file
 diff --git a/examples/psi/config/rr22_receiver_recovery.json b/examples/psi/config/rr22_receiver_recovery.json
-index 9df3437..24acf48 100644
+index 9df3437..d0dcbfa 100644
 --- a/examples/psi/config/rr22_receiver_recovery.json
 +++ b/examples/psi/config/rr22_receiver_recovery.json
 @@ -3,7 +3,10 @@
@@ -319,8 +344,27 @@ index 9df3437..24acf48 100644
      },
      "input_config": {
        "type": "IO_TYPE_FILE_CSV",
+@@ -13,7 +16,10 @@
+       "type": "IO_TYPE_FILE_CSV",
+       "path": "/tmp/rr22_receiver_recovery_output.csv"
+     },
+-    "keys": ["id_0", "id_1"],
++    "keys": [
++      "id_0",
++      "id_1"
++    ],
+     "debug_options": {
+       "trace_path": "/tmp/rr22_receiver_recovery.trace"
+     },
+@@ -36,4 +42,4 @@
+     ]
+   },
+   "self_link_party": "receiver"
+-}
++}
+\ No newline at end of file
 diff --git a/examples/psi/config/rr22_sender_recovery.json b/examples/psi/config/rr22_sender_recovery.json
-index d840dfd..0033330 100644
+index d840dfd..799d047 100644
 --- a/examples/psi/config/rr22_sender_recovery.json
 +++ b/examples/psi/config/rr22_sender_recovery.json
 @@ -3,7 +3,10 @@
@@ -335,12 +379,31 @@ index d840dfd..0033330 100644
      },
      "input_config": {
        "type": "IO_TYPE_FILE_CSV",
+@@ -13,7 +16,10 @@
+       "type": "IO_TYPE_FILE_CSV",
+       "path": "/tmp/rr22_sender_recovery_output.csv"
+     },
+-    "keys": ["id_0", "id_1"],
++    "keys": [
++      "id_0",
++      "id_1"
++    ],
+     "debug_options": {
+       "trace_path": "/tmp/rr22_sender_recovery.trace"
+     },
+@@ -36,4 +42,4 @@
+     ]
+   },
+   "self_link_party": "sender"
+-}
++}
+\ No newline at end of file
 diff --git a/psi/algorithm/kcal_pir/BUILD.bazel b/psi/algorithm/kcal_pir/BUILD.bazel
 new file mode 100644
-index 0000000..72f2f14
+index 0000000..c802b2f
 --- /dev/null
 +++ b/psi/algorithm/kcal_pir/BUILD.bazel
-@@ -0,0 +1,28 @@
+@@ -0,0 +1,27 @@
 +load("//bazel:psi.bzl", "psi_cc_binary", "psi_cc_library", "psi_cc_test")
 +
 +package(default_visibility = ["//visibility:public"])
@@ -350,7 +413,6 @@ index 0000000..72f2f14
 +    srcs = ["pir_receiver.cc"],
 +    hdrs = ["pir_receiver.h"],
 +    deps = [
-+        "//psi/kcal_adaptor:data_helper",
 +        "//psi/kcal_adaptor:traffic_wrapper",
 +        "//psi/kcal_adaptor:global_manager",
 +        "//psi/utils:arrow_csv_batch_provider",
@@ -371,18 +433,16 @@ index 0000000..72f2f14
 +)
 diff --git a/psi/algorithm/kcal_pir/pir_receiver.cc b/psi/algorithm/kcal_pir/pir_receiver.cc
 new file mode 100644
-index 0000000..f70f135
+index 0000000..574e375
 --- /dev/null
 +++ b/psi/algorithm/kcal_pir/pir_receiver.cc
-@@ -0,0 +1,148 @@
+@@ -0,0 +1,143 @@
 +#include "psi/algorithm/kcal_pir/pir_receiver.h"
 +
 +#include <fstream>
 +
-+#include "kcal/core/operator_manager.h"
-+#include "kcal/operator/all_operator_register.h"
++#include "kcal/core/operator_factory.h"
 +
-+#include "psi/kcal_adaptor/data_helper.h"
 +#include "psi/kcal_adaptor/global_manager.h"
 +#include "psi/kcal_adaptor/traffic_wrapper.h"
 +#include "psi/utils/arrow_csv_batch_provider.h"
@@ -401,7 +461,7 @@ index 0000000..f70f135
 +  lctx_->ConnectToMesh();
 +  GlobalManager::GetInstance().InitializeCtx(lctx_);
 +
-+  ::kcal::KCAL_Config kcal_cfg{};
++  ::kcal::Config kcal_cfg{};
 +  kcal_cfg.fixBits = 3;
 +  kcal_cfg.nodeId = lctx_->Rank();
 +  kcal_cfg.threadCount = options_->thread_count;
@@ -415,9 +475,7 @@ index 0000000..f70f135
 +  kcal_ctx_ = ::kcal::Context::Create(kcal_cfg, &net_res);
 +  YACL_ENFORCE(kcal_ctx_ != nullptr, "Create kcal context failed");
 +
-+  ::kcal::RegisterAllOps();
-+
-+  pir_ = ::kcal::OperatorManager::CreateOperator<::kcal::Pir>(kcal_ctx_);
++  pir_ = ::kcal::OperatorFactory::CreatePir(kcal_ctx_);
 +  YACL_ENFORCE(pir_ != nullptr, "Create op failed");
 +
 +  return DG_SUCCESS;
@@ -430,7 +488,7 @@ index 0000000..f70f135
 +  size_t batch_size = 1 << 20;
 +  auto key_data = ReadPirQuery(options_->query_file, keys, batch_size);
 +
-+  input_ = std::make_unique<KcalInput>();
++  input_ = std::make_unique<::kcal::io::Input>();
 +  input_->Fill(key_data);
 +  SPDLOG_INFO("Kcal pir receiver input size = {}.", input_->Size());
 +  return 0;
@@ -443,9 +501,8 @@ index 0000000..f70f135
 +
 +int KcalPirReceiver::Online(DG_DummyMode dummyMode) {
 +  SPDLOG_INFO("Kcal pir receiver online query.");
-+  output_ = std::make_unique<KcalOutput>();
-+  int ret = pir_->ClientQuery(input_->Get(), output_->GetSecondaryPointer(),
-+                              dummyMode);
++  output_ = std::make_unique<::kcal::io::Output>();
++  int ret = pir_->ClientQuery(*input_, *output_, dummyMode);
 +  YACL_ENFORCE(ret == 0, "Kcal pir receiver query ret failed = {}.", ret);
 +  return ret;
 +}
@@ -525,17 +582,15 @@ index 0000000..f70f135
 +}  // namespace psi::kcal::pir
 diff --git a/psi/algorithm/kcal_pir/pir_receiver.h b/psi/algorithm/kcal_pir/pir_receiver.h
 new file mode 100644
-index 0000000..a6ea73c
+index 0000000..df86b6e
 --- /dev/null
 +++ b/psi/algorithm/kcal_pir/pir_receiver.h
-@@ -0,0 +1,49 @@
+@@ -0,0 +1,47 @@
 +#pragma once
 +
 +#include "kcal/core/context.h"
 +#include "kcal/operator/kcal_pir.h"
 +#include "yacl/link/link.h"
-+
-+#include "psi/kcal_adaptor/data_helper.h"
 +
 +namespace psi::kcal::pir {
 +
@@ -567,8 +622,8 @@ index 0000000..a6ea73c
 +
 +  std::shared_ptr<yacl::link::Context> lctx_;
 +  std::shared_ptr<::kcal::Context> kcal_ctx_;
-+  std::unique_ptr<KcalInput> input_;
-+  std::unique_ptr<KcalInput> output_;
++  std::unique_ptr<::kcal::io::Input> input_;
++  std::unique_ptr<::kcal::io::Output> output_;
 +  std::shared_ptr<ReceiverOptions> options_;
 +  std::shared_ptr<::kcal::Pir> pir_;
 +};
@@ -580,14 +635,13 @@ index 0000000..a6ea73c
 +}  // namespace psi::kcal::pir
 diff --git a/psi/algorithm/kcal_pir/pir_sender.cc b/psi/algorithm/kcal_pir/pir_sender.cc
 new file mode 100644
-index 0000000..a2235be
+index 0000000..d6bdcc9
 --- /dev/null
 +++ b/psi/algorithm/kcal_pir/pir_sender.cc
-@@ -0,0 +1,188 @@
+@@ -0,0 +1,185 @@
 +#include "psi/algorithm/kcal_pir/pir_sender.h"
 +
-+#include "kcal/core/operator_manager.h"
-+#include "kcal/operator/all_operator_register.h"
++#include "kcal/core/operator_factory.h"
 +
 +#include "psi/kcal_adaptor/global_manager.h"
 +#include "psi/kcal_adaptor/traffic_wrapper.h"
@@ -607,7 +661,7 @@ index 0000000..a2235be
 +  lctx_->ConnectToMesh();
 +  GlobalManager::GetInstance().InitializeCtx(lctx_);
 +
-+  ::kcal::KCAL_Config kcal_cfg{};
++  ::kcal::Config kcal_cfg{};
 +  kcal_cfg.fixBits = 3;
 +  kcal_cfg.nodeId = lctx_->Rank();
 +  kcal_cfg.threadCount = options_->thread_count;
@@ -621,9 +675,7 @@ index 0000000..a2235be
 +  kcal_ctx_ = ::kcal::Context::Create(kcal_cfg, &net_res);
 +  YACL_ENFORCE(kcal_ctx_ != nullptr, "Create kcal context failed");
 +
-+  ::kcal::RegisterAllOps();
-+
-+  pir_ = ::kcal::OperatorManager::CreateOperator<::kcal::Pir>(kcal_ctx_);
++  pir_ = ::kcal::OperatorFactory::CreatePir(kcal_ctx_);
 +  YACL_ENFORCE(pir_ != nullptr, "Create op failed");
 +
 +  return DG_SUCCESS;
@@ -836,10 +888,10 @@ index 0000000..61599c6
 +}  // namespace psi::kcal::pir
 diff --git a/psi/algorithm/kcal_psi/BUILD.bazel b/psi/algorithm/kcal_psi/BUILD.bazel
 new file mode 100644
-index 0000000..530335c
+index 0000000..6de3e58
 --- /dev/null
 +++ b/psi/algorithm/kcal_psi/BUILD.bazel
-@@ -0,0 +1,27 @@
+@@ -0,0 +1,25 @@
 +load("//bazel:psi.bzl", "psi_cc_binary", "psi_cc_library", "psi_cc_test")
 +
 +package(default_visibility = ["//visibility:public"])
@@ -849,7 +901,6 @@ index 0000000..530335c
 +    srcs = ["receiver.cc"],
 +    hdrs = ["receiver.h"],
 +    deps = [
-+        "//psi/kcal_adaptor:data_helper",
 +        "//psi/kcal_adaptor:traffic_wrapper",
 +        "//psi:interface",
 +        "//psi/utils:arrow_csv_batch_provider",
@@ -861,7 +912,6 @@ index 0000000..530335c
 +    srcs = ["sender.cc"],
 +    hdrs = ["sender.h"],
 +    deps = [
-+        "//psi/kcal_adaptor:data_helper",
 +        "//psi/kcal_adaptor:traffic_wrapper",
 +        "//psi:interface",
 +        "//psi/utils:arrow_csv_batch_provider",
@@ -869,19 +919,17 @@ index 0000000..530335c
 +)
 diff --git a/psi/algorithm/kcal_psi/receiver.cc b/psi/algorithm/kcal_psi/receiver.cc
 new file mode 100644
-index 0000000..c396db1
+index 0000000..d46eb80
 --- /dev/null
 +++ b/psi/algorithm/kcal_psi/receiver.cc
-@@ -0,0 +1,68 @@
+@@ -0,0 +1,72 @@
 +#include "psi/algorithm/kcal_psi/receiver.h"
 +
 +#include <chrono>
 +
-+#include "kcal/core/operator_manager.h"
-+#include "kcal/operator/all_operator_register.h"
++#include "kcal/core/operator_factory.h"
 +#include "kcal/operator/kcal_psi.h"
 +
-+#include "psi/kcal_adaptor/data_helper.h"
 +#include "psi/kcal_adaptor/global_manager.h"
 +#include "psi/kcal_adaptor/traffic_wrapper.h"
 +
@@ -893,37 +941,43 @@ index 0000000..c396db1
 +
 +void KcalPsiReceiver::Init() {
 +  AbstractPsiReceiver::Init();
-+  // 
++
 +  GlobalManager::GetInstance().InitializeCtx(lctx_);
-+  // 
-+  ::kcal::KCAL_Config kcal_cfg;
++
++  ::kcal::Config kcal_cfg;
 +  kcal_cfg.fixBits = 3;
 +  kcal_cfg.nodeId = lctx_->Rank();
 +  kcal_cfg.threadCount = config_.protocol_config().kcal_config().thread_count();
 +  kcal_cfg.useSMAlg = config_.protocol_config().kcal_config().use_sm_alg();
 +  kcal_cfg.worldSize = lctx_->WorldSize();
-+  // 
++
 +  TEE_NET_RES net_res;
 +  net_res.funcRecvData = GlobalRecvWrapper;
 +  net_res.funcSendData = GlobalSendWrapper;
-+  // 
++
 +  kcal_ctx_ = ::kcal::Context::Create(kcal_cfg, &net_res);
-+  ::kcal::RegisterAllOps();
 +
 +  YACL_ENFORCE(kcal_ctx_ != nullptr, "Create kcal context failed");
 +}
 +
 +void KcalPsiReceiver::PreProcess() {
-+  input_ = std::make_unique<KcalInput>();
-+  input_->Fill(batch_provider_);
++  std::vector<std::string> rawData;
++  while (true) {
++    auto data = batch_provider_->ReadNextBatch();
++    if (data.empty()) {
++      break;
++    }
++    rawData.insert(rawData.end(), data.begin(), data.end());
++  }
++  input_ = std::make_unique<::kcal::io::Input>();
++  input_->Fill(rawData);
 +}
 +
 +void KcalPsiReceiver::Online() {
 +  auto start_time = std::chrono::high_resolution_clock::now();
-+  output_ = std::make_unique<KcalOutput>();
-+  auto op = ::kcal::OperatorManager::CreateOperator<::kcal::Psi>(kcal_ctx_);
-+  int ret =
-+      op->Run(input_->Get(), output_->GetSecondaryPointer(), TEE_OUTPUT_INDEX);
++  output_ = std::make_unique<::kcal::io::Output>();
++  auto op = ::kcal::OperatorFactory::CreatePsi(kcal_ctx_);
++  int ret = op->Run(*input_, *output_, TEE_OUTPUT_INDEX);
 +  YACL_ENFORCE(ret == 0, "Run psi failed. ret = {}", ret);
 +  auto end_time = std::chrono::high_resolution_clock::now();
 +  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -944,16 +998,16 @@ index 0000000..c396db1
 \ No newline at end of file
 diff --git a/psi/algorithm/kcal_psi/receiver.h b/psi/algorithm/kcal_psi/receiver.h
 new file mode 100644
-index 0000000..247e2cb
+index 0000000..6fab5cb
 --- /dev/null
 +++ b/psi/algorithm/kcal_psi/receiver.h
 @@ -0,0 +1,34 @@
 +#pragma once
 +
 +#include "kcal/core/context.h"
++#include "kcal/utils/io.h"
 +
 +#include "psi/interface.h"
-+#include "psi/kcal_adaptor/data_helper.h"
 +#include "psi/utils/arrow_csv_batch_provider.h"
 +
 +#include "psi/proto/psi_v2.pb.h"
@@ -977,24 +1031,22 @@ index 0000000..247e2cb
 +  void PostProcess() override;
 +
 +  std::shared_ptr<::kcal::Context> kcal_ctx_;
-+  std::unique_ptr<KcalInput> input_;
-+  std::unique_ptr<KcalOutput> output_;
++  std::unique_ptr<::kcal::io::Input> input_;
++  std::unique_ptr<::kcal::io::Output> output_;
 +};
 +
 +}  // namespace psi::kcal
 diff --git a/psi/algorithm/kcal_psi/sender.cc b/psi/algorithm/kcal_psi/sender.cc
 new file mode 100644
-index 0000000..c53c79e
+index 0000000..5513446
 --- /dev/null
 +++ b/psi/algorithm/kcal_psi/sender.cc
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,68 @@
 +#include "psi/algorithm/kcal_psi/sender.h"
 +
-+#include "kcal/core/operator_manager.h"
-+#include "kcal/operator/all_operator_register.h"
++#include "kcal/core/operator_factory.h"
 +#include "kcal/operator/kcal_psi.h"
 +
-+#include "psi/kcal_adaptor/data_helper.h"
 +#include "psi/kcal_adaptor/global_manager.h"
 +#include "psi/kcal_adaptor/traffic_wrapper.h"
 +
@@ -1006,37 +1058,41 @@ index 0000000..c53c79e
 +
 +void KcalPsiSender::Init() {
 +  AbstractPsiSender::Init();
-+  // 
 +  GlobalManager::GetInstance().InitializeCtx(lctx_);
-+  // 
-+  ::kcal::KCAL_Config kcal_cfg;
++
++  ::kcal::Config kcal_cfg;
 +  kcal_cfg.fixBits = 3;
 +  kcal_cfg.nodeId = lctx_->Rank();
 +  kcal_cfg.threadCount = config_.protocol_config().kcal_config().thread_count();
 +  kcal_cfg.useSMAlg = config_.protocol_config().kcal_config().use_sm_alg();
 +  kcal_cfg.worldSize = lctx_->WorldSize();
-+  // 
++
 +  TEE_NET_RES net_res;
 +  net_res.funcRecvData = GlobalRecvWrapper;
 +  net_res.funcSendData = GlobalSendWrapper;
-+  // 
 +  kcal_ctx_ = ::kcal::Context::Create(kcal_cfg, &net_res);
-+  ::kcal::RegisterAllOps();
 +
 +  YACL_ENFORCE(kcal_ctx_ != nullptr, "Create kcal context failed");
 +}
 +
 +void KcalPsiSender::PreProcess() {
-+  input_ = std::make_unique<KcalInput>();
-+  input_->Fill(batch_provider_);
++  std::vector<std::string> rawData;
++  while (true) {
++    auto data = batch_provider_->ReadNextBatch();
++    if (data.empty()) {
++      break;
++    }
++    rawData.insert(rawData.end(), data.begin(), data.end());
++  }
++  input_ = std::make_unique<::kcal::io::Input>();
++  input_->Fill(rawData);
 +}
 +
 +void KcalPsiSender::Online() {
 +  auto start_time = std::chrono::high_resolution_clock::now();
-+  output_ = std::make_unique<KcalOutput>();
-+  auto op = ::kcal::OperatorManager::CreateOperator<::kcal::Psi>(kcal_ctx_);
-+  int ret =
-+      op->Run(input_->Get(), output_->GetSecondaryPointer(), TEE_OUTPUT_INDEX);
++  output_ = std::make_unique<::kcal::io::Output>();
++  auto op = ::kcal::OperatorFactory::CreatePsi(kcal_ctx_);
++  int ret = op->Run(*input_, *output_, TEE_OUTPUT_INDEX);
 +  YACL_ENFORCE(ret == 0, "Run psi failed. ret = {}", ret);
 +  auto end_time = std::chrono::high_resolution_clock::now();
 +  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1057,16 +1113,16 @@ index 0000000..c53c79e
 \ No newline at end of file
 diff --git a/psi/algorithm/kcal_psi/sender.h b/psi/algorithm/kcal_psi/sender.h
 new file mode 100644
-index 0000000..b571632
+index 0000000..7c0c2f6
 --- /dev/null
 +++ b/psi/algorithm/kcal_psi/sender.h
 @@ -0,0 +1,34 @@
 +#pragma once
 +
 +#include "kcal/core/context.h"
++#include "kcal/utils/io.h"
 +
 +#include "psi/interface.h"
-+#include "psi/kcal_adaptor/data_helper.h"
 +#include "psi/utils/arrow_csv_batch_provider.h"
 +
 +#include "psi/proto/psi_v2.pb.h"
@@ -1090,8 +1146,8 @@ index 0000000..b571632
 +  void PostProcess() override;
 +
 +  std::shared_ptr<::kcal::Context> kcal_ctx_;
-+  std::unique_ptr<KcalInput> input_;
-+  std::unique_ptr<KcalOutput> output_;
++  std::unique_ptr<::kcal::io::Input> input_;
++  std::unique_ptr<::kcal::io::Output> output_;
 +};
 +
 +}  // namespace psi::kcal
@@ -1162,7 +1218,7 @@ index 31deab7..8585a46 100644
 @@ -320,6 +320,38 @@ PirResultReport RunDkPir(const DkPirSenderConfig& dk_pir_sender_config,
    return PirResultReport();
  }
- 
+
 +PirResultReport RunKcalPir(
 +    const KcalPirReceiverConfig& kcal_pir_receiver_config,
 +    const std::shared_ptr<yacl::link::Context>& lctx) {
@@ -1196,16 +1252,16 @@ index 31deab7..8585a46 100644
 +}
 +
  namespace api {
- 
+
  const std::map<PsiProtocol, v2::Protocol> kV2ProtoclMap = {
 diff --git a/psi/apps/psi_launcher/launch.h b/psi/apps/psi_launcher/launch.h
 index 080f550..3e377ee 100644
 --- a/psi/apps/psi_launcher/launch.h
 +++ b/psi/apps/psi_launcher/launch.h
 @@ -19,6 +19,8 @@
- 
+
  #include "yacl/link/context.h"
- 
+
 +#include "psi/algorithm/kcal_pir/pir_receiver.h"
 +#include "psi/algorithm/kcal_pir/pir_sender.h"
  #include "psi/apps/psi_launcher/report.h"
@@ -1214,7 +1270,7 @@ index 080f550..3e377ee 100644
 @@ -53,6 +55,13 @@ PirResultReport RunDkPir(const DkPirReceiverConfig& dk_pir_receiver_config,
  PirResultReport RunDkPir(const DkPirSenderConfig& dk_pir_sender_config,
                           const std::shared_ptr<yacl::link::Context>& lctx);
- 
+
 +PirResultReport RunKcalPir(
 +    const KcalPirReceiverConfig& kcal_pir_receiver_config,
 +    const std::shared_ptr<yacl::link::Context>& lctx);
@@ -1223,7 +1279,7 @@ index 080f550..3e377ee 100644
 +                           const std::shared_ptr<yacl::link::Context>& lctx);
 +
  namespace api {
- 
+
  namespace internal {
 diff --git a/psi/apps/psi_launcher/main.cc b/psi/apps/psi_launcher/main.cc
 index 3965006..c39c05d 100644
@@ -1250,24 +1306,13 @@ index 3965006..c39c05d 100644
    }
 diff --git a/psi/kcal_adaptor/BUILD.bazel b/psi/kcal_adaptor/BUILD.bazel
 new file mode 100644
-index 0000000..ab38cde
+index 0000000..905c10f
 --- /dev/null
 +++ b/psi/kcal_adaptor/BUILD.bazel
-@@ -0,0 +1,34 @@
+@@ -0,0 +1,23 @@
 +load("//bazel:psi.bzl", "psi_cc_binary", "psi_cc_library", "psi_cc_test")
 +
 +package(default_visibility = ["//visibility:public"])
-+
-+psi_cc_library(
-+    name = "data_helper",
-+    srcs = ["data_helper.cc"],
-+    hdrs = ["data_helper.h"],
-+    deps = [
-+        "//psi/utils:batch_provider",
-+        "@kunpeng_kcal_middleware//:kcal_middleware",
-+        "@yacl//yacl/base:exception",
-+    ]
-+)
 +
 +psi_cc_library(
 +    name = "global_manager",
@@ -1288,129 +1333,6 @@ index 0000000..ab38cde
 +        "@kunpeng_kcal_middleware//:kcal_middleware",
 +    ]
 +)
-diff --git a/psi/kcal_adaptor/data_helper.cc b/psi/kcal_adaptor/data_helper.cc
-new file mode 100644
-index 0000000..f35bfc2
---- /dev/null
-+++ b/psi/kcal_adaptor/data_helper.cc
-@@ -0,0 +1,66 @@
-+#include "psi/kcal_adaptor/data_helper.h"
-+
-+#include <cstring>
-+
-+#include "yacl/base/exception.h"
-+
-+namespace psi::kcal {
-+
-+void DataHelper::BuildDgString(const std::vector<std::string>& strings,
-+                               DG_String** dg) {
-+  auto* dgString = new (std::nothrow) DG_String[strings.size()];
-+  YACL_ENFORCE(dgString != nullptr, "Malloc failed");
-+  for (size_t i = 0; i < strings.size(); ++i) {
-+    dgString[i].str = strdup(strings[i].c_str());
-+    dgString[i].size = strings[i].size() + 1;
-+  }
-+  *dg = dgString;
-+}
-+
-+void DataHelper::ReleaseOutput(DG_TeeOutput** output) {
-+  if (output == nullptr || *output == nullptr) {
-+    return;
-+  }
-+  if ((*output)->dataType == MPC_STRING && (*output)->data.strings != nullptr) {
-+    for (int i = 0; i < (*output)->size; ++i) {
-+      if ((*output)->data.strings[i].str != nullptr) {
-+        delete[](*output)->data.strings[i].str;
-+      }
-+    }
-+    delete[](*output)->data.strings;
-+  } else if ((*output)->dataType == MPC_DOUBLE &&
-+             (*output)->data.doubleNumbers != nullptr) {
-+    delete[](*output)->data.doubleNumbers;
-+  } else if ((*output)->dataType == MPC_INT &&
-+             (*output)->data.u64Numbers != nullptr) {
-+    delete[](*output)->data.u64Numbers;
-+  }
-+  delete *output;
-+  *output = nullptr;
-+}
-+
-+void KcalInput::Fill(const std::vector<std::string>& data) {
-+  DG_String* strings = nullptr;
-+  DataHelper::BuildDgString(data, &strings);
-+
-+  input_ = new (std::nothrow) DG_TeeInput();
-+  YACL_ENFORCE(input_ != nullptr, "Malloc failed");
-+  input_->data.strings = strings;
-+  input_->size = static_cast<int>(data.size());
-+  input_->dataType = MPC_STRING;
-+}
-+
-+void KcalInput::Fill(std::shared_ptr<IBasicBatchProvider> provider) {
-+  std::vector<std::string> rawData;
-+  while (true) {
-+    auto data = provider->ReadNextBatch();
-+    if (data.empty()) {
-+      break;
-+    }
-+    rawData.insert(rawData.end(), data.begin(), data.end());
-+  }
-+
-+  Fill(rawData);
-+}
-+
-+}  // namespace psi::kcal
-diff --git a/psi/kcal_adaptor/data_helper.h b/psi/kcal_adaptor/data_helper.h
-new file mode 100644
-index 0000000..ef643c9
---- /dev/null
-+++ b/psi/kcal_adaptor/data_helper.h
-@@ -0,0 +1,44 @@
-+#pragma once
-+
-+#include <memory>
-+#include <string>
-+#include <vector>
-+
-+#include "kcal/api/kcal_api.h"
-+
-+#include "psi/utils/batch_provider.h"
-+
-+namespace psi::kcal {
-+
-+class DataHelper {
-+ public:
-+  static void BuildDgString(const std::vector<std::string>& strings,
-+                            DG_String** dg);
-+
-+  static void ReleaseOutput(DG_TeeOutput** output);
-+};
-+
-+class KcalInput {
-+ public:
-+  KcalInput() = default;
-+
-+  ~KcalInput() { DataHelper::ReleaseOutput(&input_); }
-+
-+  KcalInput(const KcalInput&) = delete;
-+  KcalInput& operator=(const KcalInput&) = delete;
-+
-+  void Fill(const std::vector<std::string>& data);
-+  void Fill(std::shared_ptr<IBasicBatchProvider> provider);
-+
-+  DG_TeeInput* Get() { return input_; }
-+  DG_TeeInput** GetSecondaryPointer() { return &input_; }
-+
-+  int Size() { return input_->size; }
-+
-+ private:
-+  DG_TeeInput* input_ = nullptr;
-+};
-+
-+using KcalOutput = KcalInput;
-+
-+}  // namespace psi::kcal
-\ No newline at end of file
 diff --git a/psi/kcal_adaptor/global_manager.cc b/psi/kcal_adaptor/global_manager.cc
 new file mode 100644
 index 0000000..bab054e
@@ -1529,7 +1451,7 @@ index 265ebaa..76b2881 100644
 +++ b/psi/proto/entry.proto
 @@ -47,5 +47,9 @@ message LaunchConfig {
      DkPirSenderConfig dk_pir_sender_config = 8;
- 
+
      DkPirReceiverConfig dk_pir_receiver_config = 9;
 +
 +    KcalPirSenderConfig kcal_pir_sender_config = 10;
@@ -1544,7 +1466,7 @@ index 094ecba..91f77da 100644
 @@ -127,6 +127,37 @@ message ApsiReceiverConfig {
    uint32 query_batch_size = 10;
  }
- 
+
 +message KcalPirSenderConfig {
 +  // Number of threads to use
 +  uint32 threads = 1;
@@ -1584,18 +1506,18 @@ index 5682ef7..4a5b52f 100644
 --- a/psi/proto/psi_v2.proto
 +++ b/psi/proto/psi_v2.proto
 @@ -60,6 +60,8 @@ enum Protocol {
- 
+
    // Blazing Fast PSI https://eprint.iacr.org/2022/320.pdf
    PROTOCOL_RR22 = 3;
 +
 +  PROTOCOL_KCAL = 4;
  }
- 
+
  // Configs for ECDH protocol.
 @@ -92,6 +94,11 @@ message Rr22Config {
    bool low_comm_mode = 2;
  }
- 
+
 +message KcalConfig {
 +  uint32 thread_count = 1;
 +  bool use_sm_alg = 2;
@@ -1605,13 +1527,13 @@ index 5682ef7..4a5b52f 100644
  message ProtocolConfig {
    Protocol protocol = 1;
 @@ -109,6 +116,8 @@ message ProtocolConfig {
- 
+
    // For RR22 protocol.
    Rr22Config rr22_config = 6;
 +
 +  KcalConfig kcal_config = 7;
  }
- 
+
  // TODO(junfeng): support more io types including oss, sql, etc.
 diff --git a/third_party/BUILD.bazel b/third_party/BUILD.bazel
 new file mode 100644

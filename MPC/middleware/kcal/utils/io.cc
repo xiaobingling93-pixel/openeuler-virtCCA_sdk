@@ -11,7 +11,6 @@
  */
 
 #include "kcal/utils/io.h"
-
 #include <cstring>
 #include <memory>
 
@@ -48,7 +47,7 @@ void DataHelper::ReleaseDgPairList(DG_PairList *pairList)
                 delete pairList->dgPair[i].value;
             };
         }
-        delete[] pairList->dgPair;
+        delete [] pairList->dgPair;
         pairList = nullptr;
     }
 }
@@ -59,7 +58,7 @@ void DataHelper::ReleaseOutput(DG_TeeOutput **output)
         return;
     }
     if ((*output)->dataType == MPC_STRING && (*output)->data.strings != nullptr) {
-        for (size_t i = 0; i < (*output)->size; ++i) {
+        for (uint64_t i = 0; i < (*output)->size; ++i) {
             delete[] (*output)->data.strings[i].str;
         }
         delete[] (*output)->data.strings;
@@ -93,10 +92,10 @@ void DataHelper::ReleaseMpcShare(DG_MpcShare **share)
 }
 
 // ===========================
-//   KcalMpcShare impl
+//   MpcShare impl
 // ===========================
 
-KcalMpcShare::~KcalMpcShare()
+MpcShare::~MpcShare()
 {
     if (share_) {
         DataHelper::ReleaseMpcShare(&share_);
@@ -107,7 +106,7 @@ KcalMpcShare::~KcalMpcShare()
 //   KcalMpcShareSet impl
 // ===========================
 
-KcalMpcShareSet::~KcalMpcShareSet()
+MpcShareSet::~MpcShareSet()
 {
     if (shareSet_) {
         if (shareSet_->shareSet) {
@@ -117,22 +116,9 @@ KcalMpcShareSet::~KcalMpcShareSet()
     }
 }
 
-KcalMpcShareSet::KcalMpcShareSet(const std::vector<std::shared_ptr<KcalMpcShare>> &shares)
+MpcShareSet MpcShareSet::Create(const std::vector<MpcShare *> &shares)
 {
-    shareSet_ = new (std::nothrow) DG_MpcShareSet();
-    shareSet_->size = shares.size();
-
-    auto shareDatas = std::make_unique<DG_MpcShare[]>(shareSet_->size);
-    shareSet_->shareSet = shareDatas.release();
-
-    for (size_t i = 0; i < shares.size(); ++i) {
-        shareSet_->shareSet[i] = *shares[i]->Get();
-    }
-}
-
-KcalMpcShareSet KcalMpcShareSet::Create(const std::vector<KcalMpcShare *> &shares)
-{
-    KcalMpcShareSet shareSet{};
+    MpcShareSet shareSet{};
 
     shareSet.shareSet_ = new (std::nothrow) DG_MpcShareSet();
     shareSet.shareSet_->size = shares.size();
@@ -150,7 +136,7 @@ KcalMpcShareSet KcalMpcShareSet::Create(const std::vector<KcalMpcShare *> &share
 //   KcalInput impl
 // ===========================
 
-void KcalInput::Fill(const std::vector<std::string> &data)
+void Input::Fill(const std::vector<std::string> &data)
 {
     DG_String *strings = nullptr;
     DataHelper::BuildDgString(data, &strings);
@@ -161,12 +147,17 @@ void KcalInput::Fill(const std::vector<std::string> &data)
     input_->dataType = MPC_STRING;
 }
 
-KcalInput *KcalInput::Create()
+void Input::Reset(DG_TeeOutput *output)
 {
-    std::unique_ptr<DG_TeeInput> teeInput = std::make_unique<DG_TeeInput>();
-    std::unique_ptr<KcalInput> input = std::make_unique<KcalInput>(teeInput.release());
-    return input.release();
+    if (input_) {
+        DataHelper::ReleaseOutput(&input_);
+    }
+    input_ = output;
 }
+
+// ===========================
+//   KcalPairList impl
+// ===========================
 
 KcalPairList *KcalPairList::Create()
 {
@@ -174,4 +165,5 @@ KcalPairList *KcalPairList::Create()
     std::unique_ptr<KcalPairList> input = std::make_unique<KcalPairList>(pairList.release());
     return input.release();
 }
+
 } // namespace kcal::io

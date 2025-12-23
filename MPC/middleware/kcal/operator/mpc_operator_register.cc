@@ -10,16 +10,10 @@
  * See the Mulan PSL v2 for more details.
  */
 
-#include "kcal/operator/all_operator_register.h"
+#include "kcal/operator/mpc_operator_register.h"
 #include <mutex>
 #include "kcal/core/operator_registry.h"
-#include "kcal/operator/kcal_psi.h"
-#include "kcal/operator/kcal_pir.h"
-#include "kcal/operator/kcal_make_share.h"
-#include "kcal/operator/kcal_reveal_share.h"
-#include "kcal/operator/kcal_sum.h"
-#include "kcal/operator/kcal_avg.h"
-#include "kcal/operator/kcal_maximum.h"
+#include "kcal/operator/kcal_mpc_arithmetic.h"
 
 namespace kcal {
 
@@ -28,10 +22,6 @@ namespace {
 void RegisterAllOpsImpl()
 {
     auto &registry = OperatorRegistry::Instance();
-    registry.RegisterOperator<Psi>(KCAL_AlgorithmsType::PSI);
-    registry.RegisterOperator<Pir>(KCAL_AlgorithmsType::PIR);
-    registry.RegisterOperator<MakeShare>(KCAL_AlgorithmsType::MAKE_SHARE);
-    registry.RegisterOperator<RevealShare>(KCAL_AlgorithmsType::REVEAL_SHARE);
     registry.RegisterOperator<Add>(KCAL_AlgorithmsType::ADD);
     registry.RegisterOperator<Sub>(KCAL_AlgorithmsType::SUB);
     registry.RegisterOperator<Mul>(KCAL_AlgorithmsType::MUL);

@@ -27,10 +27,7 @@ public:
     int InitializeTeeCtx(void *teeConfig, int worldSize, DG_TeeCtx **teeCtx) override;
     void ReleaseTeeCtx(DG_TeeCtx **teeCtx) override;
 
-    bool SupportsAlgorithm(KCAL_AlgorithmsType algoType) const override
-    {
-        return algoType == KCAL_AlgorithmsType::PIR;
-    }
+    bool SupportsAlgorithm(KCAL_AlgorithmsType algoType) const override { return algoType == KCAL_AlgorithmsType::PIR; }
 
 private:
     DG_PIR_Opts opts_;

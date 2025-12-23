@@ -1,25 +1,15 @@
 // Copyright (c) Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
 
-#include "kcal_wrapper.h"
-
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
 #include <memory>
 
 #include "context_ext.h"
-
-#include "kcal/core/operator_base.h"
-#include "kcal/core/operator_manager.h"
-#include "kcal/operator/all_operator_register.h"
-#include "kcal/operator/kcal_arithmetic.h"
-#include "kcal/operator/kcal_avg.h"
-#include "kcal/operator/kcal_make_share.h"
-#include "kcal/operator/kcal_maximum.h"
+#include "kcal/core/mpc_operator_base.h"
+#include "kcal/core/operator_factory.h"
 #include "kcal/operator/kcal_pir.h"
 #include "kcal/operator/kcal_psi.h"
-#include "kcal/operator/kcal_reveal_share.h"
-#include "kcal/operator/kcal_sum.h"
 #include "kcal/utils/io.h"
 
 namespace py = pybind11;
@@ -28,9 +18,7 @@ namespace kcal {
 
 namespace {
 
-using PyShare = std::shared_ptr<io::KcalMpcShare>;
-
-void FeedKcalInput(const py::list &pyList, io::KcalInput *kcalInput)
+void FeedKcalInput(const py::list &pyList, io::Input *kcalInput)
 {
     if (pyList.empty()) {
         return;
@@ -55,7 +43,6 @@ void FeedKcalInput(const py::list &pyList, io::KcalInput *kcalInput)
             dgString[i].str = strdup(utf8);
             dgString[i].size = static_cast<int>(sz) + 1;
         }
-
         DG_TeeInput **internalInput = kcalInput->GetSecondaryPointer();
         (*internalInput)->data.strings = dgString;
         (*internalInput)->size = pyList.size();
@@ -69,7 +56,6 @@ void FeedKcalInput(const py::list &pyList, io::KcalInput *kcalInput)
                 throw std::runtime_error("need number type");
             }
         }
-
         DG_TeeInput **internalInput = kcalInput->GetSecondaryPointer();
         (*internalInput)->data.doubleNumbers = inData.release();
         (*internalInput)->size = pyList.size();
@@ -91,6 +77,7 @@ void FeedKcalPairList(const py::list &key, const py::list &value, io::KcalPairLi
     size_t i = 0;
     for (i = 0; i < key.size(); ++i) {
         pairList->Get()->dgPair[i].key = new (std::nothrow) DG_String();
+        pairList->Get()->dgPair[i].key = new (std::nothrow) DG_String();
         pairList->Get()->dgPair[i].value = new (std::nothrow) DG_String();
         if (!pairList->Get()->dgPair[i].key || !pairList->Get()->dgPair[i].value) {
             pairList->Get()->size = i + 1;
@@ -107,6 +94,7 @@ void FeedKcalPairList(const py::list &key, const py::list &value, io::KcalPairLi
                 throw std::bad_alloc();
             }
             pairList->Get()->dgPair[i].key->str = strdup(utf8);
+            pairList->Get()->dgPair[i].key->str = strdup(utf8);
             pairList->Get()->dgPair[i].key->size = static_cast<int>(sz) + 1;
         }
         // 填充 value
@@ -120,13 +108,14 @@ void FeedKcalPairList(const py::list &key, const py::list &value, io::KcalPairLi
                 throw std::bad_alloc();
             }
             pairList->Get()->dgPair[i].value->str = strdup(utf8);
+            pairList->Get()->dgPair[i].value->str = strdup(utf8);
             pairList->Get()->dgPair[i].value->size = static_cast<int>(sz) + 1;
         }
     }
     pairList->Get()->size = size;
 }
 
-void FeedPsiOutput(io::KcalOutput &kcalOutput, py::list &pyList, DG_TeeMode mode)
+void FeedPsiOutput(io::Output &kcalOutput, py::list &pyList, DG_TeeMode mode)
 {
     auto *outPtr = kcalOutput.Get();
     for (size_t i = 0; i < outPtr->size; ++i) {
@@ -138,10 +127,10 @@ void FeedPsiOutput(io::KcalOutput &kcalOutput, py::list &pyList, DG_TeeMode mode
     }
 }
 
-void FeedKcalOutput(io::KcalOutput &kcalOutput, py::list &pyList)
+void FeedKcalOutput(io::Output &kcalOutput, py::list &pyList)
 {
     auto *outPtr = kcalOutput.Get();
-    auto dataType = outPtr->dataType;
+    auto dataType = kcalOutput.Get()->dataType;
     for (size_t i = 0; i < outPtr->size; ++i) {
         if (dataType == MPC_STRING) {
             pyList.append(outPtr->data.strings[i].str);
@@ -211,33 +200,35 @@ public:
 
 void BindIoClasses(py::module_ &m)
 {
-    py::class_<io::KcalMpcShare, PyShare>(m, "MpcShare")
+    py::class_<io::MpcShare>(m, "MpcShare")
         .def(py::init<>())
-        .def(py::init<DG_MpcShare *>())
-        .def("Set", &io::KcalMpcShare::Set)
-        .def("Create", &io::KcalMpcShare::Create, py::return_value_policy::take_ownership)
-        .def(
-            "Get", [](io::KcalMpcShare &self) -> DG_MpcShare * { return self.Get(); },
-            py::return_value_policy::reference)
-        .def("Size", &io::KcalMpcShare::Size)
-        .def("Type", &io::KcalMpcShare::Type);
+        .def("size", &io::MpcShare::Size)
+        .def("type", &io::MpcShare::Type);
 
-    py::class_<io::KcalMpcShareSet>(m, "MpcShareSet")
+    py::class_<io::MpcShareSet>(m, "MpcShareSet")
         .def(py::init<>())
+        .def_static(
+            "Create", [](const std::vector<io::MpcShare *> &shares) { return io::MpcShareSet::Create(shares); },
+            py::return_value_policy::take_ownership)
         .def(
-            "Get", [](io::KcalMpcShareSet &self) -> DG_MpcShareSet * { return self.Get(); },
+            "Get", [](io::MpcShareSet &self) -> DG_MpcShareSet * { return self.Get(); },
             py::return_value_policy::reference);
-    py::class_<io::KcalInput>(m, "Input")
+
+    py::class_<io::Input>(m, "Input")
         .def(py::init<>())
         .def(py::init<DG_TeeInput *>())
-        .def_static(
-            "Create",
-            []() -> std::shared_ptr<io::KcalInput> { return std::shared_ptr<io::KcalInput>(io::KcalInput::Create()); },
+        .def(
+            "create",
+            [] {
+                auto teeInput = std::make_unique<DG_TeeInput>();
+                auto input = std::make_unique<io::Input>(teeInput.release());
+                return input;
+            },
             py::return_value_policy::take_ownership)
-        .def("Set", &io::KcalInput::Set)
-        .def("Get", &io::KcalInput::Get, py::return_value_policy::reference)
-        .def("Fill", &io::KcalInput::Fill)
-        .def("Size", &io::KcalInput::Size);
+        .def("Set", &io::Input::Set)
+        .def("Fill", &io::Input::Fill)
+        .def("Size", &io::Input::Size);
+
     // Alias of Input
     m.attr("Output") = m.attr("Input");
 }
@@ -245,21 +236,22 @@ void BindIoClasses(py::module_ &m)
 void BindOtherOperators(py::module_ &m)
 {
     // PSI
-    py::class_<Psi, OperatorBase, std::shared_ptr<Psi>>(m, "Psi")
-        .def(py::init<>())
+    py::class_<Psi, std::shared_ptr<Psi>>(m, "Psi")
+        .def(py::init<std::shared_ptr<Context>>())
         .def("run", [](Psi &self, const py::list &input, py::list &output, DG_TeeMode mode) -> int {
-            std::shared_ptr<io::KcalInput> kcalInput(io::KcalInput::Create());
-            FeedKcalInput(input, kcalInput.get());
-            io::KcalOutput kcalOutput;
-            int ret = self.Run(kcalInput->Get(), kcalOutput.GetSecondaryPointer(), mode);
+            io::Input kcalInput(new DG_TeeInput());
+            FeedKcalInput(input, &kcalInput);
+            io::Output kcalOutput;
+            int ret = self.Run(kcalInput, kcalOutput, mode);
             FeedPsiOutput(kcalOutput, output, mode);
             return ret;
         });
-    py::class_<Pir, OperatorBase, std::shared_ptr<Pir>>(m, "Pir")
-        .def(py::init<>())
+
+    py::class_<Pir, std::shared_ptr<Pir>>(m, "Pir")
+        .def(py::init<std::shared_ptr<Context>>())
         .def("ServerPreProcess",
              [](Pir &self, const py::list &key, py::list &value) -> int {
-                 std::shared_ptr<io::KcalPairList> kcalInput(io::KcalPairList::Create());
+                 std::unique_ptr<io::KcalPairList> kcalInput(io::KcalPairList::Create());
                  // build DG_PairList
                  FeedKcalPairList(key, value, kcalInput.get());
                  int ret = self.ServerPreProcess(kcalInput->Get());
@@ -267,10 +259,10 @@ void BindOtherOperators(py::module_ &m)
              })
         .def("ClientQuery",
              [](Pir &self, const py::list &input, py::list &output, DG_DummyMode mode) -> int {
-                 std::shared_ptr<io::KcalInput> kcalInput(io::KcalInput::Create());
-                 FeedKcalInput(input, kcalInput.get());
-                 io::KcalOutput kcalOutput;
-                 int ret = self.ClientQuery(kcalInput->Get(), kcalOutput.GetSecondaryPointer(), mode);
+                 io::Input kcalInput(new DG_TeeInput());
+                 FeedKcalInput(input, &kcalInput);
+                 io::Output kcalOutput;
+                 int ret = self.ClientQuery(kcalInput, kcalOutput, mode);
                  FeedKcalOutput(kcalOutput, output);
                  return ret;
              })
@@ -278,127 +270,32 @@ void BindOtherOperators(py::module_ &m)
             int ret = self.ServerAnswer();
             return ret;
         });
+}
 
-    // Arithmetic Operators
-    py::class_<Arithmetic, OperatorBase, std::shared_ptr<Arithmetic>>(m, "Arithmetic").def(py::init<>());
+void BindMpcOperators(py::module_ &m)
+{
+    py::class_<MpcOperatorBase, std::shared_ptr<MpcOperatorBase>>(m, "OperatorBase")
+        .def("GetType", &MpcOperatorBase::GetType)
+        .def("run",
+             [](MpcOperatorBase &self, const std::vector<io::MpcShare *> &shares, io::MpcShare *outShare) -> int {
+                 auto shareSetPtr = io::MpcShareSet::Create(shares);
+                 return self.Run(shareSetPtr, outShare);
+             });
 
-    // Basic Arithmetic Operations
-    py::class_<Add, Arithmetic, std::shared_ptr<Add>>(m, "Add")
-        .def(py::init<>())
-        .def("run", [](Add &self, const std::vector<PyShare> &shares, PyShare &outShare) -> int {
-            auto ptr = outShare.get();
-            return self.Run(io::KcalMpcShareSet(shares), ptr);
-        });
-
-    py::class_<Sub, Arithmetic, std::shared_ptr<Sub>>(m, "Sub")
-        .def(py::init<>())
-        .def("run", [](Sub &self, const std::vector<PyShare> &shares, PyShare &outShare) -> int {
-            auto ptr = outShare.get();
-            return self.Run(io::KcalMpcShareSet(shares), ptr);
-        });
-
-    py::class_<Mul, Arithmetic, std::shared_ptr<Mul>>(m, "Mul")
-        .def(py::init<>())
-        .def("run", [](Mul &self, const std::vector<PyShare> &shares, PyShare &outShare) -> int {
-            auto ptr = outShare.get();
-            return self.Run(io::KcalMpcShareSet(shares), ptr);
-        });
-
-    py::class_<Div, Arithmetic, std::shared_ptr<Div>>(m, "Div")
-        .def(py::init<>())
-        .def("run", [](Div &self, const std::vector<PyShare> &shares, PyShare &outShare) -> int {
-            auto ptr = outShare.get();
-            return self.Run(io::KcalMpcShareSet(shares), ptr);
-        });
-
-    // Comparison Operations
-    py::class_<Less, Arithmetic, std::shared_ptr<Less>>(m, "Less")
-        .def(py::init<>())
-        .def("run", [](Less &self, const std::vector<PyShare> &shares, PyShare &outShare) -> int {
-            auto ptr = outShare.get();
-            return self.Run(io::KcalMpcShareSet(shares), ptr);
-        });
-
-    py::class_<LessEqual, Arithmetic, std::shared_ptr<LessEqual>>(m, "LessEqual")
-        .def(py::init<>())
-        .def("run", [](LessEqual &self, const std::vector<PyShare> &shares, PyShare &outShare) -> int {
-            auto ptr = outShare.get();
-            return self.Run(io::KcalMpcShareSet(shares), ptr);
-        });
-
-    py::class_<Greater, Arithmetic, std::shared_ptr<Greater>>(m, "Greater")
-        .def(py::init<>())
-        .def("run", [](Greater &self, const std::vector<PyShare> &shares, PyShare &outShare) -> int {
-            auto ptr = outShare.get();
-            return self.Run(io::KcalMpcShareSet(shares), ptr);
-        });
-
-    py::class_<GreaterEqual, Arithmetic, std::shared_ptr<GreaterEqual>>(m, "GreaterEqual")
-        .def(py::init<>())
-        .def("run", [](GreaterEqual &self, const std::vector<PyShare> &shares, PyShare &outShare) -> int {
-            auto ptr = outShare.get();
-            return self.Run(io::KcalMpcShareSet(shares), ptr);
-        });
-
-    py::class_<Equal, Arithmetic, std::shared_ptr<Equal>>(m, "Equal")
-        .def(py::init<>())
-        .def("run", [](Equal &self, const std::vector<PyShare> &shares, PyShare &outShare) -> int {
-            auto ptr = outShare.get();
-            return self.Run(io::KcalMpcShareSet(shares), ptr);
-        });
-
-    py::class_<NoEqual, Arithmetic, std::shared_ptr<NoEqual>>(m, "NoEqual")
-        .def(py::init<>())
-        .def("run", [](NoEqual &self, const std::vector<PyShare> &shares, PyShare &outShare) -> int {
-            auto ptr = outShare.get();
-            return self.Run(io::KcalMpcShareSet(shares), ptr);
-        });
-
-    // Aggregate Operations
-    py::class_<Sum, Arithmetic, std::shared_ptr<Sum>>(m, "Sum")
-        .def(py::init<>())
-        .def("run", [](Sum &self, const std::vector<PyShare> &shares, PyShare &outShare) -> int {
-            auto ptr = outShare.get();
-            return self.Run(io::KcalMpcShareSet(shares), ptr);
-        });
-
-    py::class_<Avg, Arithmetic, std::shared_ptr<Avg>>(m, "Avg")
-        .def(py::init<>())
-        .def("run", [](Avg &self, const std::vector<PyShare> &shares, PyShare &outShare) -> int {
-            auto ptr = outShare.get();
-            return self.Run(io::KcalMpcShareSet(shares), ptr);
-        });
-
-    py::class_<Max, Arithmetic, std::shared_ptr<Max>>(m, "Max")
-        .def(py::init<>())
-        .def("run", [](Max &self, const std::vector<PyShare> &shares, PyShare &outShare) -> int {
-            auto ptr = outShare.get();
-            return self.Run(io::KcalMpcShareSet(shares), ptr);
-        });
-
-    py::class_<Min, Arithmetic, std::shared_ptr<Min>>(m, "Min")
-        .def(py::init<>())
-        .def("run", [](Min &self, const std::vector<PyShare> &shares, PyShare &outShare) -> int {
-            auto ptr = outShare.get();
-            return self.Run(io::KcalMpcShareSet(shares), ptr);
-        });
-
-    // Share Management
-    py::class_<MakeShare, Arithmetic, std::shared_ptr<MakeShare>>(m, "MakeShare")
-        .def(py::init<>())
-        .def("run", [](MakeShare &self, const py::list &input, int isRecvShare, PyShare &share) -> int {
-            io::KcalInput kcalInput(new DG_TeeInput());
+    py::class_<MakeShare, std::shared_ptr<MakeShare>>(m, "MakeShare")
+        .def(py::init<std::shared_ptr<Context>>())
+        .def("run", [](MakeShare &self, const py::list &input, int isRecvShare, io::MpcShare &share) {
+            io::Input kcalInput(new DG_TeeInput());
             FeedKcalInput(input, &kcalInput);
-            auto data = share.get(); // must have this
-            return self.Run(kcalInput, isRecvShare, data);
+            return self.Run(kcalInput, isRecvShare, &share);
         });
 
-    py::class_<RevealShare, Arithmetic, std::shared_ptr<RevealShare>>(m, "RevealShare")
-        .def(py::init<>())
-        .def("run", [](RevealShare &self, const PyShare &share, py::list &output) -> int {
-            io::KcalOutput kcalOutput;
-            int ret = self.Run(share.get(), kcalOutput);
-            FeedKcalOutput(kcalOutput, output);
+    py::class_<RevealShare, std::shared_ptr<RevealShare>>(m, "RevealShare")
+        .def(py::init<std::shared_ptr<Context>>())
+        .def("run", [](RevealShare &self, const io::MpcShare &share, py::list &output) {
+            io::Output out;
+            int ret = self.Run(&share, out);
+            FeedKcalOutput(out, output);
             return ret;
         });
 }
@@ -441,26 +338,17 @@ PYBIND11_MODULE(kcal, m)
         .value("NON_FIX_POINT", NON_FIX_POINT)
         .export_values();
 
-    py::class_<TeeNodeInfo>(m, "TeeNodeInfo").def(py::init<>()).def_readwrite("nodeId", &TeeNodeInfo::nodeId);
-
-    py::class_<KCAL_Config>(m, "Config")
+    py::class_<Config>(m, "Config")
         .def(py::init<>())
-        .def_readwrite("nodeId", &KCAL_Config::nodeId)
-        .def_readwrite("fixBits", &KCAL_Config::fixBits)
-        .def_readwrite("threadCount", &KCAL_Config::threadCount)
-        .def_readwrite("worldSize", &KCAL_Config::worldSize)
-        .def_readwrite("useSMAlg", &KCAL_Config::useSMAlg);
-
-    py::class_<Context, std::shared_ptr<Context>> contextClass(m, "ContextBase");
-    contextClass.def(py::init<>())
-        .def("GetWorldSize", &Context::GetWorldSize)
-        .def("NodeId", &Context::NodeId)
-        .def("IsValid", &Context::IsValid)
-        .def("GetConfig", &Context::GetConfig);
+        .def_readwrite("nodeId", &Config::nodeId)
+        .def_readwrite("fixBits", &Config::fixBits)
+        .def_readwrite("threadCount", &Config::threadCount)
+        .def_readwrite("worldSize", &Config::worldSize)
+        .def_readwrite("useSMAlg", &Config::useSMAlg);
 
     py::class_<ContextExt, std::shared_ptr<ContextExt>>(m, "Context")
         .def(py::init<>())
-        .def_static("create", [](KCAL_Config config, py::function sendCb, py::function recvCb) {
+        .def_static("create", [](Config config, py::function sendCb, py::function recvCb) {
             auto cppSendCb = [sendCb](const TeeNodeInfo &nodeInfo, const uint8_t *data, size_t dataLen) {
                 return PyCallbackAdapter::PySendCallback(nodeInfo, data, dataLen, sendCb);
             };
@@ -474,76 +362,30 @@ PYBIND11_MODULE(kcal, m)
 
     BindIoClasses(m);
 
-    py::class_<OperatorBase, std::shared_ptr<OperatorBase>>(m, "OperatorBase").def("GetType", &OperatorBase::GetType);
+    BindMpcOperators(m);
+
+    m.def("create_psi", [](const std::shared_ptr<ContextExt> &context) -> std::shared_ptr<Psi> {
+        return std::shared_ptr(OperatorFactory::CreatePsi(context->GetKcalContext()));
+    });
+
+    m.def("create_pir", [](const std::shared_ptr<ContextExt> &context) -> std::shared_ptr<Pir> {
+        return std::shared_ptr(OperatorFactory::CreatePir(context->GetKcalContext()));
+    });
 
     BindOtherOperators(m);
 
-    m.def("create_operator",
-          [](const std::shared_ptr<ContextExt> &context, KCAL_AlgorithmsType type) -> std::shared_ptr<OperatorBase> {
-              switch (type) {
-                  case KCAL_AlgorithmsType::PSI:
-                      return OperatorManager::CreateOperator<Psi>(context->GetKcalContext());
-                  case KCAL_AlgorithmsType::PIR:
-                      return OperatorManager::CreateOperator<Pir>(context->GetKcalContext());
-                  case KCAL_AlgorithmsType::ARITHMETIC:
-                      return OperatorManager::CreateOperator<Arithmetic>(context->GetKcalContext());
-                  case KCAL_AlgorithmsType::MAKE_SHARE:
-                      return OperatorManager::CreateOperator<MakeShare>(context->GetKcalContext());
-                  case KCAL_AlgorithmsType::REVEAL_SHARE:
-                      return OperatorManager::CreateOperator<RevealShare>(context->GetKcalContext());
-                  case KCAL_AlgorithmsType::ADD:
-                      return OperatorManager::CreateOperator<Add>(context->GetKcalContext());
-                  case KCAL_AlgorithmsType::SUB:
-                      return OperatorManager::CreateOperator<Sub>(context->GetKcalContext());
-                  case KCAL_AlgorithmsType::MUL:
-                      return OperatorManager::CreateOperator<Mul>(context->GetKcalContext());
-                  case KCAL_AlgorithmsType::DIV:
-                      return OperatorManager::CreateOperator<Div>(context->GetKcalContext());
-                  case KCAL_AlgorithmsType::LESS:
-                      return OperatorManager::CreateOperator<Less>(context->GetKcalContext());
-                  case KCAL_AlgorithmsType::LESS_EQUAL:
-                      return OperatorManager::CreateOperator<LessEqual>(context->GetKcalContext());
-                  case KCAL_AlgorithmsType::GREATER:
-                      return OperatorManager::CreateOperator<Greater>(context->GetKcalContext());
-                  case KCAL_AlgorithmsType::GREATER_EQUAL:
-                      return OperatorManager::CreateOperator<GreaterEqual>(context->GetKcalContext());
-                  case KCAL_AlgorithmsType::EQUAL:
-                      return OperatorManager::CreateOperator<Equal>(context->GetKcalContext());
-                  case KCAL_AlgorithmsType::NO_EQUAL:
-                      return OperatorManager::CreateOperator<NoEqual>(context->GetKcalContext());
-                  case KCAL_AlgorithmsType::SUM:
-                      return OperatorManager::CreateOperator<Sum>(context->GetKcalContext());
-                  case KCAL_AlgorithmsType::AVG:
-                      return OperatorManager::CreateOperator<Avg>(context->GetKcalContext());
-                  case KCAL_AlgorithmsType::MAX:
-                      return OperatorManager::CreateOperator<Max>(context->GetKcalContext());
-                  case KCAL_AlgorithmsType::MIN:
-                      return OperatorManager::CreateOperator<Min>(context->GetKcalContext());
-                  default:
-                      throw std::runtime_error("Unsupported operator type");
-              }
-          });
-
-    m.def("is_op_registered", &OperatorManager::IsOperatorRegistered);
-
-    m.def("register_all_ops", &RegisterAllOps);
-
-    m.def("build_dg_string", [](const std::vector<std::string> &strings) -> py::object {
-        DG_String *dg = nullptr;
-        int ret = io::DataHelper::BuildDgString(strings, &dg);
-        if (ret != 0) {
-            throw std::runtime_error("BuildDgString failed");
-        }
-        ret = io::DataHelper::BuildDgString(strings, &dg);
-        if (ret != 0) {
-            throw std::runtime_error("BuildDgString failed");
-        }
-        return py::cast(dg);
+    m.def("create_make_share", [](const std::shared_ptr<ContextExt> &context) -> std::shared_ptr<MakeShare> {
+        return std::shared_ptr(OperatorFactory::CreateMakeShare(context->GetKcalContext()));
     });
 
-    m.def("release_output", [](DG_TeeOutput *output) { io::DataHelper::ReleaseOutput(&output); });
+    m.def("create_reveal_share", [](const std::shared_ptr<ContextExt> &context) -> std::shared_ptr<RevealShare> {
+        return std::shared_ptr(OperatorFactory::CreateRevealShare(context->GetKcalContext()));
+    });
 
-    m.def("release_mpc_share", [](DG_MpcShare *share) { io::DataHelper::ReleaseMpcShare(&share); });
+    m.def("create_mpc",
+          [](const std::shared_ptr<ContextExt> &context, KCAL_AlgorithmsType type) -> std::shared_ptr<MpcOperatorBase> {
+              return OperatorFactory::CreateMpc(context->GetKcalContext(), type);
+          });
 }
 
 } // namespace kcal

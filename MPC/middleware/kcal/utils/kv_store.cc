@@ -14,12 +14,12 @@
 
 namespace kcal::io {
 
-void MemKVStore::Put(std::string_view key, KcalMpcShare *value)
+void MemKVStore::Put(std::string_view key, MpcShare *value)
 {
     mapCache_.insert(std::make_pair(key, value));
 }
 
-bool MemKVStore::Get(std::string_view key, KcalMpcShare *&value)
+bool MemKVStore::Get(std::string_view key, MpcShare *&value)
 {
     auto it = mapCache_.find(static_cast<std::string>(key));
     if (it != mapCache_.end()) {

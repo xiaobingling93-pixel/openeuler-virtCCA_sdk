@@ -20,7 +20,7 @@ OperatorRegistry &OperatorRegistry::Instance()
     return instance;
 }
 
-std::unique_ptr<OperatorBase> OperatorRegistry::CreateOperator(KCAL_AlgorithmsType type)
+std::unique_ptr<MpcOperatorBase> OperatorRegistry::CreateOperator(KCAL_AlgorithmsType type)
 {
     std::lock_guard<std::mutex> lock(mutex_);
 

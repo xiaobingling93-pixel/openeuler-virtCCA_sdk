@@ -20,7 +20,7 @@
 
 namespace kcal {
 
-struct KCAL_Config {
+struct Config {
     int nodeId;
     int fixBits;
     int threadCount;
@@ -31,19 +31,19 @@ struct KCAL_Config {
 class Context {
 public:
     Context() = default;
-    explicit Context(KCAL_Config config);
+    explicit Context(Config config);
     ~Context();
 
     Context(const Context &) = delete;
     Context &operator=(const Context &) = delete;
 
-    static std::shared_ptr<Context> Create(KCAL_Config config, TEE_NET_RES *netRes);
+    static std::shared_ptr<Context> Create(Config config, TEE_NET_RES *netRes);
     int Init();
 
     int GetWorldSize() const { return config_.worldSize; }
     void *GetTeeConfig() { return teeCfg_; }
     bool IsValid() const { return teeCfg_ != nullptr; }
-    KCAL_Config GetConfig() const { return config_; }
+    Config GetConfig() const { return config_; }
     int NodeId() const { return config_.nodeId; }
 
     DG_TeeCtx *GetTeeCtx(KCAL_AlgorithmsType algoType);
@@ -52,7 +52,7 @@ public:
 private:
     int SetNetRes(TEE_NET_RES *teeNetRes);
 
-    KCAL_Config config_;
+    Config config_;
     void *teeCfg_ = nullptr;
     DG_ConfigOpts *cfgOpts_ = nullptr;
     std::unique_ptr<TeeCtxManager> teeCtxManager_;
