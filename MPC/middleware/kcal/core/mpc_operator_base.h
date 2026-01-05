@@ -16,25 +16,30 @@
 #include <memory>
 #include "kcal/core/context.h"
 #include "kcal/enumeration/kcal_enum.h"
+#include "kcal/utils/io.h"
 
 namespace kcal {
 
-class OperatorBase {
+class MpcOperatorBase {
 public:
-    virtual ~OperatorBase() = default;
+    virtual ~MpcOperatorBase();
 
     int Initialize(std::shared_ptr<Context> context);
-    virtual KCAL_AlgorithmsType GetType() const = 0;
-
     bool IsInitialized() const { return initialized_; }
 
-protected:
-    OperatorBase() = default;
+    virtual KCAL_AlgorithmsType GetType() const = 0;
+    virtual int Run(const io::MpcShareSet &shareSet, io::MpcShare *&outShare) = 0;
 
-    virtual int GetTeeCtx(const std::shared_ptr<Context> &context) = 0;
+protected:
+    MpcOperatorBase();
+
+    int GetTeeCtx(const std::shared_ptr<Context> &context);
 
     bool initialized_ = false;
     std::shared_ptr<Context> context_;
+
+    DG_TeeCtx *dgTeeCtx_ = nullptr;
+    std::unique_ptr<DG_Arithmetic_Opts> opts_;
 };
 
 } // namespace kcal

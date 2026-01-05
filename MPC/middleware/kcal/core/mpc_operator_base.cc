@@ -10,11 +10,35 @@
  * See the Mulan PSL v2 for more details.
  */
 
-#include "kcal/core/operator_base.h"
+#include "kcal/core/mpc_operator_base.h"
 
 namespace kcal {
 
-int OperatorBase::Initialize(std::shared_ptr<Context> context)
+MpcOperatorBase::MpcOperatorBase()
+{
+    opts_ = std::make_unique<DG_Arithmetic_Opts>();
+    *opts_ = DG_InitArithmeticOpts();
+}
+
+MpcOperatorBase::~MpcOperatorBase()
+{
+    if (initialized_) {
+        dgTeeCtx_ = nullptr;
+        context_.reset();
+        initialized_ = false;
+    }
+}
+
+int MpcOperatorBase::GetTeeCtx(const std::shared_ptr<Context> &context)
+{
+    dgTeeCtx_ = context->GetTeeCtx(KCAL_AlgorithmsType::ARITHMETIC);
+    if (!dgTeeCtx_) {
+        return DG_ERR_MPC_INVALID_PARAM;
+    }
+    return DG_SUCCESS;
+}
+
+int MpcOperatorBase::Initialize(std::shared_ptr<Context> context)
 {
     if (!context || !context->IsValid()) {
         return DG_ERR_MPC_INVALID_PARAM;

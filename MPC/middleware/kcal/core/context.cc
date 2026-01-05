@@ -11,13 +11,11 @@
  */
 
 #include "kcal/core/context.h"
+#include "kcal/operator/mpc_operator_register.h"
 
 namespace kcal {
 
-Context::Context(KCAL_Config config) : config_(config)
-{
-    teeCtxManager_ = std::make_unique<TeeCtxManager>();
-}
+Context::Context(Config config) : config_(config) { teeCtxManager_ = std::make_unique<TeeCtxManager>(); }
 
 Context::~Context()
 {
@@ -79,7 +77,7 @@ bool Context::IsTeeCtxInitialized(KCAL_AlgorithmsType algoType) const
     return teeCtxManager_->IsTeeCtxInitialized(algoType);
 }
 
-std::shared_ptr<Context> Context::Create(KCAL_Config config, TEE_NET_RES *netRes)
+std::shared_ptr<Context> Context::Create(Config config, TEE_NET_RES *netRes)
 {
     if (!netRes) {
         return nullptr;
@@ -93,6 +91,7 @@ std::shared_ptr<Context> Context::Create(KCAL_Config config, TEE_NET_RES *netRes
     if (rv != DG_SUCCESS) {
         return nullptr;
     }
+    RegisterAllOps();
     return context;
 }
 

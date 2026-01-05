@@ -81,8 +81,7 @@ void TeeCtxManager::RegisterInitializer(std::unique_ptr<TeeCtxInitializer> initi
     }
 }
 
-void TeeCtxManager::RegisterInitializers(
-    std::vector<std::unique_ptr<TeeCtxInitializer>> initializers)
+void TeeCtxManager::RegisterInitializers(std::vector<std::unique_ptr<TeeCtxInitializer>> initializers)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto &initializer : initializers) {

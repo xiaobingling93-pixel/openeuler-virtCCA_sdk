@@ -15,7 +15,7 @@ public:
     using SendCallback = std::function<int(const TeeNodeInfo &, const uint8_t *, size_t)>;
     using RecvCallback = std::function<int(const TeeNodeInfo &, uint8_t *, size_t)>;
 
-    static std::shared_ptr<ContextExt> Create(KCAL_Config config, SendCallback sendCb, RecvCallback recvCb);
+    static std::shared_ptr<ContextExt> Create(Config config, SendCallback sendCb, RecvCallback recvCb);
 
     ContextExt() = default;
     ~ContextExt();

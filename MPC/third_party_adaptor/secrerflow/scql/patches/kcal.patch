@@ -70,18 +70,10 @@ index 9c265e0..5921664 100644
          "@spulib//libspu/core:config",
          "@spulib//libspu/core:context",
 diff --git a/engine/framework/session.cc b/engine/framework/session.cc
-index 3beaa88..1e02c77 100644
+index 3beaa88..6f1800a 100644
 --- a/engine/framework/session.cc
 +++ b/engine/framework/session.cc
-@@ -19,6 +19,7 @@
- 
- #include "algorithm"
- #include "arrow/visit_array_inline.h"
-+#include "kcal/operator/all_operator_register.h"
- #include "libspu/core/config.h"
- #include "libspu/mpc/factory.h"
- #include "openssl/sha.h"
-@@ -27,6 +28,8 @@
+@@ -27,6 +27,8 @@
  #include "engine/core/arrow_helper.h"
  #include "engine/core/primitive_builder.h"
  #include "engine/core/string_tensor_builder.h"
@@ -90,16 +82,16 @@ index 3beaa88..1e02c77 100644
  #include "engine/util/filepath_helper.h"
  #include "engine/util/logging.h"
  #include "engine/util/prometheus_monitor.h"
-@@ -120,6 +123,28 @@ Session::Session(const SessionOptions& session_opt,
+@@ -120,6 +122,27 @@ Session::Session(const SessionOptions& session_opt,
      spu::mpc::Factory::RegisterProtocol(spu_ctx_.get(), lctx_);
    }
- 
+
 +  kcal::GlobalManager::GetInstance().InitializeCtx(lctx_);
 +  // initialize config
 +  SPDLOG_INFO("thread count: {}, fxp_bits: {}",
 +              params.spu_runtime_cfg().max_concurrency(),
 +              params.spu_runtime_cfg().fxp_fraction_bits());
-+  kcal::KCAL_Config kcal_cfg{};
++  kcal::Config kcal_cfg{};
 +  kcal_cfg.fixBits = 3;  // 3 means .xxx
 +  kcal_cfg.nodeId = lctx_->Rank();
 +  kcal_cfg.threadCount = params.spu_runtime_cfg().max_concurrency();
@@ -113,13 +105,12 @@ index 3beaa88..1e02c77 100644
 +  YACL_ENFORCE(kcal_ctx_ != nullptr, "kcal::Context::Create failed.");
 +  // sharing storage
 +  kcal_kv_store_ = std::make_unique<kcal::io::MemKVStore>();
-+  kcal::RegisterAllOps();
 +  SPDLOG_INFO("Init kcal context done");
 +
    // create detail logger for session if need
    if (session_opt.log_options.enable_psi_detail_logger &&
        debug_opts_.enable_psi_detail_log()) {
-@@ -346,6 +371,7 @@ void Session::DelTensors(const std::vector<std::string>& tensor_names) {
+@@ -346,6 +369,7 @@ void Session::DelTensors(const std::vector<std::string>& tensor_names) {
        // FIXME(xiaoyuan), if run dag parallel, there is no lock in SymbolTable,
        // may cause race condition
        device_symbols_.delVar(name);
@@ -133,7 +124,7 @@ index 29b3cd2..d43b0fe 100644
 +++ b/engine/framework/session.h
 @@ -25,6 +25,8 @@
  #include <vector>
- 
+
  #include "absl/container/flat_hash_map.h"
 +#include "kcal/core/context.h"
 +#include "kcal/utils/kv_store.h"
@@ -141,15 +132,15 @@ index 29b3cd2..d43b0fe 100644
  #include "libspu/device/symbol_table.h"
  #include "yacl/link/link.h"
 @@ -133,6 +135,10 @@ class Session {
- 
+
    spu::SPUContext* GetSpuContext() const { return spu_ctx_.get(); }
- 
+
 +  std::shared_ptr<kcal::Context> GetKcalContext() const { return kcal_ctx_; }
 +
 +  kcal::io::MemKVStore* GetKcalShareStore() { return kcal_kv_store_.get(); }
 +
    spu::device::SymbolTable* GetDeviceSymbols() { return &device_symbols_; }
- 
+
    SessionState GetState() const { return state_.load(); }
 @@ -255,6 +261,8 @@ class Session {
    std::shared_ptr<yacl::link::Context> lctx_;
@@ -157,9 +148,9 @@ index 29b3cd2..d43b0fe 100644
    spu::device::SymbolTable device_symbols_;   // spu device symbols table
 +  std::shared_ptr<kcal::Context> kcal_ctx_;   // KCALContext
 +  std::unique_ptr<kcal::io::MemKVStore> kcal_kv_store_;  // store kcal share
- 
+
    absl::flat_hash_map<size_t, std::string> hash_to_string_values_;
- 
+
 diff --git a/engine/kcal_adaptor/BUILD.bazel b/engine/kcal_adaptor/BUILD.bazel
 new file mode 100644
 index 0000000..a9ed5fd
@@ -264,7 +255,7 @@ index 0000000..268d49a
 +}  // namespace kcal
 diff --git a/engine/kcal_adaptor/kcal_io_helper.cc b/engine/kcal_adaptor/kcal_io_helper.cc
 new file mode 100644
-index 0000000..aac665e
+index 0000000..deb4673
 --- /dev/null
 +++ b/engine/kcal_adaptor/kcal_io_helper.cc
 @@ -0,0 +1,183 @@
@@ -290,7 +281,7 @@ index 0000000..aac665e
 +
 +int KcalInfeedHelper::TensorToTeeInput(
 +    std::shared_ptr<scql::engine::Tensor> tensor,
-+    kcal::io::KcalInput& tee_input) {
++    kcal::io::Input& tee_input) {
 +  DG_TeeInput* kcal_input = tee_input.Get();
 +  auto [array, ptype] = TensorToArray(tensor);
 +  int64_t size = array.numel();
@@ -453,7 +444,7 @@ index 0000000..aac665e
 +}  // namespace kcal
 diff --git a/engine/kcal_adaptor/kcal_io_helper.h b/engine/kcal_adaptor/kcal_io_helper.h
 new file mode 100644
-index 0000000..6e95f2a
+index 0000000..56fd084
 --- /dev/null
 +++ b/engine/kcal_adaptor/kcal_io_helper.h
 @@ -0,0 +1,45 @@
@@ -483,7 +474,7 @@ index 0000000..6e95f2a
 +                       DG_TeeInput* tee_input);
 +
 +  int TensorToTeeInput(std::shared_ptr<scql::engine::Tensor> tensor,
-+                       kcal::io::KcalInput& tee_input);
++                       kcal::io::Input& tee_input);
 +
 +  spu::NdArrayRef ConvertToArray(spu::PtBufferView bv);
 +
@@ -555,24 +546,26 @@ index 0000000..21a8ff6
 +}  // namespace kcal
 \ No newline at end of file
 diff --git a/engine/operator/binary_base.cc b/engine/operator/binary_base.cc
-index 03e1c4e..c343d66 100644
+index 03e1c4e..2e4a287 100644
 --- a/engine/operator/binary_base.cc
 +++ b/engine/operator/binary_base.cc
-@@ -14,8 +14,11 @@
- 
+@@ -13,9 +13,13 @@
+ // limitations under the License.
+
  #include "engine/operator/binary_base.h"
- 
-+#include "kcal/core/operator_manager.h"
-+#include "kcal/operator/kcal_arithmetic.h"
++#include <kcal/enumeration/kcal_enum.h>
+
++#include "kcal/core/operator_factory.h"
++#include "kcal/operator/kcal_mpc_arithmetic.h"
  #include "libspu/kernel/hlo/basic_binary.h"
- 
+
 +#include "engine/kcal_adaptor/kcal_io_helper.h"
  #include "engine/util/context_util.h"
  #include "engine/util/spu_io.h"
  #include "engine/util/tensor_util.h"
-@@ -79,6 +82,9 @@ void BinaryBase::Execute(ExecContext* ctx) {
+@@ -79,6 +83,9 @@ void BinaryBase::Execute(ExecContext* ctx) {
  }
- 
+
  void BinaryBase::ExecuteInSecret(ExecContext* ctx) {
 +#ifdef EXECUTE_IN_KCAL
 +  return ExecuteInKcal(ctx);
@@ -580,7 +573,7 @@ index 03e1c4e..c343d66 100644
    const auto& left_pbs = ctx->GetInput(kInLeft);
    const auto& right_pbs = ctx->GetInput(kInRight);
    const auto& out_pbs = ctx->GetOutput(kOut);
-@@ -111,6 +117,87 @@ void BinaryBase::ExecuteInSecret(ExecContext* ctx) {
+@@ -111,6 +118,86 @@ void BinaryBase::ExecuteInSecret(ExecContext* ctx) {
      device_symbols->setVar(SpuVarNameEncoder::GetValidityName(out_param.name(), result_validity);
  #endif  // SCQL_WITH_NULL
    }
@@ -605,8 +598,8 @@ index 03e1c4e..c343d66 100644
 +    const auto& right_param = right_pbs[i];
 +    const auto& out_param = out_pbs[i];
 +
-+    kcal::io::KcalMpcShare* left_share = nullptr;
-+    kcal::io::KcalMpcShare* right_share = nullptr;
++    kcal::io::MpcShare* left_share = nullptr;
++    kcal::io::MpcShare* right_share = nullptr;
 +    int ret =
 +        share_store->Get(kcal::GetKcalName(left_param.name()), left_share);
 +    YACL_ENFORCE(ret, "Not find left share: {}",
@@ -614,49 +607,48 @@ index 03e1c4e..c343d66 100644
 +    ret = share_store->Get(kcal::GetKcalName(right_param.name()), right_share);
 +    YACL_ENFORCE(ret, "Not find right share: {}",
 +                 kcal::GetKcalName(right_param.name()));
-+    auto shareSet =
-+        kcal::io::KcalMpcShareSet::Create({left_share, right_share});
-+    auto* out_share = kcal::io::KcalMpcShare::Create();
++    auto shareSet = kcal::io::MpcShareSet::Create({left_share, right_share});
++    auto* out_share = new kcal::io::MpcShare();
 +    if (op_type == "Mul") {
-+      auto op = kcal::OperatorManager::CreateOperator<kcal::Mul>(kcal_ctx);
++      auto op = kcal::OperatorFactory::CreateMpc(kcal_ctx, kcal::KCAL_AlgorithmsType::MUL);
 +      YACL_ENFORCE(op != nullptr, "Create mul op failed.");
 +      ret = op->Run(shareSet, out_share);
 +    } else if (op_type == "Minus") {
-+      auto op = kcal::OperatorManager::CreateOperator<kcal::Sub>(kcal_ctx);
++      auto op = kcal::OperatorFactory::CreateMpc(kcal_ctx, kcal::KCAL_AlgorithmsType::SUB);
 +      YACL_ENFORCE(op != nullptr, "Create sub op failed.");
 +      ret = op->Run(shareSet, out_share);
 +    } else if (op_type == "Div") {
-+      auto op = kcal::OperatorManager::CreateOperator<kcal::Div>(kcal_ctx);
++      auto op = kcal::OperatorFactory::CreateMpc(kcal_ctx, kcal::KCAL_AlgorithmsType::DIV);
 +      YACL_ENFORCE(op != nullptr, "Create div op failed.");
 +      ret = op->Run(shareSet, out_share);
 +    } else if (op_type == "Less") {
-+      auto op = kcal::OperatorManager::CreateOperator<kcal::Less>(kcal_ctx);
++      auto op = kcal::OperatorFactory::CreateMpc(kcal_ctx, kcal::KCAL_AlgorithmsType::LESS);
 +      YACL_ENFORCE(op != nullptr, "Create less op failed.");
 +      ret = op->Run(shareSet, out_share);
 +    } else if (op_type == "Add") {
-+      auto op = kcal::OperatorManager::CreateOperator<kcal::Add>(kcal_ctx);
++      auto op = kcal::OperatorFactory::CreateMpc(kcal_ctx, kcal::KCAL_AlgorithmsType::ADD);
 +      YACL_ENFORCE(op != nullptr, "Create add op failed.");
 +      ret = op->Run(shareSet, out_share);
 +    } else if (op_type == "LessEqual") {
 +      auto op =
-+          kcal::OperatorManager::CreateOperator<kcal::LessEqual>(kcal_ctx);
++          kcal::OperatorFactory::CreateMpc(kcal_ctx, kcal::KCAL_AlgorithmsType::LESS_EQUAL);
 +      YACL_ENFORCE(op != nullptr, "Create less equal op failed.");
 +      ret = op->Run(shareSet, out_share);
 +    } else if (op_type == "Greater") {
-+      auto op = kcal::OperatorManager::CreateOperator<kcal::Greater>(kcal_ctx);
++      auto op = kcal::OperatorFactory::CreateMpc(kcal_ctx, kcal::KCAL_AlgorithmsType::GREATER);
 +      YACL_ENFORCE(op != nullptr, "Create greater op failed.");
 +      ret = op->Run(shareSet, out_share);
 +    } else if (op_type == "GreaterEqual") {
 +      auto op =
-+          kcal::OperatorManager::CreateOperator<kcal::GreaterEqual>(kcal_ctx);
++          kcal::OperatorFactory::CreateMpc(kcal_ctx, kcal::KCAL_AlgorithmsType::GREATER_EQUAL);
 +      YACL_ENFORCE(op != nullptr, "Create greater equal op failed.");
 +      ret = op->Run(shareSet, out_share);
 +    } else if (op_type == "Equal") {
-+      auto op = kcal::OperatorManager::CreateOperator<kcal::Equal>(kcal_ctx);
++      auto op = kcal::OperatorFactory::CreateMpc(kcal_ctx, kcal::KCAL_AlgorithmsType::EQUAL);
 +      YACL_ENFORCE(op != nullptr, "Create equal op failed.");
 +      ret = op->Run(shareSet, out_share);
 +    } else if (op_type == "NotEqual") {
-+      auto op = kcal::OperatorManager::CreateOperator<kcal::NoEqual>(kcal_ctx);
++      auto op = kcal::OperatorFactory::CreateMpc(kcal_ctx, kcal::KCAL_AlgorithmsType::NO_EQUAL);
 +      YACL_ENFORCE(op != nullptr, "Create not equal op failed.");
 +      ret = op->Run(shareSet, out_share);
 +    }
@@ -666,30 +658,30 @@ index 03e1c4e..c343d66 100644
 +    SPDLOG_INFO("Put share: {}", kcal::GetKcalName(out_param.name()));
 +  }
  }
- 
+
  void BinaryBase::ExecuteInPlain(ExecContext* ctx) {
 diff --git a/engine/operator/binary_base.h b/engine/operator/binary_base.h
 index d3f30c4..107500e 100644
 --- a/engine/operator/binary_base.h
 +++ b/engine/operator/binary_base.h
 @@ -44,6 +44,8 @@ class BinaryBase : public Operator {
- 
+
    void ExecuteInSecret(ExecContext* ctx);
- 
+
 +  void ExecuteInKcal(ExecContext* ctx);
 +
    void ExecuteInPlain(ExecContext* ctx);
- 
+
    virtual TensorPtr ComputeInPlain(const Tensor& lhs, const Tensor& rhs) = 0;
 diff --git a/engine/operator/join.cc b/engine/operator/join.cc
-index e517caf..15bf391 100644
+index e517caf..0685846 100644
 --- a/engine/operator/join.cc
 +++ b/engine/operator/join.cc
 @@ -27,6 +27,9 @@
  #include <vector>
- 
+
  #include "butil/files/scoped_temp_dir.h"
-+#include "kcal/core/operator_manager.h"
++#include "kcal/core/operator_factory.h"
 +#include "kcal/operator/kcal_psi.h"
 +#include "kcal/utils/io.h"
  #include "msgpack.hpp"
@@ -705,13 +697,13 @@ index e517caf..15bf391 100644
  #include "engine/util/psi/batch_provider.h"
 @@ -64,6 +68,9 @@ void Join::Validate(ExecContext* ctx) {
  }
- 
+
  void Join::Execute(ExecContext* ctx) {
 +#ifdef EXECUTE_IN_KCAL
 +  Join::KcalPsiJoin(ctx);
 +#else
    auto logger = ctx->GetActiveLogger();
- 
+
    int64_t algorithm = ctx->GetInt64ValueFromAttribute(kAlgorithmAttr);
 @@ -100,6 +107,7 @@ void Join::Execute(ExecContext* ctx) {
      SPDLOG_LOGGER_INFO(logger, "EcdhPsi is chosen after coordination");
@@ -719,12 +711,12 @@ index e517caf..15bf391 100644
    }
 +#endif
  }
- 
+
  void Join::ValidateJoinTypeAndAlgo(ExecContext* ctx) {
-@@ -158,6 +166,46 @@ bool Join::IsOprfServerAccordToHint(ExecContext* ctx, int64_t server_hint) {
+@@ -158,6 +166,45 @@ bool Join::IsOprfServerAccordToHint(ExecContext* ctx, int64_t server_hint) {
    return (is_left && server_hint == 0) || (!is_left && server_hint == 1);
  }
- 
+
 +void Join::KcalPsiJoin(ExecContext* ctx) {
 +  auto logger = ctx->GetActiveLogger();
 +  const auto& my_party_code = ctx->GetSession()->SelfPartyCode();
@@ -741,15 +733,14 @@ index e517caf..15bf391 100644
 +
 +  std::vector<std::string> datas = kcal::BatchConvertToVecStr(join_keys);
 +
-+  kcal::io::KcalInput input;
++  kcal::io::Input input;
 +  input.Fill(datas);
 +
-+  auto op = kcal::OperatorManager::CreateOperator<kcal::Psi>(kcal_ctx);
++  auto op = kcal::OperatorFactory::CreatePsi(kcal_ctx);
 +  YACL_ENFORCE(op != nullptr, "Create psi op failed.");
 +
-+  kcal::io::KcalOutput output;
-+  int ret =
-+      op->Run(input.Get(), output.GetSecondaryPointer(), TEE_OUTPUT_INDEX);
++  kcal::io::Output output;
++  int ret = op->Run(input, output, TEE_OUTPUT_INDEX);
 +  YACL_ENFORCE(ret == DG_SUCCESS, "Psi op run failed. ret={}", ret);
 +
 +  auto join_indices = kcal::PsiResToTensorPtr(output.Get());
@@ -767,7 +758,7 @@ index e517caf..15bf391 100644
 +
  void Join::EcdhPsiJoin(ExecContext* ctx) {
    auto logger = ctx->GetActiveLogger();
- 
+
 diff --git a/engine/operator/join.h b/engine/operator/join.h
 index 60644be..985e4a8 100644
 --- a/engine/operator/join.h
@@ -777,28 +768,30 @@ index 60644be..985e4a8 100644
                            std::optional<util::PsiSizeInfo> psi_size_info = {});
    static void Rr22PsiJoin(ExecContext* ctx);
 +  static void KcalPsiJoin(ExecContext* ctx);
- 
+
    static std::vector<TensorPtr> GetJoinKeys(ExecContext* ctx, bool is_left);
    static void SetJoinResult(ExecContext* ctx, bool is_left,
 diff --git a/engine/operator/make_private.cc b/engine/operator/make_private.cc
-index 8c864b6..7ad5a03 100644
+index 8c864b6..db748c0 100644
 --- a/engine/operator/make_private.cc
 +++ b/engine/operator/make_private.cc
-@@ -14,7 +14,11 @@
- 
+@@ -14,7 +14,13 @@
+
  #include "engine/operator/make_private.h"
- 
-+#include "kcal/core/operator_manager.h"
+
++#include <kcal/enumeration/kcal_enum.h>
++
++#include "kcal/core/operator_factory.h"
 +#include "kcal/operator/kcal_reveal_share.h"
 +
  #include "engine/core/string_tensor_builder.h"
 +#include "engine/kcal_adaptor/kcal_io_helper.h"
  #include "engine/util/spu_io.h"
  #include "engine/util/tensor_util.h"
- 
-@@ -49,6 +53,9 @@ void MakePrivate::Validate(ExecContext* ctx) {
+
+@@ -49,6 +55,9 @@ void MakePrivate::Validate(ExecContext* ctx) {
  }
- 
+
  void MakePrivate::Execute(ExecContext* ctx) {
 +#ifdef EXECUTE_IN_KCAL
 +  return ExecuteInKcal(ctx);
@@ -806,10 +799,10 @@ index 8c864b6..7ad5a03 100644
    auto reveal_to_party = ctx->GetStringValueFromAttribute(kRevealToAttr);
    auto reveal_to_rank = ctx->GetSession()->GetPartyRank(reveal_to_party);
    YACL_ENFORCE(reveal_to_rank != -1, "unknown rank for party {}",
-@@ -80,6 +87,62 @@ void MakePrivate::Execute(ExecContext* ctx) {
+@@ -80,6 +89,62 @@ void MakePrivate::Execute(ExecContext* ctx) {
        }
      }
- 
+
 +    if (reveal_to_me) {
 +      YACL_ENFORCE(t);
 +      ctx->GetTensorTable()->AddTensor(output_pbs[i].name(), std::move(t));
@@ -833,19 +826,19 @@ index 8c864b6..7ad5a03 100644
 +
 +  auto kcal_ctx = ctx->GetSession()->GetKcalContext();
 +  auto* share_store = ctx->GetSession()->GetKcalShareStore();
-+  auto op = kcal::OperatorManager::CreateOperator<kcal::RevealShare>(kcal_ctx);
++  auto op = kcal::OperatorFactory::CreateRevealShare(kcal_ctx);
 +  YACL_ENFORCE(op != nullptr, "Create reveal share op failed.");
 +
 +  for (int i = 0; i < input_pbs.size(); ++i) {
 +    TensorPtr t;
 +    if (util::IsTensorStatusMatched(input_pbs[i], pb::TENSORSTATUS_SECRET)) {
 +      auto out_type = output_pbs[i].elem_type();
-+      kcal::io::KcalMpcShare* share_out = nullptr;
++      kcal::io::MpcShare* share_out = nullptr;
 +      int ret =
 +          share_store->Get(kcal::GetKcalName(input_pbs[i].name()), share_out);
 +      YACL_ENFORCE(ret, "Not find share out {}",
 +                   kcal::GetKcalName(input_pbs[i].name()));
-+      kcal::io::KcalOutput output;
++      kcal::io::Output output;
 +      ret = op->Run(share_out, output);
 +      YACL_ENFORCE(ret == DG_SUCCESS, "Reveal share op run failed. ret={}",
 +                   ret);
@@ -878,38 +871,40 @@ index fc8c257..695d1fc 100644
    void Validate(ExecContext* ctx) override;
    void Execute(ExecContext* ctx) override;
 +  void ExecuteInKcal(ExecContext* ctx);
- 
+
   private:
    static TensorPtr RevealPublicString(ExecContext* ctx, const TensorPtr& t,
 diff --git a/engine/operator/make_share.cc b/engine/operator/make_share.cc
-index b738aec..36946dc 100644
+index b738aec..419536b 100644
 --- a/engine/operator/make_share.cc
 +++ b/engine/operator/make_share.cc
-@@ -14,8 +14,11 @@
- 
+@@ -13,9 +13,13 @@
+ // limitations under the License.
+
  #include "engine/operator/make_share.h"
- 
-+#include "kcal/core/operator_manager.h"
++#include <kcal/enumeration/kcal_enum.h>
+
++#include "kcal/core/operator_factory.h"
 +#include "kcal/operator/kcal_make_share.h"
  #include "libspu/device/io.h"
- 
+
 +#include "engine/kcal_adaptor/kcal_io_helper.h"
  #include "engine/util/spu_io.h"
  #include "engine/util/tensor_util.h"
- 
-@@ -41,6 +44,9 @@ void MakeShare::Validate(ExecContext* ctx) {
+
+@@ -41,6 +45,9 @@ void MakeShare::Validate(ExecContext* ctx) {
  }
- 
+
  void MakeShare::Execute(ExecContext* ctx) {
 +#ifdef EXECUTE_IN_KCAL
 +  return ExecuteInKcal(ctx);
 +#else
    spu::device::ColocatedIo cio(ctx->GetSession()->GetSpuContext());
    util::SpuInfeedHelper infeed_helper(&cio);
- 
-@@ -69,6 +75,40 @@ void MakeShare::Execute(ExecContext* ctx) {
+
+@@ -69,6 +76,40 @@ void MakeShare::Execute(ExecContext* ctx) {
    auto& symbols = cio.deviceSymbols();
- 
+
    ctx->GetSession()->MergeDeviceSymbolsFrom(symbols);
 +#endif
 +}
@@ -929,16 +924,16 @@ index b738aec..36946dc 100644
 +
 +    auto in_t = ctx->GetTensorTable()->GetTensor(input_pb.name());
 +    int isRecvShare = 1;  // receive share data default
-+    kcal::io::KcalInput input(new DG_TeeInput());
++    kcal::io::Input input(new DG_TeeInput());
 +    if (in_t != nullptr) {
 +      isRecvShare = 0;  // need sharing data
 +      int res = kcal_helper.TensorToTeeInput(in_t, input);
 +      YACL_ENFORCE(res == 0, "TensorToTeeInput failed.");
 +      SPDLOG_INFO("tensor {} to teeinput success", input_pb.name());
 +    }
-+    auto op = kcal::OperatorManager::CreateOperator<kcal::MakeShare>(kcal_ctx);
++    auto op = kcal::OperatorFactory::CreateMakeShare(kcal_ctx);
 +    YACL_ENFORCE(op != nullptr, "Create make share op failed.");
-+    auto* share = kcal::io::KcalMpcShare::Create();
++    auto* share = new kcal::io::MpcShare();
 +    int ret = op->Run(input, isRecvShare, share);
 +    YACL_ENFORCE(ret == 0, "Kcal make share failed, error code: {}.", ret);
 +    ctx->GetSession()->GetKcalShareStore()->Put(
@@ -946,7 +941,7 @@ index b738aec..36946dc 100644
 +    SPDLOG_INFO("Put share: {}", kcal::GetKcalName(output_pb.name()));
 +  }
  }
- 
+
  }  // namespace scql::engine::op
 \ No newline at end of file
 diff --git a/engine/operator/make_share.h b/engine/operator/make_share.h
@@ -959,34 +954,39 @@ index fe1953e..52deb13 100644
    void Execute(ExecContext* ctx) override;
 +  void ExecuteInKcal(ExecContext* ctx);
  };
- 
+
  }  // namespace scql::engine::op
 \ No newline at end of file
 diff --git a/engine/operator/reduce.cc b/engine/operator/reduce.cc
-index b7182bc..f4aa28f 100644
+index b7182bc..84ca13e 100644
 --- a/engine/operator/reduce.cc
 +++ b/engine/operator/reduce.cc
-@@ -19,6 +19,10 @@
- 
+@@ -13,12 +13,15 @@
+ // limitations under the License.
+
+ #include "engine/operator/reduce.h"
++#include <kcal/enumeration/kcal_enum.h>
+
+ #include <functional>
+ #include <iterator>
+
  #include "arrow/compute/api_aggregate.h"
  #include "arrow/compute/exec.h"
-+#include "kcal/core/operator_manager.h"
-+#include "kcal/operator/kcal_avg.h"
-+#include "kcal/operator/kcal_sum.h"
-+#include "kcal/operator/kcal_maximum.h"
++#include "kcal/core/operator_factory.h"
++#include "kcal/operator/kcal_mpc_arithmetic.h"
  #include "libspu/kernel/hal/shape_ops.h"
  #include "libspu/kernel/hlo/basic_binary.h"
  #include "libspu/kernel/hlo/const.h"
-@@ -26,6 +30,7 @@
- 
+@@ -26,6 +29,7 @@
+
  #include "engine/core/arrow_helper.h"
  #include "engine/core/tensor_constructor.h"
 +#include "engine/kcal_adaptor/kcal_io_helper.h"
  #include "engine/util/spu_io.h"
  #include "engine/util/tensor_util.h"
- 
-@@ -69,6 +74,9 @@ void ReduceBase::Execute(ExecContext* ctx) {
- 
+
+@@ -69,6 +73,9 @@ void ReduceBase::Execute(ExecContext* ctx) {
+
      ctx->GetTensorTable()->AddTensor(output_pb.name(), TensorFrom(chunked_arr));
    } else {
 +#ifdef EXECUTE_IN_KCAL
@@ -995,7 +995,7 @@ index b7182bc..f4aa28f 100644
      auto* sctx = ctx->GetSession()->GetSpuContext();
      auto* symbols = ctx->GetSession()->GetDeviceSymbols();
      auto in_value =
-@@ -78,10 +86,49 @@ void ReduceBase::Execute(ExecContext* ctx) {
+@@ -78,10 +85,49 @@ void ReduceBase::Execute(ExecContext* ctx) {
                      out_value);
  #ifdef SCQL_WITH_NULL
      // TODO: complete null propagation in aggregation
@@ -1004,7 +1004,7 @@ index b7182bc..f4aa28f 100644
 +#endif  // EXECUTE_IN_KCAL
    }
  }
- 
+
 +void ReduceBase::KcalReduceImpl(ExecContext* ctx) {
 +  const auto& input_pb = ctx->GetInput(kIn)[0];
 +  const auto& output_pb = ctx->GetOutput(kOut)[0];
@@ -1016,25 +1016,25 @@ index b7182bc..f4aa28f 100644
 +  auto* share_store = ctx->GetSession()->GetKcalShareStore();
 +  auto kcal_in_name = kcal::GetKcalName(input_pb.name());
 +  auto kcal_out_name = kcal::GetKcalName(output_pb.name());
-+  kcal::io::KcalMpcShare* input_share = nullptr;
++  kcal::io::MpcShare* input_share = nullptr;
 +  int ret = share_store->Get(kcal_in_name, input_share);
 +  YACL_ENFORCE(ret, "Not find left share: {}", kcal_in_name);
-+  auto shareSet = kcal::io::KcalMpcShareSet::Create({input_share});
-+  auto* out_share = kcal::io::KcalMpcShare::Create();
++  auto shareSet = kcal::io::MpcShareSet::Create({input_share});
++  auto* out_share = new kcal::io::MpcShare();
 +  if (op_type == "ReduceSum") {
-+    auto op = kcal::OperatorManager::CreateOperator<kcal::Sum>(kcal_ctx);
++    auto op = kcal::OperatorFactory::CreateMpc(kcal_ctx, kcal::KCAL_AlgorithmsType::SUM);
 +    YACL_ENFORCE(op != nullptr, "Create sum op failed.");
 +    ret = op->Run(shareSet, out_share);
 +  } else if (op_type == "ReduceAvg") {
-+    auto op = kcal::OperatorManager::CreateOperator<kcal::Avg>(kcal_ctx);
++    auto op = kcal::OperatorFactory::CreateMpc(kcal_ctx, kcal::KCAL_AlgorithmsType::AVG);
 +    YACL_ENFORCE(op != nullptr, "Create avg op failed.");
 +    ret = op->Run(shareSet, out_share);
 +  } else if (op_type == "ReduceMax") {
-+    auto op = kcal::OperatorManager::CreateOperator<kcal::Max>(kcal_ctx);
++    auto op = kcal::OperatorFactory::CreateMpc(kcal_ctx, kcal::KCAL_AlgorithmsType::MAX);
 +    YACL_ENFORCE(op != nullptr, "Create max op failed.");
 +    ret = op->Run(shareSet, out_share);
 +  } else if (op_type == "ReduceMin") {
-+    auto op = kcal::OperatorManager::CreateOperator<kcal::Min>(kcal_ctx);
++    auto op = kcal::OperatorFactory::CreateMpc(kcal_ctx, kcal::KCAL_AlgorithmsType::MIN);
 +    YACL_ENFORCE(op != nullptr, "Create min op failed.");
 +    ret = op->Run(shareSet, out_share);
 +  }
@@ -1052,12 +1052,12 @@ index a9d79c2..955a0bb 100644
 +++ b/engine/operator/reduce.h
 @@ -31,6 +31,7 @@ class ReduceBase : public Operator {
    virtual std::string GetArrowFunName() = 0;
- 
+
    spu::Value SecretReduceImpl(spu::SPUContext* sctx, const spu::Value& in);
 +  void KcalReduceImpl(ExecContext* ctx);
- 
+
    virtual spu::Value HandleEmptyInput(const spu::Value& in) { return in; }
- 
+
 diff --git a/engine/third_party/BUILD.bazel b/engine/third_party/BUILD.bazel
 new file mode 100644
 index 0000000..1818ee3
@@ -1173,9 +1173,9 @@ index 6170b07..215142b 100644
 --- a/engine/util/spu_io.h
 +++ b/engine/util/spu_io.h
 @@ -58,7 +58,6 @@ class SpuInfeedHelper {
- 
+
    void Sync();
- 
+
 - private:
    /// @brief spu plaintext view of arrow array
    struct PtView {

@@ -13,11 +13,11 @@
 #ifndef KCAL_MIDDLEWARE_IO_H
 #define KCAL_MIDDLEWARE_IO_H
 
-#include <memory>
-#include <string>
 #include <vector>
-
+#include <string>
 #include "kcal/api/kcal_api.h"
+
+#include <memory>
 
 namespace kcal::io {
 
@@ -30,130 +30,75 @@ public:
     static void ReleaseDgPairList(DG_PairList *pairList);
 };
 
-class KcalMpcShare {
+class MpcShare {
 public:
-    KcalMpcShare() = default;
-    explicit KcalMpcShare(DG_MpcShare *share) : share_(share)
-    {}
-    ~KcalMpcShare();
+    MpcShare() = default;
+    explicit MpcShare(DG_MpcShare *share) : share_(share) {}
+    ~MpcShare();
 
-    // static function that creates KcalMpcShare shared_ptr
-    static std::shared_ptr<KcalMpcShare> Create()
-    {
-        return std::make_shared<KcalMpcShare>();
-    }
+    void Set(DG_MpcShare *share) { share_ = share; }
+    DG_MpcShare *&Get() { return share_; }
+    DG_MpcShare *Get() const { return share_; }
 
-    // delete copy and assign constructor
-    KcalMpcShare(const KcalMpcShare &) = delete;
-    KcalMpcShare &operator=(const KcalMpcShare &) = delete;
-
-    void Set(DG_MpcShare *share)
-    {
-        share_ = share;
-    }
-    DG_MpcShare *&Get()
-    {
-        return share_;
-    }
-    DG_MpcShare *Get() const
-    {
-        return share_;
-    }
-
-    unsigned long Size()
-    {
-        return share_->size;
-    }
-    DG_ShareType Type()
-    {
-        return share_->shareType;
-    }
+    unsigned long Size() { return share_->size; }
+    DG_ShareType Type() { return share_->shareType; }
 
 private:
     DG_MpcShare *share_ = nullptr; // manage memory release
 };
 
-class KcalMpcShareSet {
+class MpcShareSet {
 public:
-    KcalMpcShareSet() = default;
-    KcalMpcShareSet(const std::vector<std::shared_ptr<KcalMpcShare>> &shares);
-    ~KcalMpcShareSet();
+    MpcShareSet() = default;
+    ~MpcShareSet();
 
-    DG_MpcShareSet *Get()
-    {
-        return shareSet_;
-    }
-    DG_MpcShareSet *Get() const
-    {
-        return shareSet_;
-    }
+    DG_MpcShareSet *Get() { return shareSet_; }
+    DG_MpcShareSet *Get() const { return shareSet_; }
 
-    static KcalMpcShareSet Create(const std::vector<KcalMpcShare *> &shares);
+    static MpcShareSet Create(const std::vector<MpcShare *> &shares);
 
 private:
     // data reference, not manage memory release
     DG_MpcShareSet *shareSet_;
 };
 
-class KcalInput {
+class Input {
 public:
-    KcalInput() = default;
-    explicit KcalInput(DG_TeeInput *input) : input_(input)
-    {}
-    ~KcalInput()
-    {
-        DataHelper::ReleaseOutput(&input_);
-    }
+    Input() = default;
+    explicit Input(DG_TeeInput *input) : input_(input) {}
+    ~Input() { DataHelper::ReleaseOutput(&input_); }
 
-    static KcalInput *Create();
+    void Set(DG_TeeInput *input) { input_ = input; }
+    DG_TeeInput *Get() { return input_; }
+    DG_TeeInput *Get() const { return input_; }
+    DG_TeeInput **GetSecondaryPointer() { return &input_; }
+    void Reset(DG_TeeOutput *output);
 
-    void Set(DG_TeeInput *input)
-    {
-        input_ = input;
-    }
-    DG_TeeInput *Get()
-    {
-        return input_;
-    }
-    DG_TeeInput **GetSecondaryPointer()
-    {
-        return &input_;
-    }
+    bool Valid() const { return input_ != nullptr; }
 
     void Fill(const std::vector<std::string> &data);
 
-    int Size()
-    {
-        return input_->size;
-    }
+    int Size() { return input_->size; }
 
 private:
     DG_TeeInput *input_ = nullptr; // manage memory release
 };
 
-using KcalOutput = KcalInput;
+using Output = Input;
 
 class KcalPairList {
 public:
     KcalPairList() = default;
     explicit KcalPairList(DG_PairList *pairList) : pairList_(pairList) {};
-    ~KcalPairList()
-    {
-        DataHelper::ReleaseDgPairList(pairList_);
-    };
+    ~KcalPairList() { DataHelper::ReleaseDgPairList(pairList_); };
     static KcalPairList *Create();
-    DG_PairList *Get()
-    {
-        return pairList_;
-    };
-    DG_PairList **GetSecondaryPointer()
-    {
-        return &pairList_;
-    };
+    DG_PairList *Get() { return pairList_; };
+    DG_PairList **GetSecondaryPointer() { return &pairList_; };
 
 private:
     DG_PairList *pairList_ = nullptr;
 };
+
 } // namespace kcal::io
 
 #endif // KCAL_MIDDLEWARE_IO_H

@@ -15,10 +15,36 @@
 
 namespace kcal {
 
-Psi::Psi()
+Psi::Psi(std::shared_ptr<Context> context) : context_(std::move(context)) {}
+
+std::unique_ptr<Psi> Psi::Create(std::shared_ptr<Context> context)
 {
-    opts_ = std::make_unique<DG_PrivateSet_Opts>();
-    *opts_ = DG_InitPsiOpts();
+    auto op = std::make_unique<Psi>(std::move(context));
+
+    op->opts_ = std::make_unique<DG_PrivateSet_Opts>();
+    *op->opts_ = DG_InitPsiOpts();
+
+    int ret = op->Initialize();
+    if (ret != 0) {
+        return nullptr;
+    }
+
+    return op;
+}
+
+int Psi::Initialize()
+{
+    if (!context_ || !context_->IsValid()) {
+        return DG_ERR_MPC_INVALID_PARAM;
+    }
+
+    dgTeeCtx_ = context_->GetTeeCtx(KCAL_AlgorithmsType::PSI);
+    if (!dgTeeCtx_) {
+        return DG_ERR_MPC_INVALID_PARAM;
+    }
+
+    initialized_ = true;
+    return DG_SUCCESS;
 }
 
 Psi::~Psi()
@@ -30,25 +56,22 @@ Psi::~Psi()
     }
 }
 
-int Psi::GetTeeCtx(const std::shared_ptr<Context> &context)
-{
-    dgTeeCtx_ = context->GetTeeCtx(KCAL_AlgorithmsType::PSI);
-    if (!dgTeeCtx_) {
-        return DG_ERR_MPC_INVALID_PARAM;
-    }
-    return DG_SUCCESS;
-}
-
-int Psi::Run(DG_TeeInput *input, DG_TeeOutput **output, DG_TeeMode outputMode)
+int Psi::Run(const io::Input &input, io::Output &output, DG_TeeMode outputMode)
 {
     if (!initialized_ || !dgTeeCtx_) {
         return DG_ERR_MPC_INVALID_PARAM;
     }
-    if (!input || !output) {
+
+    if (!input.Valid()) {
         return DG_ERR_MPC_INVALID_PARAM;
     }
 
-    return opts_->calculate(dgTeeCtx_, PSI, input, output, outputMode);
+    DG_TeeOutput *rawOutput = nullptr;
+    int ret = opts_->calculate(dgTeeCtx_, PSI, input.Get(), &rawOutput, outputMode);
+    if (ret == DG_SUCCESS) {
+        output.Reset(rawOutput);
+    }
+    return ret;
 }
 
 } // namespace kcal

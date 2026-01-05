@@ -13,8 +13,6 @@ import socket_util
 _client_socket = None
 _server_socket = None
 
-kcal.register_all_ops()
-
 """
 server:
     nodeId: 0
@@ -38,8 +36,9 @@ def on_recv_data(node_info: dict, buffer: memoryview) -> int:
     s = get_fd(node_info)
     return socket_util.recv_data(s, buffer)
 
-def shake_hand(nodeId:int):
-    node_info = dict(nodeId = 1 - nodeId)
+
+def shake_hand(nodeId: int):
+    node_info = dict(nodeId=1 - nodeId)
     s = get_fd(node_info)
     data_buffer = bytearray(b"hello")
     if s == _server_socket:
@@ -48,6 +47,7 @@ def shake_hand(nodeId:int):
     else:
         socket_util.recv_data(s, memoryview(data_buffer))
         socket_util.send_data(s, memoryview(data_buffer))
+
 
 def pir_demo(is_server: bool):
     config = kcal.Config()
@@ -59,7 +59,7 @@ def pir_demo(is_server: bool):
 
     context = kcal.Context.create(config, on_send_data, on_recv_data)
 
-    op = kcal.create_operator(context, kcal.AlgorithmsType.PIR)
+    op = kcal.create_pir(context)
 
     key = ["aaaa", "bbbb", "cccc", "dddd"]
     value = ["1111111", "22222222222", "33333333333", "44444444"]
@@ -84,6 +84,7 @@ def pir_demo(is_server: bool):
         duration_ms = (end_time - start_time) * 1000  # ms
         print(f"ClientQuery run cost: {duration_ms:.2f} ms")
         print("query result: ", output)
+
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="KCAL python wrapper demo.")

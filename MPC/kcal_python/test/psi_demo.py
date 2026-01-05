@@ -13,8 +13,6 @@ import socket_util
 _client_socket = None
 _server_socket = None
 
-kcal.register_all_ops()
-
 """
 server:
     nodeId: 0
@@ -43,13 +41,13 @@ def psi_demo(is_server: bool):
     config = kcal.Config()
     config.nodeId = 0 if is_server else 1
     config.worldSize = 2
-    config.fixBits = 3
+    config.fixBits = 2
     config.threadCount = 32
     config.useSMAlg = False
 
     context = kcal.Context.create(config, on_send_data, on_recv_data)
 
-    op = kcal.create_operator(context, kcal.AlgorithmsType.PSI)
+    op = kcal.create_psi(context)
 
     input0 = ["4", "3", "2", "1"]
     input1 = ["1", "3", "4", "5"]
@@ -57,10 +55,10 @@ def psi_demo(is_server: bool):
     import time
     start_time = time.time()
     if is_server:
-        op.run(input0, output, kcal.TeeMode.OUTPUT_INDEX)
+        op.run(input0, output, kcal.TeeMode.OUTPUT_STRING)
     else:
-        op.run(input1, output, kcal.TeeMode.OUTPUT_INDEX)
-    print(len(output))
+        op.run(input1, output, kcal.TeeMode.OUTPUT_STRING)
+    print(output)
     end_time = time.time()
     duration_ms = (end_time - start_time) * 1000  # ms
     print(f"run cost: {duration_ms:.2f} ms")

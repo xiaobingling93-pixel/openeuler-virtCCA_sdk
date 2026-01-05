@@ -13,19 +13,28 @@
 #ifndef KCAL_MIDDLEWARE_KCAL_MAKE_SHARE_H
 #define KCAL_MIDDLEWARE_KCAL_MAKE_SHARE_H
 
-#include "kcal/operator/kcal_arithmetic.h"
+#include "kcal/core/context.h"
+#include "kcal/utils/io.h"
 
 namespace kcal {
 
-class MakeShare : public Arithmetic {
+class MakeShare {
 public:
-    MakeShare() = default;
-    ~MakeShare() override = default;
+    explicit MakeShare(std::shared_ptr<Context> context) : context_(std::move(context)) {}
 
-    int GetTeeCtx(const std::shared_ptr<Context> &context) override;
-    KCAL_AlgorithmsType GetType() const override { return KCAL_AlgorithmsType::MAKE_SHARE; }
+    static std::unique_ptr<MakeShare> Create(std::shared_ptr<Context> context);
 
-    int Run(io::KcalInput &input, int isRecvShare, io::KcalMpcShare *&share);
+    bool IsInitialized() const { return initialized_; }
+
+    int Run(const io::Input &input, int isRecvShare, io::MpcShare *share);
+
+private:
+    int Initialize();
+
+    std::shared_ptr<Context> context_;
+    DG_TeeCtx *dgTeeCtx_ = nullptr;
+    std::unique_ptr<DG_Arithmetic_Opts> opts_;
+    bool initialized_ = false;
 };
 
 } // namespace kcal

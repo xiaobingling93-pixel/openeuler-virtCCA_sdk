@@ -13,19 +13,26 @@
 #ifndef KCAL_MIDDLEWARE_KCAL_REVEAL_SHARE_H
 #define KCAL_MIDDLEWARE_KCAL_REVEAL_SHARE_H
 
-#include "kcal/operator/kcal_arithmetic.h"
+#include "kcal/core/context.h"
+#include "kcal/utils/io.h"
 
 namespace kcal {
 
-class RevealShare : public Arithmetic {
+class RevealShare {
 public:
-    RevealShare() = default;
-    ~RevealShare() override = default;
+    explicit RevealShare(std::shared_ptr<Context> context) : context_(std::move(context)) {}
 
-    int GetTeeCtx(const std::shared_ptr<Context> &context) override;
-    KCAL_AlgorithmsType GetType() const override { return KCAL_AlgorithmsType::REVEAL_SHARE; }
+    static std::unique_ptr<RevealShare> Create(std::shared_ptr<Context> context);
 
-    int Run(const io::KcalMpcShare *share, io::KcalOutput &output);
+    int Run(const io::MpcShare *share, io::Output &output);
+
+private:
+    int Initialize();
+
+    std::shared_ptr<Context> context_;
+    DG_TeeCtx *dgTeeCtx_ = nullptr;
+    std::unique_ptr<DG_Arithmetic_Opts> opts_;
+    bool initialized_ = false;
 };
 
 } // namespace kcal

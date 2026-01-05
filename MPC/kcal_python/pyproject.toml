@@ -4,7 +4,6 @@ version = "0.1.0"
 description = "Python bindings for kcal library (example, CMake + pybind11 + PDM)"
 readme = "README.md"
 requires-python = ">=3.8"
-dependencies = ["pdm"]
 
 [build-system]
 requires = ["pdm-backend"]

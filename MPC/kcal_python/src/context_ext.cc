@@ -19,7 +19,7 @@ ContextExt::~ContextExt()
     }
 }
 
-std::shared_ptr<ContextExt> ContextExt::Create(KCAL_Config config, SendCallback sendCb, RecvCallback recvCb)
+std::shared_ptr<ContextExt> ContextExt::Create(Config config, SendCallback sendCb, RecvCallback recvCb)
 {
     auto ctx = std::shared_ptr<ContextExt>(new ContextExt(std::move(sendCb), std::move(recvCb)));
 

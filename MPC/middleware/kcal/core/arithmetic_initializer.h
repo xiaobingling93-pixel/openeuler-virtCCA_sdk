@@ -22,10 +22,7 @@ public:
     ArithmeticInitializer();
     ~ArithmeticInitializer() override = default;
 
-    KCAL_AlgorithmsType GetAlgorithmType() const override
-    {
-        return KCAL_AlgorithmsType::ARITHMETIC;
-    }
+    KCAL_AlgorithmsType GetAlgorithmType() const override { return KCAL_AlgorithmsType::ARITHMETIC; }
 
     int InitializeTeeCtx(void *teeConfig, int worldSize, DG_TeeCtx **teeCtx) override;
     void ReleaseTeeCtx(DG_TeeCtx **teeCtx) override;

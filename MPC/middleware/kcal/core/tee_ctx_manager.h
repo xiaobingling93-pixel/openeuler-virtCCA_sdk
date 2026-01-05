@@ -17,7 +17,6 @@
 #include <memory>
 #include <mutex>
 #include <vector>
-
 #include "kcal/core/tee_ctx_initializer.h"
 #include "kcal/api/kcal_api.h"
 #include "kcal/enumeration/kcal_enum.h"

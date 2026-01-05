@@ -21,12 +21,12 @@ namespace kcal::io {
 
 class MemKVStore {
 public:
-    void Put(std::string_view key, KcalMpcShare *value);
-    bool Get(std::string_view key, KcalMpcShare *&value);
+    void Put(std::string_view key, MpcShare *value);
+    bool Get(std::string_view key, MpcShare *&value);
     void Delete(std::string_view key);
 
 private:
-    std::unordered_map<std::string, KcalMpcShare *> mapCache_;
+    std::unordered_map<std::string, MpcShare *> mapCache_;
 };
 
 } // namespace kcal::io

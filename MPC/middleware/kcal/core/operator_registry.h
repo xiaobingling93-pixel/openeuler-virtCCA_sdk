@@ -17,7 +17,7 @@
 #include <unordered_map>
 #include <functional>
 #include <mutex>
-#include "kcal/core/operator_base.h"
+#include "kcal/core/mpc_operator_base.h"
 #include "kcal/enumeration/kcal_enum.h"
 
 namespace kcal {
@@ -26,29 +26,28 @@ class OperatorRegistry {
 public:
     static OperatorRegistry &Instance();
 
-    template <typename OperatorType> void RegisterOperator(KCAL_AlgorithmsType type);
+    template <typename OperatorType>
+    void RegisterOperator(KCAL_AlgorithmsType type);
 
-    std::unique_ptr<OperatorBase> CreateOperator(KCAL_AlgorithmsType type);
+    std::unique_ptr<MpcOperatorBase> CreateOperator(KCAL_AlgorithmsType type);
     bool IsOperatorInitialized(KCAL_AlgorithmsType type) const;
 
 private:
     OperatorRegistry() = default;
     ~OperatorRegistry() = default;
 
-    using OperatorFactory = std::function<std::unique_ptr<OperatorBase>()>;
+    using OperatorFactory = std::function<std::unique_ptr<MpcOperatorBase>()>;
     std::unordered_map<KCAL_AlgorithmsType, OperatorFactory> factories_;
     mutable std::mutex mutex_;
 };
 
-template <typename OperatorType> void OperatorRegistry::RegisterOperator(KCAL_AlgorithmsType type)
+template <typename OperatorType>
+void OperatorRegistry::RegisterOperator(KCAL_AlgorithmsType type)
 {
-    static_assert(std::is_base_of_v<OperatorBase, OperatorType>,
-                  "OperatorType must derive from OperatorBase");
+    static_assert(std::is_base_of_v<MpcOperatorBase, OperatorType>, "OperatorType must derive from OperatorBase");
 
     std::lock_guard<std::mutex> lock(mutex_);
-    factories_[type] = []() -> std::unique_ptr<OperatorBase> {
-        return std::make_unique<OperatorType>();
-    };
+    factories_[type] = []() -> std::unique_ptr<MpcOperatorBase> { return std::make_unique<OperatorType>(); };
 }
 
 } // namespace kcal
