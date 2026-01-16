@@ -19,10 +19,14 @@
 #include <rats-tls/api.h>
 #include <rats-tls/log.h>
 #include <rats-tls/claim.h>
+#include <rats-tls/attester.h>
 #include "utils.h"
+#include "common.h"
 #include "socket_agent.h"
 #include "migcvm_tsi.h"
+#include "host_server_ip.h"
 #include "rats_tls_handler.h"
+#include "attest/token_parse.h"
 
 uint8_t g_rim_ref[MAX_MEASUREMENT_SIZE];
 size_t g_rim_ref_size = MAX_MEASUREMENT_SIZE;
@@ -430,6 +434,13 @@ static void parse_input(int argc, char* argv[],
     char *client_ip = NULL;
     char *server_ip = NULL;
     char *rim = NULL;
+    bool rim_provided = false;
+
+    /* try get default ip of server */
+    server_ip = get_local_ipv4();
+    if (!server_ip) {
+        server_ip = strdup("127.0.0.1");
+    }
 
     client_ip = strdup("127.0.0.1");
     if (!client_ip) {
@@ -437,18 +448,8 @@ static void parse_input(int argc, char* argv[],
         exit(EXIT_FAILURE);
     }
 
-    server_ip = strdup("127.0.0.1");
-    if (!server_ip) {
-        perror("strdup for server_ip");
-        free(client_ip);
-        exit(EXIT_FAILURE);
-    }
-
-    rim = strdup("6f48536a80ce1b34adee94f44af1ba236f36dcaadf1eb983086f5df19cd4eaad");
-    if (!rim) {
-        perror("strdup for rim");
-        free(client_ip);
-        free(server_ip);
+    if (!client_ip || !server_ip) {
+        perror("strdup for default IP");
         exit(EXIT_FAILURE);
     }
 
@@ -489,6 +490,7 @@ static void parse_input(int argc, char* argv[],
                     perror("Failed to allocate memory for RIM");
                     goto cleanup_error;
                 }
+                rim_provided = true;
                 break;
             default:
                 fprintf(stderr, "Usage: %s [-c client_ip] [-s server_ip] [-r rim_ref]\n",
@@ -497,11 +499,19 @@ static void parse_input(int argc, char* argv[],
         }
     }
 
-    if (init_rim_ref(rim)) {
-        fprintf(stderr, "RIM init failed\n");
-        goto cleanup_error;
+    if (rim_provided) {
+        if (init_rim_ref(rim)) {
+            fprintf(stderr, "RIM init failed\n");
+            goto cleanup_error;
+        }
     }
-    free(rim);
+    for (size_t k = 0; k < MAX_MEASUREMENT_SIZE; k++) {
+        printf("%02x", g_rim_ref[k]);
+    }
+    /* If rim not provided, keep the existing g_rim_ref (extracted from token) */
+    if (rim) {
+        free(rim);
+    }
 
     *client_ip_out = client_ip;
     *server_ip_out = server_ip;
@@ -518,6 +528,49 @@ cleanup_error:
         free(rim);
     }
     exit(EXIT_FAILURE);
+}
+
+static void rim_initialize(void)
+{
+    /* init migcvm token */
+    tsi_ctx *ctx = tsi_new_ctx();
+    unsigned char challenge[CHALLENGE_SIZE] = {-1};
+    size_t challenge_len = CHALLENGE_SIZE;
+    size_t token_len;
+    unsigned char *token;
+    int ret = 0;
+
+    virtcca_attestation_evidence_t *virtcca_token = NULL;
+    virtcca_token = (virtcca_attestation_evidence_t *)malloc(sizeof(virtcca_attestation_evidence_t));
+    if (!virtcca_token) {
+        printf("cannot malloc evidence buffer.\n");
+    }
+    token = virtcca_token->report + sizeof(token_len);
+    token_len = REPORT_MAX_LENGTH - sizeof(token_len);
+    ret = get_attestation_token(ctx, challenge, challenge_len, token, &token_len);
+    if (ret != 0) {
+        printf("failed to get attestation token (%d)\n", ret);
+    } else {
+        /* parse token and extract RIM */
+        cca_token_t parsed_token = {0};
+        uint64_t parse_status = parse_cca_attestation_token(&parsed_token, token, token_len);
+        if (parse_status == VIRTCCA_SUCCESS) {
+            /* copy RIM to g_rim_ref */
+            if (parsed_token.cvm_token.rim.len <= MAX_MEASUREMENT_SIZE) {
+                memcpy(g_rim_ref, parsed_token.cvm_token.rim.ptr, parsed_token.cvm_token.rim.len);
+                g_rim_ref_size = parsed_token.cvm_token.rim.len;
+                printf("[get_attestation_token] RIM extracted from token, size = %zu\n", g_rim_ref_size);
+            } else {
+                printf("[get_attestation_token] RIM too large, truncating\n");
+                memcpy(g_rim_ref, parsed_token.cvm_token.rim.ptr, MAX_MEASUREMENT_SIZE);
+                g_rim_ref_size = MAX_MEASUREMENT_SIZE;
+            }
+        } else {
+            printf("[get_attestation_token] failed to parse token (status=%lu)\n", parse_status);
+        }
+    }
+
+    tsi_free_ctx(ctx);
 }
 
 int main(int argc, char *argv[])
@@ -538,7 +591,7 @@ int main(int argc, char *argv[])
         perror("pthread_setaffinity_np");
         return EXIT_FAILURE;
     }
-
+    rim_initialize();
     parse_input(argc, argv, &client_ip, &server_ip);
 
     vsock_fd = open("/dev/vsock", O_RDWR);
