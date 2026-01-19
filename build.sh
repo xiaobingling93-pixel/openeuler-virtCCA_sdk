@@ -10,18 +10,18 @@ function attestation() {
     cmake --build build
 }
 
-function sealing_key() {
-    echo "build sealing key sdk"
-    cd ${ROOT_DIR}/sealing_key/sdk
+function image_key() {
+    echo "build image key sdk"
+    cd ${ROOT_DIR}/image_key/sdk
     cmake -S . -B build
     cmake --build build
 }
 
 case $1 in
     attest) attestation;;
-    sealing) sealing_key;;
+    image) image_key;;
     *)
         attestation
-        sealing_key
+        image_key
         ;;
 esac
