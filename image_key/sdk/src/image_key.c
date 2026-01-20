@@ -16,39 +16,39 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
-#include "sealing_key.h"
+#include "image_key.h"
 
-#define SEALING_KEY_DEV_NAME "/dev/sealingkey"
+#define IMAGE_KEY_DEV_NAME "/dev/imagekey"
 
-struct sealing_key_params {
+struct image_key_params {
     uint32_t alg;
-    uint8_t user_param[SEALING_USER_PARAM_LEN];
+    uint8_t user_param[USER_PARAM_LEN];
     uint32_t user_param_len;
-    uint8_t sealing_key[SEALING_KEY_LEN];
+    uint8_t image_key[IMAGE_KEY_LEN];
 };
 
-#define SEAL_KEY_IOC_MAGIC 'd'
-#define IOCTL_SEALING_KEY _IOWR(SEAL_KEY_IOC_MAGIC, 0, struct sealing_key_params)
+#define IMAGE_KEY_IOC_MAGIC 'd'
+#define IOCTL_IMAGE_KEY _IOWR(IMAGE_KEY_IOC_MAGIC, 0, struct image_key_params)
 
-int get_sealing_key(SEALING_KEY_ALG alg, uint8_t* user_param, uint32_t user_param_len, uint8_t* sealing_key,
-                    uint32_t key_len)
+int get_image_key(IMAGE_KEY_ALG alg, uint8_t* user_param, uint32_t user_param_len, uint8_t* image_key,
+                  uint32_t key_len)
 {
     int rc = 0;
     int fd = -1;
-    struct sealing_key_params args = { 0 };
+    struct image_key_params args = { 0 };
 
-    if (user_param && user_param_len != SEALING_USER_PARAM_LEN) {
-        printf("invalid user param len %u, should be equal %u\n", user_param_len, SEALING_USER_PARAM_LEN);
+    if (user_param && user_param_len != USER_PARAM_LEN) {
+        printf("invalid user param len %u, should be equal %u\n", user_param_len, USER_PARAM_LEN);
         return -1;
     }
 
-    if (sealing_key == NULL || key_len < SEALING_KEY_LEN) {
-        printf("invalid sealing key param, buf %p, len %u\n", sealing_key, key_len);
+    if (image_key == NULL || key_len < IMAGE_KEY_LEN) {
+        printf("invalid image key param, buf %p, len %u\n", image_key, key_len);
         return -1;
     }
 
     switch (alg) {
-        case SEALING_HMAC_SHA256:
+        case HMAC_SHA256:
             break;
         default:
             printf("current version not support this mode, alg: %d\n", alg);
@@ -61,25 +61,25 @@ int get_sealing_key(SEALING_KEY_ALG alg, uint8_t* user_param, uint32_t user_para
         args.user_param_len = user_param_len;
     }
 
-    fd = open(SEALING_KEY_DEV_NAME, O_RDWR);
+    fd = open(IMAGE_KEY_DEV_NAME, O_RDWR);
     if (fd < 0) {
-        printf("open dev %s failed, err: %s\n", SEALING_KEY_DEV_NAME, strerror(errno));
+        printf("open dev %s failed, err: %s\n", IMAGE_KEY_DEV_NAME, strerror(errno));
         return -1;
     }
 
-    rc = ioctl(fd, IOCTL_SEALING_KEY, &args);
+    rc = ioctl(fd, IOCTL_IMAGE_KEY, &args);
     if (rc) {
         if (errno) {
             printf("ioctl failed, err: %s\n", strerror(errno));
         } else {
-            printf("driver got sealing key failed\n");
+            printf("driver got image key failed\n");
         }
         (void)close(fd);
         return -1;
     }
 
-    (void)memcpy(sealing_key, args.sealing_key, SEALING_KEY_LEN);
-    (void)memset(args.sealing_key, 0, SEALING_KEY_LEN);
+    (void)memcpy(image_key, args.image_key, IMAGE_KEY_LEN);
+    (void)memset(args.image_key, 0, IMAGE_KEY_LEN);
     (void)close(fd);
     return 0;
 }
