@@ -113,3 +113,35 @@ int get_migration_binded_rds(tsi_ctx *ctx, virtcca_mig_info_t *migvm_info, migra
 
     return TSI_SUCCESS;
 }
+
+int get_attestation_token(tsi_ctx *ctx, unsigned char *challenge, size_t challenge_len,
+                          unsigned char *token, size_t *token_len)
+{
+    int ret;
+    cvm_attestation_cmd_t user_cmd = {0};
+
+    if (ctx == NULL || challenge == NULL || token == NULL || token_len == NULL) {
+        return NULL_INPUT;
+    }
+    if (challenge_len > CHALLENGE_SIZE) {
+        printf("challenge too long.\n");
+        return INVALID_PARAM;
+    }
+
+    memcpy(user_cmd.challenge, challenge, challenge_len);
+
+    ret = ioctl(ctx->fd, TMM_GET_ATTESTATION_TOKEN, &user_cmd);
+    if (ret != 0) {
+        printf("Failed to get attestation token. errno: %d\n", errno);
+        return TSI_ERROR;
+    }
+
+    if (*token_len < user_cmd.token_size) {
+        printf("Input token buf too small.\n");
+        return INSUFFICIENT_BUFFER_LEN;
+    }
+    *token_len = user_cmd.token_size;
+    memcpy(token, user_cmd.token, user_cmd.token_size);
+
+    return TSI_SUCCESS;
+}

@@ -8,6 +8,7 @@ add_subdirectory(src/migcvm_tsi)
 
 set(SOURCES src/migcvm-agent.c
     src/socket/host_socket_agent.c
+    src/socket/host_server_ip.c
     src/rats_tls_handler/rats_tls_handler.c
     src/integrity_check/integrity_check_handler.c)
 
