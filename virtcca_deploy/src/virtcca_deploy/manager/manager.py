@@ -23,6 +23,7 @@ g_cvm_deploy_spec = VmDeploySpec()
 def create_app():
     server_config = config.Config(constants.DEFAULT_CONFIG_PATH)
     server_config.configure_log(constants.MANAGER_LOG_NEME)
+    server_config.configure_ssl()
     root_logger = logging.getLogger()
     
     if not os.path.exists(constants.MANAGER_DB_PATH):
@@ -76,6 +77,7 @@ def create_app():
 
         existing_node_infos = {}
         ip_list = data['ips']
+        valid_nodes = {}
         for ip in ip_list:
             node = node_service.NodeService.get_node_by_ip(ip)
             if not node:
@@ -83,11 +85,12 @@ def create_app():
                 return flask.jsonify(ApiResponse(
                     status=OperationCodes.FAILED,
                     message=f"Node not found for IP: {ip}").to_dict()), HTTPStatusCodes.BAD_REQUEST
-
+            else:
+                valid_nodes[ip] = node
         for ip in ip_list:
             try:
                 compute_link = network_service.NetworkService(
-                ip, constants.COMPUTE_PORT, True)
+                valid_nodes[ip].nodename, constants.COMPUTE_PORT, True, server_config.ssl_cert)
                 result = compute_link.query_node_info()
                 if result.get("status") == OperationCodes.SUCCESS.value:
                     existing_node_infos[ip] = result.get("data")
@@ -151,7 +154,7 @@ def create_app():
         for node in deploy_nodes:
             try:
                 compute_link = network_service.NetworkService(
-                    node.ip, constants.COMPUTE_PORT, True
+                    node.nodename, constants.COMPUTE_PORT, True, server_config.ssl_cert
                 )
                 result = compute_link.vm_deploy(asdict(cvm_spec_internal))
                 if result.get("status") == OperationCodes.SUCCESS.value:
