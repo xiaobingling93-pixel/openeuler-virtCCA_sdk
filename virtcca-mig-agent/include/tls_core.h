@@ -18,6 +18,7 @@
 typedef struct {
     char *cert_file;
     char *key_file;
+    char *ca_cert_file;
     int verify_peer;
     unsigned long flags;
 } tls_conf_t;

@@ -29,7 +29,6 @@
 #define TSI_ERROR_FAILED 4
 #define TSI_NOTIFY 5
 
-#define SLAVE_THREAD_NUM 15
 #define TOTAL_CPU_COUNT 16
 #define MASTER_THREAD_ID 0
 
@@ -63,13 +62,15 @@ typedef struct {
 } virtcca_migvm_checksum_info_t;
 
 typedef struct {
-    int tmi_fd;
-    int thread_id;
-    unsigned long guest_rd;
-    pthread_t thread;
-    sem_t wake_sem;
-    bool thread_created;
-    void *parent;
+    int             tmi_fd;
+    int             thread_id;
+    unsigned long   guest_rd;
+    pthread_t       thread;
+    sem_t           wake_sem;
+    bool            thread_created;
+    void            *parent;
+    int             cpu_start;
+    int             cpu_end;
 } thread_args_t;
 
 typedef struct {
@@ -119,6 +120,28 @@ void show_tsi_time(io_thread_context_t *ctx)
             j = j - 1;
         printf("before notify tsi start:%lu end:%lu type:%lu\n", ctx->tsi_start[j], ctx->tsi_end[j], ctx->type[j]);
     }
+}
+
+int set_affinity(int cpu_start, int cpu_end)
+{
+    cpu_set_t cpuset;
+
+    if (cpu_start < 0 || cpu_end < 0 || cpu_start > cpu_end) {
+        perror("set affinity failed, invalid cpu range.");
+        return -1;
+    }
+
+    CPU_ZERO(&cpuset);
+    for (int i = cpu_start; i <= cpu_end; i++) {
+        CPU_SET(i, &cpuset);
+    }
+
+    if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset)) {
+        perror("pthread_setaffinity_np failed");
+        return -1;
+    }
+
+    return 0;
 }
 
 // Dynamically add EPOLLOUT when data needs to be sent
@@ -349,13 +372,8 @@ void* slave_io_thread(void* arg) {
     uint64_t ret;
 
     printf("Thread %d started init\n", args->thread_id);
-    cpu_set_t cpuset;
-    CPU_ZERO(&cpuset);
-    CPU_SET(args->thread_id, &cpuset);
-    if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset)) {
-        perror("pthread_setaffinity_np");
-        return NULL;
-    }
+
+    set_affinity(args->cpu_start, args->cpu_end);
 
     while (!((io_thread_context_t *)args->parent)->should_exit) {
         uint64_t ret_val = TSI_INCOMPLETE;
@@ -396,6 +414,8 @@ static int create_slave_thread(io_thread_context_t *ctx, integrity_socket_t *par
         ctx->slave_args[i].guest_rd = params->guest_rd;
         ctx->slave_args[i].tmi_fd = tmi_fd;
         ctx->slave_args[i].thread_created = false;
+        ctx->slave_args[i].cpu_start = params->cpu_start + i + 1;
+        ctx->slave_args[i].cpu_end = params->cpu_start + i + 1;
         sem_init(&ctx->slave_args[i].wake_sem, 0, 0);
         ctx->slave_args[i].parent = ctx;
         if (pthread_create(&ctx->slave_args[i].thread, NULL, slave_io_thread, &ctx->slave_args[i]) != 0) {
@@ -469,6 +489,38 @@ static int notify_all_slave_thread(io_thread_context_t *ctx)
     return 0;
 }
 
+static void cleanup_server(integrity_socket_t *params, int epoll_fd)
+{
+    if (epoll_fd >= 0) {
+        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, params->connd_fd, NULL);
+        close(epoll_fd);
+    }
+
+    if (params->connd_fd >= 0) {
+        close(params->connd_fd);
+        params->connd_fd = -1;
+    }
+}
+
+static void cleanup_client(integrity_socket_t *params, int epoll_fd)
+{
+    if (epoll_fd >= 0) {
+        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, params->socket_fd, NULL);
+        close(epoll_fd);
+    }
+
+    if (params->connd_fd >= 0) {
+        close(params->connd_fd);
+        params->connd_fd = -1;
+    }
+
+    if (params->socket_fd >= 0) {
+        shutdown(params->socket_fd, SHUT_RDWR);
+        close(params->socket_fd);
+        params->socket_fd = -1;
+    }
+}
+
 static void cleanup_resources(integrity_socket_t *params, 
                              mig_integrity_share_queue_s *queue,
                              int dev_fd, tmi_ctx *virtcca_client_ctx, int epoll_fd)
@@ -491,20 +543,11 @@ static void cleanup_resources(integrity_socket_t *params,
 
     tmi_free_ctx(virtcca_client_ctx);
 
-    if (epoll_fd >= 0) {
-        close(epoll_fd);
-    }
-
     if (params) {
-        if (params->is_server && params->connd_fd >= 0) {
-            close(params->connd_fd);
-            params->connd_fd = -1;
-        }
-
-        if (params->socket_fd >= 0) {
-            shutdown(params->socket_fd, SHUT_RDWR);
-            close(params->socket_fd);
-            params->socket_fd = -1;
+        if (params->is_server) {
+            cleanup_server(params, epoll_fd);
+        } else {
+            cleanup_client(params, epoll_fd);
         }
     }
 }
@@ -527,6 +570,7 @@ void* io_thread(void* arg)
         return NULL;
     }
 
+    set_affinity(params->cpu_start, params->cpu_start);
     // open device
     dev_fd = open(DEVICE_PATH, O_RDWR);
     if (dev_fd < 0) {
@@ -690,7 +734,6 @@ void* io_thread(void* arg)
 cleanup:
     show_tsi_time(&ctx);
     stop_all_slave_threads(&ctx, SLAVE_THREAD_NUM);
-    close_connection(epoll_fd, socket_fd);
     cleanup_resources(params, &share_queue, dev_fd, virtcca_client_ctx, epoll_fd);
     if (params) {
         free(params);

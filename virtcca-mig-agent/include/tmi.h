@@ -4,10 +4,10 @@
 
 #ifndef TMI_H
 #define TMI_H
-#include <linux/types.h>
 #include <unistd.h>
 #include <stdint.h>
 #include <sys/ioctl.h>
+#include <linux/types.h>
 
 typedef struct {
     int fd;
