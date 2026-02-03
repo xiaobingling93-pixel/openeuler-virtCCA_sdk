@@ -13,17 +13,19 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-#include "tls_core.h"
 #include "mig_thread.h"
+#include "tls_core.h"
 
-static int verify_callback(int preverify_ok, X509_STORE_CTX *x509_ctx) {
+static int verify_callback(int preverify_ok, X509_STORE_CTX *x509_ctx)
+{
     if (preverify_ok) {
         X509 *cert = X509_STORE_CTX_get_current_cert(x509_ctx);
 
         ASN1_TIME *not_before = X509_get_notBefore(cert);
         ASN1_TIME *not_after = X509_get_notAfter(cert);
 
-        int day, sec;
+        int day;
+        int sec;
         if (!ASN1_TIME_diff(&day, &sec, not_before, NULL)) {
             fprintf(stderr, "Faild to compute cert time\n");
             return 0;
@@ -99,14 +101,14 @@ tls_err_t virtcca_tls_init(const tls_conf_t *conf, virtcca_tls_handle *handle)
 
     if (conf->verify_peer) {
         if (conf->ca_cert_file) {
-            if (SSL_CTX_load_verify_locations(ssl_ctx, conf->ca_cert_file, verify_callback) <= 0) {
+            if (SSL_CTX_load_verify_locations(ssl_ctx, conf->ca_cert_file, NULL) <= 0) {
                 SSL_CTX_free(ssl_ctx);
                 printf("virtcca_tls_init 5\n");
                 return TLS_ERR_INIT_FAILED;
             }
         }
 
-        SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, NULL);
+        SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, verify_callback);
     }
 
     *handle = (virtcca_tls_handle)malloc(sizeof(tls_core_context_t));

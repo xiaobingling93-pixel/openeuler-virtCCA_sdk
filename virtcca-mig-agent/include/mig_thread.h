@@ -8,9 +8,9 @@
 #include <stdlib.h>
 #include <pthread.h>
 #include <unistd.h>
-#include <linux/types.h>
 #include <string.h>
 #include <stdatomic.h>
+#include <linux/types.h>
 
 #include "tmi.h"
 #include "tls_core.h"
@@ -21,6 +21,10 @@
 #define MIG_CERT "/etc/virtcca-mig/mig.crt"
 #define MIG_KEY "/etc/virtcca-mig/mig.key"
 #define DEFAULT_PORT 4433
+#define MIG_KEY_MASK_LEN 32
+#define MIG_KEY_RAND_IV_LEN 32
+#define MIG_KEY_TAG_LEN 16
+#define BYTES_PER_ULL 8
 
 typedef enum {
     THREAD_INACTIVE,
@@ -54,9 +58,18 @@ struct mig_thread_args {
     int    cpu_end;
 };
 
-int create_mig_thread(struct virtcca_mig_agent_notify_info *data, void *(*start_routine) (void *));
-int get_active_thread_by_vmid(uint16_t	cvm_vmid);
-int destroy_mig_thread_by_index(int index);
+struct mig_host_key_info {
+    uint8_t msk[MIG_KEY_MASK_LEN];
+    uint8_t rand_iv[MIG_KEY_RAND_IV_LEN];
+    uint8_t tag[MIG_KEY_TAG_LEN];
+};
+
+/* used for mig agent forwarding data between the secure and non-secure worlds. */
+struct virtcca_mig_host_agent_info {
+    uint64_t      rd;
+    void          *content;
+    unsigned long size;
+};
 
 void *virtcca_mig_client_thread_func(void *arg);
 void *virtcca_mig_server_thread_func(void *arg);

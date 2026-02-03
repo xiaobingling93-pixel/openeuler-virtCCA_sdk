@@ -2,7 +2,6 @@
  * Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
  */
 
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -19,8 +18,8 @@
 #include <fcntl.h>
 #include <sys/ioctl.h>
 
-#include "integrity_check_handler.h"
 #include "tmi.h"
+#include "integrity_check_handler.h"
 
 #define TSI_SUCCESS 0
 #define TSI_ERROR_INPUT 1
@@ -38,6 +37,7 @@
 #define CLOSE_LENGTH 12
 #define RECV_CLOSE_REQ (-2)
 #define WAIT_TIME_OUT 500000
+#define SLAVE_SLEEP_TIME_US 100000
 
 #define QUEUE_SIZE (64 * 1024 - 16) // (64KB - 16B) queue size
 #define PAGE_SIZE (4 * 1024)
@@ -87,10 +87,14 @@ typedef struct {
 #define MIGVM_DESTROY_QUEUE _IO(QUEUE_IOCTL_MAGIC, 2)
 #define MIGVM_CREATE_QUEUE _IOWR(QUEUE_IOCTL_MAGIC, 1, unsigned long)
 #define TMM_GET_MIGVM_MEM_CHECKSUM _IOW(TSI_MAGIC, 4, virtcca_migvm_checksum_info_t)
+#define S_CONVERT_NS_MULTIPLE 1000000000
+#define SLAVE_QUIT_TIME_S 2
 
-unsigned long get_timestamp_ns(void)
+static unsigned long get_timestamp_ns(void)
 {
-    unsigned long val, freq;
+    unsigned long freq;
+    unsigned long val;
+
     asm volatile("mrs %0, cntvct_el0" : "=r" (val));
     asm volatile("mrs %0, cntfrq_el0" : "=r" (freq));
 
@@ -98,10 +102,10 @@ unsigned long get_timestamp_ns(void)
     if (freq == 0)
         return 0;
 
-    return 1000000000 / freq * val;
+    return S_CONVERT_NS_MULTIPLE / freq * val;
 }
 
-void record_tsi_time(io_thread_context_t *ctx, unsigned long t1, unsigned long t2, unsigned long type)
+static void record_tsi_time(io_thread_context_t *ctx, unsigned long t1, unsigned long t2, unsigned long type)
 {
     unsigned long i = ctx->tsi_index;
     ctx->tsi_start[i] = t1;
@@ -110,7 +114,7 @@ void record_tsi_time(io_thread_context_t *ctx, unsigned long t1, unsigned long t
     ctx->tsi_index = (i + 1) % TOTAL_DFX_COUNT;
 }
 
-void show_tsi_time(io_thread_context_t *ctx)
+static void show_tsi_time(io_thread_context_t *ctx)
 {
     unsigned long j = ctx->tsi_index;
     for (unsigned long i = 0; i < TOTAL_DFX_COUNT; i++) {
@@ -190,7 +194,7 @@ static int send_queue_data(virtcca_tls_handle *handle, mig_integrity_share_queue
 {
     int ret = 0;
     uint64_t send_len = *(q->send_offset);
-    uint8_t *send_addr = q->send_buf -sizeof(uint64_t);
+    uint8_t *send_addr = q->send_buf - sizeof(uint64_t);
 
     if (send_len > QUEUE_SIZE) {
         return -1;
@@ -217,7 +221,8 @@ static int send_queue_data(virtcca_tls_handle *handle, mig_integrity_share_queue
     return 0;
 }
 
-static int handle_send_event(virtcca_tls_handle *handle, int epoll_fd, int socket_fd, mig_integrity_share_queue_s *queue)
+static int handle_send_event(virtcca_tls_handle *handle, int epoll_fd,
+                             int socket_fd, mig_integrity_share_queue_s *queue)
 {
     int ret = 0;
 
@@ -277,18 +282,10 @@ static int handle_recv_event(int epoll_fd, int socket_fd, tmi_ctx *virtcca_clien
         checksum_info.guest_rd = params->guest_rd;
         checksum_info.thread_id = master_thread_id;
         ret = virtcca_tmi_ioctl(virtcca_client_ctx, VIRTCCA_GET_MIGVM_MEM_CHECKSUM, 0, &checksum_info, &ret_val);
-        if (ret != 0) {
-            printf("Failed to call tmi ioctl: %ld\n", ret);
-            return ret;
-        }
         if (ret_val == TSI_ERROR_FAILED) {
             printf("TSI_ERROR_FAILED...");
             return ret_val;
         }
-        // tsi_ret = ioctl(tsi_fd, TMM_GET_MIGVM_MEM_CHECKSUM, &checksum_info);
-        // if (tsi_ret == TSI_ERROR_FAILED) {
-        //     return tsi_ret;
-        // }
     }
 
     uint64_t check_len = recv_len;
@@ -328,20 +325,6 @@ static int handle_recv_event(int epoll_fd, int socket_fd, tmi_ctx *virtcca_clien
     return ret_val;
 }
 
-static void close_connection(int epoll_fd, int socket_fd)
-{
-    if (socket_fd >= 0) {
-        shutdown(socket_fd, SHUT_WR);
-
-        struct timeval tv = {2, 0};
-        setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-        if (epoll_fd >= 0) {
-            epoll_ctl(epoll_fd, EPOLL_CTL_DEL, socket_fd, NULL);
-        }
-    }
-}
-
 static int send_close_notification(virtcca_tls_handle *handle)
 {
     const char *close_msg = "CLOSE_NOTIFY";
@@ -366,7 +349,8 @@ static int send_close_notification(virtcca_tls_handle *handle)
     return 0;
 }
 
-void* slave_io_thread(void* arg) {
+void* slave_io_thread(void* arg)
+{
     thread_args_t *args = (thread_args_t *)arg;
     virtcca_migvm_checksum_info_t checksum_info;
     uint64_t ret;
@@ -385,10 +369,6 @@ void* slave_io_thread(void* arg) {
             tmi_ctx virtcca_client_ctx = {0};
             virtcca_client_ctx.fd = args->tmi_fd;
             ret = virtcca_tmi_ioctl(&virtcca_client_ctx, VIRTCCA_GET_MIGVM_MEM_CHECKSUM, 0, &checksum_info, &ret_val);
-            if (ret != 0) {
-                printf("Failed to call tmi ioctl: %ld\n", ret);
-                return NULL;
-            }
 
             if (ret_val == TSI_ERROR_INPUT || ret_val == TSI_ERROR_FAILED) {
                 printf("Thread %d tsi call end, ret: %ld\n", args->thread_id, ret);
@@ -432,7 +412,7 @@ static int create_slave_thread(io_thread_context_t *ctx, integrity_socket_t *par
         ctx->slave_args[i].thread_created = true;
     }
 
-    usleep(100000);
+    usleep(SLAVE_SLEEP_TIME_US);
     return 0;
 }
 
@@ -452,7 +432,7 @@ static int stop_all_slave_threads(io_thread_context_t *ctx, int count)
 
     struct timespec timeout;
     clock_gettime(CLOCK_REALTIME, &timeout);
-    timeout.tv_sec += 2;
+    timeout.tv_sec += SLAVE_QUIT_TIME_S;
 
     for (int i = 0; i < count; i++) {
         if (ctx->slave_args[i].thread_created) {
@@ -521,9 +501,9 @@ static void cleanup_client(integrity_socket_t *params, int epoll_fd)
     }
 }
 
-static void cleanup_resources(integrity_socket_t *params, 
-                             mig_integrity_share_queue_s *queue,
-                             int dev_fd, tmi_ctx *virtcca_client_ctx, int epoll_fd)
+static void cleanup_resources(integrity_socket_t *params,
+                              mig_integrity_share_queue_s *queue,
+                              int dev_fd, tmi_ctx *virtcca_client_ctx, int epoll_fd)
 {
     if (queue->send_len) {
         munmap(queue->send_len, _64K_SIZE);
@@ -654,7 +634,7 @@ void* io_thread(void* arg)
         cpu_set_t cpuset;
         CPU_ZERO(&cpuset);
         CPU_SET(master_thread_id, &cpuset);
-         if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset)) {
+        if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset)) {
             perror("pthread_setaffinity_np");
             goto cleanup;
         }
@@ -667,12 +647,8 @@ void* io_thread(void* arg)
     while (1) {
         uint64_t ret_val = 0;
         ret = virtcca_tmi_ioctl(virtcca_client_ctx, VIRTCCA_GET_MIGVM_MEM_CHECKSUM, 0, &checksum_info, &ret_val);
-        if (ret != 0) {
-            printf("Failed to call tmi ioctl: %d\n", ret);
-            return NULL;
-        }
         if ((params->is_server == 0 && ret_val == TSI_ERROR_FAILED) ||
-            (params->is_server == 0 && ret_val == TSI_SUCCESS) || 
+            (params->is_server == 0 && ret_val == TSI_SUCCESS) ||
             ret_val == TSI_ERROR_INPUT) {
             send_close_notification(params->handle);
             usleep(WAIT_TIME_OUT);
@@ -709,10 +685,15 @@ void* io_thread(void* arg)
 
             if (events[i].events & EPOLLIN) {
                 uint64_t start = get_timestamp_ns();
-                ret = handle_recv_event(epoll_fd, socket_fd, virtcca_client_ctx, params, &share_queue, master_thread_id);
-                if (ret < 0 || 
+                ret = handle_recv_event(epoll_fd,
+                                        socket_fd,
+                                        virtcca_client_ctx,
+                                        params,
+                                        &share_queue,
+                                        master_thread_id);
+                if (ret < 0 ||
                     (params->is_server == 0 && ret == TSI_ERROR_FAILED) ||
-                    (params->is_server == 0 && ret == TSI_SUCCESS) || 
+                    (params->is_server == 0 && ret == TSI_SUCCESS) ||
                     ret == TSI_ERROR_INPUT) {
                     if (ret != RECV_CLOSE_REQ) {
                         send_close_notification(params->handle);
@@ -741,12 +722,3 @@ cleanup:
     printf("IO thread cleanup completed\n");
     return NULL;
 }
-
-
-
-
-
-
-
-
-

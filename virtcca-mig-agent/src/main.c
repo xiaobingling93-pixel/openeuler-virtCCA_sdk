@@ -1,3 +1,7 @@
+/*
+ * Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+ */
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -120,8 +124,9 @@ cleanup_error:
 int main(int argc, char *argv[])
 {
     int ret = 0;
-    pthread_t server_thread, client_thread;
-    struct input_params params= {0};
+    pthread_t server_thread;
+    pthread_t client_thread;
+    struct input_params params = {0};
     struct mig_thread_args *client_args = NULL;
     struct mig_thread_args *server_args = NULL;
 

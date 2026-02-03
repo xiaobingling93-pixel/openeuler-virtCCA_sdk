@@ -36,10 +36,10 @@ void tmi_free_ctx(tmi_ctx *ctx);
 int virtcca_tmi_ioctl(tmi_ctx *ctx, int cmd_id, int flags, void *data, uint64_t *ret_val);
 
 struct virtcca_tmi_cmd {
-	__u32 id;
-	__u32 flags;
-	__u64 data;
-	__u64 ret_val;
+    __u32 id;
+    __u32 flags;
+    __u64 data;
+    __u64 ret_val;
 };
 
 #define TMI_MAGIC 'T'
@@ -49,20 +49,22 @@ struct virtcca_tmi_cmd {
 
 /* virtcca tmi sub-ioctl() commands. */
 enum virtcca_tmi_cmd_id {
-	VIRTCCA_TMI_IOCTL_VERSION = 0,
-	VIRTCCA_TMI_GET_NOTIFY,
-	VIRTCCA_GET_MIGVM_MEM_CHECKSUM,
-	VIRTCCA_GET_DSTVM_RD,
+    VIRTCCA_TMI_IOCTL_VERSION = 0,
+    VIRTCCA_TMI_GET_NOTIFY,
+    VIRTCCA_GET_MIGVM_MEM_CHECKSUM,
+    VIRTCCA_GET_DSTVM_RD,
+    VIRTCCA_GET_MIG_KEY,
+    VIRTCCA_SET_MIG_KEY,
 
-	VIRTCCA_TMI_IOCTL_CMD_MAX,
+    VIRTCCA_TMI_IOCTL_CMD_MAX,
 };
 
 struct virtcca_mig_agent_notify_info {
-	char		name[MAX_NAME_LENGTH];
-	char		dst_ip[MAX_IP_LENGTH];
-	uint64_t	rd;
-	uint16_t	dst_port;
-	uint16_t	cvm_vmid;
-	uint16_t	is_src;	/*1: src, 0: dst*/
+    char        name[MAX_NAME_LENGTH];
+    char        dst_ip[MAX_IP_LENGTH];
+    uint64_t    rd;
+    uint16_t    dst_port;
+    uint16_t    cvm_vmid;
+    uint16_t    is_src;    /* 1: src, 0: dst */
 };
 #endif

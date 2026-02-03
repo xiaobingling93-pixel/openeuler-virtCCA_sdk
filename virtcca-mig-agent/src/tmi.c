@@ -36,7 +36,7 @@ void tmi_free_ctx(tmi_ctx *ctx)
 
 int virtcca_tmi_ioctl(tmi_ctx *ctx, int cmd_id, int flags, void *data, uint64_t *ret_val)
 {
-    struct virtcca_tmi_cmd cmd= {0};
+    struct virtcca_tmi_cmd cmd = {0};
     int ret = 0;
 
     cmd.id = cmd_id;
@@ -46,7 +46,8 @@ int virtcca_tmi_ioctl(tmi_ctx *ctx, int cmd_id, int flags, void *data, uint64_t 
 
     ret = ioctl(ctx->fd, VIRTCCA_TMI_IOCTL_ENTER, &cmd);
     if (ret != 0) {
-        printf("Failed to call ioctl: (errno=%d)\n", errno);
+        if (ret_val)
+            *ret_val = cmd.ret_val;
         return -1;
     }
 
