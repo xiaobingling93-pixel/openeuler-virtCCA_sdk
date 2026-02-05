@@ -57,17 +57,22 @@ chmod +x build.sh
 ```bash
 cp build/migcvm-agent   ${CVM_PATH}/home/
 ```
+注：需要保证mig-CVM中所有配置一致
 
-4. 运行
+4. 离线证书导入（如需要）
+
+5. 运行
+
 源机密虚机
 ```bash
-./migcvm-agent -s ${local-ip} -c ${remote-ip} -r ${RIM}
+./migcvm-agent -c ${remote-ip}
 ```
 
 目的机密虚机
 ```bash
-./migcvm-agent -s ${local-ip} -c ${remote-ip} -r ${RIM}
+./migcvm-agent -c ${remote-ip}
 ```
+注：当通过qemu或者virsh在迁移时通过params配置对端的接收ip时，-c可省略
 
 ## 
 通信矩阵

@@ -262,6 +262,7 @@ static int receive_and_save_msk(rats_tls_handle handle, mig_agent_args *args)
     memset(pending_list_buf, 0, sizeof(pending_guest_rd_t));
 
     attest_info->pending_guest_rds = pending_list_buf;
+    pending_list_buf = NULL;
     ret = get_migration_binded_rds(virtcca_server_ctx, migvm_info, attest_info);
     if (ret == TSI_SUCCESS) {
         printf("[SERVER] get_migration_binded_rds succeeded\n");
@@ -271,9 +272,10 @@ static int receive_and_save_msk(rats_tls_handle handle, mig_agent_args *args)
     }
 
     for (int i = 0; i < MAX_BIND_VM; i++) {
-        if (pending_list_buf->guest_rd[i] == migvm_info->guest_rd) {
+        if (attest_info->pending_guest_rds->guest_rd[i] == migvm_info->guest_rd) {
             guest_rd_legal = true;
             printf("[SERVER] guest rd is legal\n");
+            break;
         }
     }
 
