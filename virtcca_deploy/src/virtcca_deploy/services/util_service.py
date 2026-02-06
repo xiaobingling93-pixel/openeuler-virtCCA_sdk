@@ -8,13 +8,11 @@ import virtcca_deploy.common.hardware as hardware
 class UtilService:
 
     @staticmethod
-    def get_hardware_info():
-        return hardware.get_hardware_info()
-
-    @staticmethod
     def get_node_info():
         hardware_info = hardware.get_hardware_info()
         virtcca_info = hardware.get_virtcca_info()
+        numa_info = hardware.get_numa_cpu_topology()
+        print(numa_info)
 
         secure_memory = 0
         secure_memory_free = 0

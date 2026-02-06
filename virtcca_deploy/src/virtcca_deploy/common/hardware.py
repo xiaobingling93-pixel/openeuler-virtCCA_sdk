@@ -7,6 +7,7 @@ import os
 import platform
 
 import psutil
+import subprocess
 
 import virtcca_deploy.common.config as config
 
@@ -29,6 +30,24 @@ def get_hardware_info():
     }
     return info
 
+def get_numa_cpu_topology():
+        try:
+            result = subprocess.run(['numactl', '-H'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            output = result.stdout.decode('utf-8')
+            numa_info = {}
+            for line in output.splitlines():
+                if "node" in line and "cpus" in line:
+                    parts = line.split("cpus:")
+                    node_info = parts[0].strip()
+                    cpus = parts[1].strip().split()
+                    node_id = int(node_info.split()[1])
+                    numa_info[node_id] = [int(cpu) for cpu in cpus]
+            return numa_info
+
+        except FileNotFoundError:
+            g_logger.error("Error: 'numactrl' command not found. Make sure it's installed and available in your PATH.")
+        except Exception as e:
+            g_logger.error(f"An error occurred: {e}")
 
 def get_virtcca_info():
     if os.path.exists(VIRTCCA_MEMORY_FILE_PATH):

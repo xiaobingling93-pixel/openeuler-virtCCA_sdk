@@ -42,7 +42,7 @@ class Config:
         return self.logger
 
     def configure_ssl(self):
-        ssl_cert = self.config.get('DEFAULT', 'manager_cert').strip().strip('"').strip("'")
+        ssl_cert = self.config.get('DEFAULT', 'ca_cert').strip().strip('"').strip("'")
         self.ssl_cert = os.path.abspath(ssl_cert)
 
         return

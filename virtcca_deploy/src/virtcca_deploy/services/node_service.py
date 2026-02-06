@@ -3,6 +3,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 import json
+from typing import List, Tuple, Optional, Dict
+
 from virtcca_deploy.services.db_service import db
 from virtcca_deploy.services.db_service import ComputeNode
 
@@ -64,7 +66,7 @@ class NodeService:
         return ComputeNode.query.get(node_id)
 
     @staticmethod
-    def get_node_by_ip(ip):
+    def get_node_by_ip(ip: str) -> ComputeNode:
         return ComputeNode.query.filter_by(ip=ip).first()
 
     @staticmethod
@@ -80,3 +82,19 @@ class NodeService:
             db.session.commit()
             return True
         return False
+
+    @staticmethod
+    def get_nodes_by_ip_list(ip_list: List[str]=None) -> Tuple[List[ComputeNode], Optional[Dict]]:
+        deploy_nodes = []
+
+        if not ip_list:
+            deploy_nodes = NodeService.get_all_nodes()
+        else:
+            for ip in ip_list:
+                node = NodeService.get_node_by_ip(ip)
+                if node:
+                    deploy_nodes.append(node)
+                else:
+                    return None, "Invalid compute node ip: {}".format(ip)
+
+        return deploy_nodes, None

@@ -12,6 +12,11 @@ MANAGER_DB_PATH = "/var/lib/virtcca_deploy/"
 MANAGER_DB = "sqlite:////var/lib/virtcca_deploy/virtcca_deploy_manager.db"
 MANAGER_LOG_NEME = "virtcca_deploy_manager.log"
 COMPUTE_LOG_NEME = "virtcca_deploy_compute.log"
+BASE_QCOW2 = "/etc/virtcca_deploy/base.qcow2"
+LIBVIRT_QEMU_LOG_PATH = "/var/log/libvirt/qemu/"
+CVM_COLLECT_LOG_PATH = "/var/log/virtcca_deploy/compute"
+CVM_MANAGER_SOFTWARE_PATH = "/var/lib/virtcca_deploy/upload/manager"
+CVM_COMPUTE_SOFTWARE_PATH = "/var/lib/virtcca_deploy/upload/compute"
 
 # Cvm template
 CVM_TEMPLATE_XML = '/etc/virtcca_deploy/cvm_template.xml'
@@ -22,13 +27,20 @@ ROUTE_NODE_INFO_INTERNAL = "/virtcca/internal/host/node-info"
 ROUTE_SET_NODE_DEPLOY_CONFIG_INTERNAL = "/virtcca/internal/vm/node-info"
 
 ROUTE_VM_DEPLOY_INTERNAL = "/virtcca/internal/vm/deploy"
+ROUTE_VM_UNDEPLOY_INTERNAL = "/virtcca/internal/vm/undeploy"
 ROUTE_VM_STATE_INTERNAL = "/virtcca/internal/vm/state"
+ROUTE_VM_LOG_COLLECT_INTERNAL = "/virtcca/internal/vm/log-collect/<vm_name>"
+ROUTE_VM_SOFTWARE_INTERNAL = "/virtcca/internal/vm/software"
 
 # External interface route
 ROUTE_HELLO = "/"
 ROUTE_NODE_INFO = "/virtcca/host/node-info"
 ROUTE_SET_NODE_DEPLOY_CONFIG = "/virtcca/vm/node-info"
 ROUTE_VM_DEPLOY = "/virtcca/vm/deploy"
+ROUTE_VM_UNDEPLOY = "/virtcca/vm/undeploy"
+ROUTE_VM_STATE = "/virtcca/vm/state"
+ROUTE_VM_LOG_COLLECT = "/virtcca/vm/log-collect/<host_ip>/<vm_name>"
+ROUTE_VM_SOFTWARE = "/virtcca/vm/software"
 
 # restful methods
 POST = "POST"
