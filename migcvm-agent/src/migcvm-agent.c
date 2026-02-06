@@ -143,6 +143,7 @@ static void ras_tls_handler_client(const struct socket_msg *msg, int conn_fd, mi
     memset(&ack_msg, 0, sizeof(socket_msg_t));
 
     /* tsi context */
+    char* host_srv_ip;
     virtcca_mig_info_t *migvm_info = NULL;
     migration_info_t *attest_info = NULL;
     pending_guest_rd_t *pending_list_buf = NULL;
@@ -161,15 +162,17 @@ static void ras_tls_handler_client(const struct socket_msg *msg, int conn_fd, mi
     }
 
     /* now the host srv_ip rely qemu input, temp is not use */
+    host_srv_ip = calloc(MAX_PAYLOAD_SIZE, 1);
+    if (!host_srv_ip) {
+        printf("[CLIENT] Failed to allocate host_srv_ip\n");
+        ret = TSI_ERROR_STATE;
+        goto out;
+    }
     if (strcmp(msg->cmd, "START_CLIENT") == 0) {
         payload_decode_all(msg, &payload);
-        size_t copy_len = strlen(payload.char_payload);
-        if (copy_len >= sizeof(args->srv_ip)) {
-            copy_len = sizeof(args->srv_ip) - 1;
-        }
         if (msg->payload_char_len > 0) {
-            strncpy(args->srv_ip, payload.char_payload, copy_len);
-            args->srv_ip[copy_len] = '\0';
+            strncpy(host_srv_ip, payload.char_payload, MAX_PAYLOAD_SIZE - 1);
+            host_srv_ip[MAX_PAYLOAD_SIZE - 1] = '\0';
         }
         args->guest_rd = payload.ull_payload;
         printf("[CLIENT] Received START_CLIENT signal");
@@ -178,8 +181,12 @@ static void ras_tls_handler_client(const struct socket_msg *msg, int conn_fd, mi
         ret = TSI_ERROR_INPUT;
         goto out;
     }
+    printf("[CLIENT] host srv ip is: %s\n", host_srv_ip);
+    if (host_srv_ip && strcmp(host_srv_ip, "127.0.0.1") != 0) {
+        strncpy(args->srv_ip, host_srv_ip, MAX_PAYLOAD_SIZE - 1);
+    }
 
-    if (strcmp(args->srv_ip, "0.0.0.0") == 0 || args->guest_rd == 0) {
+    if (strcmp(args->srv_ip, "127.0.0.1") == 0 || args->guest_rd == 0) {
         ret = TSI_ERROR_INPUT;
         goto out;
     }
@@ -294,6 +301,9 @@ out:
     }
     if (virtcca_client_ctx) {
         tsi_free_ctx(virtcca_client_ctx);
+    }
+    if (host_srv_ip) {
+        free(host_srv_ip);
     }
 
     return;
