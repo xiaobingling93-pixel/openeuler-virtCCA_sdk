@@ -26,8 +26,9 @@ def create_app():
     server_config = config.Config(constants.DEFAULT_CONFIG_PATH)
     server_config.configure_log(constants.MANAGER_LOG_NEME)
     server_config.configure_ssl()
+    server_config.configure_vlan_pool()
     root_logger = logging.getLogger()
-    
+
     if not os.path.exists(constants.MANAGER_DB_PATH):
         os.makedirs(constants.MANAGER_DB_PATH, exist_ok=True)
 
@@ -127,22 +128,32 @@ def create_app():
             return flask.jsonify(ApiResponse(
                     status = OperationCodes.FAILED,
                     message = "Invalid cvm config value").to_dict())
+        if cvm_spec.net_vf_num != 0:
+            net_interface = cvm_spec.net_vf_num
+        else:
+            net_interface = cvm_spec.net_pf_num
+        for i in range(net_interface):
+            server_config.vlan_pool_manager.add_vlan_pool(cvm_spec.vlan_id + i,
+                                                          server_config.config.get('NET', 'base_ip'),
+                                                          server_config.config.get('NET', 'prefix'))
+
         g_cvm_deploy_spec = cvm_spec
         g_logger.info("set cvm spec success: %s", g_cvm_deploy_spec)
         return flask.jsonify(ApiResponse().to_dict())
 
-        return deploy_nodes, None
 
     def _execute_deployment(deploy_nodes: List[ComputeNode],
                             cvm_spec_internal: VmDeploySpecInternal) -> Tuple[Dict, int]:
         deployment_results = {}
         success_nodes = 0
-
+        result = {}
+        vm_names_to_release = []
         for node in deploy_nodes:
             try:
                 compute_link = network_service.NetworkService(
                     node.nodename, constants.COMPUTE_PORT, True, server_config.ssl_cert
                 )
+                cvm_spec_internal.allocate_ip(server_config.vlan_pool_manager, node.ip)
                 result = compute_link.vm_deploy(asdict(cvm_spec_internal))
                 deployment_results[node.ip] = {
                     "message": result.get('message', 'Unknown error'),
@@ -150,14 +161,33 @@ def create_app():
                 }
                 if result.get("status") == OperationCodes.SUCCESS.value:
                     success_nodes += 1
+                else:
+                    # release ip of failed cvm
+                    if result.get("data"):
+                        vm_names_to_release = [
+                            f"{cvm_spec_internal.vm_id}-{i + 1}" 
+                            for i in range(cvm_spec_internal.vm_spec.vm_num) 
+                            if f"{cvm_spec_internal.vm_id}-{i + 1}" not in result.get("data")
+                        ]
+                    else:
+                        vm_names_to_release = [
+                            f"{cvm_spec_internal.vm_id}-{i + 1}" 
+                            for i in range(cvm_spec_internal.vm_spec.vm_num)
+                        ]
 
             except Exception as e:
                 err_msg = "Failed to deploy CVM at {}, error reason: {}".format(node.ip, e)
                 g_logger.error(err_msg)
+                vm_names_to_release = [
+                            f"{cvm_spec_internal.vm_id}-{i + 1}" 
+                            for i in range(cvm_spec_internal.vm_spec.vm_num)
+                        ]
                 deployment_results[node.ip] = {
                     "message": str(e),
                     "success_cvm": 0
                 }
+            for vm_name in vm_names_to_release:
+                        server_config.vlan_pool_manager.release_ips_for_vm(node.ip, vm_name)
         return deployment_results, success_nodes
 
     @app.route(constants.ROUTE_VM_DEPLOY, methods=[constants.POST])
@@ -193,29 +223,38 @@ def create_app():
                 data = deployment_results
             ).to_dict())
 
-    def _execute_undeployment(deploy_nodes: List[ComputeNode], vm_id: List[str]) -> Tuple[Dict, int]:
+    def _execute_undeployment(deploy_nodes: List[ComputeNode], vm_id_list: List[str], vlan_pool_manager: config.VlanPoolManager) -> Tuple[Dict, int]:
         deployment_results = {}
         success_nodes = 0
 
         for node in deploy_nodes:
             try:
+                success_vm_ids = []
                 compute_link = network_service.NetworkService(
                     node.nodename, constants.COMPUTE_PORT, True, server_config.ssl_cert
                 )
-                result = compute_link.vm_undeploy(vm_id)
+                result = compute_link.vm_undeploy(vm_id_list)
                 if not result:
                     deployment_results[node.ip] = {
                         "message": "VM undeploy failed",
-                        "failed_undeploy_cvm": vm_id
+                        "failed_undeploy_cvm": vm_id_list
                     }
-                if result.status_code != HTTPStatusCodes.OK or result.get("status") != OperationCodes.SUCCESS:
+                    continue
+                if result.get("status") != OperationCodes.SUCCESS.value:
                     deployment_results[node.ip] = {
                         "message": result.get('message', 'Unknown error'),
                         "failed_undeploy_cvm": result.get("data")
                     }
+                    success_vm_ids = []
+                    success_vm_ids = list(set(vm_id_list) - set(result.get("data")))
                 else:
                     deployment_results[node.ip] = {"message": "Successfully undeploy CVM"}
+                    success_vm_ids = vm_id_list
                     success_nodes += 1
+
+                g_logger.info("Releasing IPs for successfully undeployed VMs: %s", success_vm_ids)
+                for vm_id in success_vm_ids:
+                    vlan_pool_manager.release_ips_for_vm(node.ip, vm_id)
 
             except Exception as e:
                 err_msg = (
@@ -226,12 +265,13 @@ def create_app():
                 deployment_results[node.ip] = {
                     "message": str(e),
                 }
+                continue
         return deployment_results, success_nodes
 
     @app.route(constants.ROUTE_VM_UNDEPLOY, methods=[constants.POST])
     def undeploy_cvm():
         undeploy_data = flask.request.get_json()
-        if not undeploy_data or 'host_ip' not in undeploy_data or "vm_id" not in undeploy_data:
+        if not undeploy_data or not isinstance(undeploy_data.get('host_ip'), list) or not isinstance(undeploy_data.get('vm_id'), list):
             return flask.jsonify(ApiResponse(status = OperationCodes.FAILED,
                     message = "Invalid cvm config value").to_dict()), HTTPStatusCodes.BAD_REQUEST
         target_nodes, error_response = node_service.NodeService.get_nodes_by_ip_list(undeploy_data.get('host_ip', []))
@@ -240,7 +280,7 @@ def create_app():
                         status = OperationCodes.FAILED,
                         message = error_response
                     ).to_dict())
-        deployment_results, success_nodes = _execute_undeployment(target_nodes, undeploy_data.get('vm_id', []))
+        deployment_results, success_nodes = _execute_undeployment(target_nodes, undeploy_data.get('vm_id', []), server_config.vlan_pool_manager)
         if success_nodes == len(target_nodes):
             return flask.jsonify(ApiResponse(
                 message = "Successfully undeploy CVM to all nodes",
@@ -275,15 +315,15 @@ def create_app():
                             status = OperationCodes.FAILED,
                             message = "Failed to query cvm state",
                             ).to_dict())
-                if result.status_code != HTTPStatusCodes.OK or result.get("status") != OperationCodes.SUCCESS.value:
+                if result.status_code != HTTPStatusCodes.OK or result.json().get("status") != OperationCodes.SUCCESS.value:
                     state_results[node.ip] = {
-                        "message": result.get('message', 'Unknown error'),
-                        "cvm_state": result.get("data")
+                        "message": result.json().get('message', 'Unknown error'),
+                        "cvm_state": result.json().get("data")
                     }
                     continue
                 state_results[node.ip] = {
                         "message": "Successfully query CVM state",
-                        "cvm_state": result.get("data")
+                        "cvm_state": result.json().get("data")
                     }
                 success_nodes += 1
 
@@ -321,23 +361,23 @@ def create_app():
                             status = OperationCodes.FAILED,
                             message = "Failed to collect CVM log",
                             ).to_dict())
-
-            if response.status_code != HTTPStatusCodes.OK or response.get("status") != OperationCodes.SUCCESS.value:
+            if response.status_code != HTTPStatusCodes.OK:
                 return flask.jsonify(ApiResponse(
                             status = OperationCodes.FAILED,
-                            message = response.get("message")
                             ).to_dict())
             os.makedirs(constants.CVM_COLLECT_LOG_PATH, exist_ok=True)
             log_file_name = f"{host_ip}-{vm_name}.log"
             log_file_path = os.path.join(constants.CVM_COLLECT_LOG_PATH, log_file_name)
+            g_logger.info("log_file_path: %s", log_file_path)
             try:
                 with open(log_file_path, 'wb') as f:
+                    g_logger.info("open the file: %s", log_file_name)
                     for chunk in response.iter_content(chunk_size=1024):
                         if chunk:
                             f.write(chunk)
                 g_logger.info("Log file saved successfully: %s", log_file_path)
             except Exception as e:
-                err_msg = f"Failed to collect CVM log, error reason: {e}"
+                err_msg = f"Failed to collect CVM log, error reason 1: {e}"
                 g_logger.error(err_msg)
                 flask.jsonify(ApiResponse(status = OperationCodes.FAILED,
                               message = err_msg
@@ -345,7 +385,7 @@ def create_app():
             return flask.jsonify(ApiResponse().to_dict())
 
         except Exception as e:
-            err_msg = f"Failed to collect CVM log, error reason: {e}"
+            err_msg = f"Failed to collect CVM log, error reason 2: {e}"
             g_logger.error(err_msg)
             return flask.jsonify(ApiResponse(
                             status = OperationCodes.FAILED,
@@ -362,20 +402,22 @@ def create_app():
                 compute_link = network_service.NetworkService(
                     node.nodename, constants.COMPUTE_PORT, True, server_config.ssl_cert
                 )
-                response = compute_link.upload_cvm_software(upload_file)
-                if not response or response.status_code != HTTPStatusCodes.OK:
-                    err_msg = "Failed to connect {}".format(node.ip)
-                    g_logger.error(err_msg)
+                result = compute_link.upload_cvm_software(upload_file)
+                if not result:
                     deployment_results[node.ip] = {
-                        "message": err_msg,
+                        "message": "VM upload software failed",
+                        "failed_undeploy_cvm": node.nodename
                     }
                     continue
-
-                deployment_results[node.ip] = {
-                    "message": response.json().get('message', 'Unknown error'),
-                }
-                if response.json().get("status") == OperationCodes.SUCCESS.value:
+                if result.get("status") != OperationCodes.SUCCESS.value:
+                    deployment_results[node.ip] = {
+                        "message": result.get('message', 'Unknown error'),
+                    }
+                    continue
+                else:
+                    deployment_results[node.ip] = {"message": "Successfully upload software"}
                     success_nodes += 1
+                    continue
 
             except Exception as e:
                 err_msg = "Failed to unload CVM software at {}, error reason: {}".format(node.ip, e)

@@ -91,7 +91,17 @@ class NetworkService:
     def vm_undeploy(self, vm_id: List[str]):
         vm_undeploy_url = f"{self.base_url}/{constants.ROUTE_VM_UNDEPLOY_INTERNAL}"
         try:
-            return self.make_request(vm_undeploy_url, method=constants.POST, json_data=vm_id)
+            response = self.make_request(vm_undeploy_url, method=constants.POST, json_data=vm_id)
+            if response.status_code == HTTPStatusCodes.OK:
+                return response.json()
+            else:
+                g_logger.error("Failed to undeploy cvm, status code: %s", response.status_code)
+                return {
+                        "status": OperationCodes.INTERNAL_EXCEPTION,
+                        "message": response.json(),
+                        "data": None
+                }
+
         except Exception as e:
             g_logger.error(f"Error occurred while undeploy vm: {e}")
             return None
@@ -120,7 +130,16 @@ class NetworkService:
         }
 
         try:
-            return self.make_request(upload_cvm_software_url, method=constants.POST, files=files)
+            response = self.make_request(upload_cvm_software_url, method=constants.POST, files=files)
+            if response.status_code == HTTPStatusCodes.OK:
+                return response.json()
+            else:
+                g_logger.error("Failed to unload software, status code: %s", response.status_code)
+                return {
+                        "status": OperationCodes.INTERNAL_EXCEPTION,
+                        "message": response.json(),
+                        "data": None
+                }
         except Exception as e:
             g_logger.error(f"Error upload file to {upload_cvm_software_url}: {e}")
             return None

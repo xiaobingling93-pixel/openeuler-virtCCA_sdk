@@ -49,6 +49,11 @@ class VmDeploySpec:
             return False
         if not (1 <= self.core_num <= constants.MAX_CVM_CORE):
             return False
+        if self.vlan_id < 0:
+            return False
+        # vf and pf cannot be used at the same time.
+        if self.net_pf_num != 0 and self.net_vf_num != 0:
+            return False
         return True
 
 
@@ -56,7 +61,7 @@ class VmDeploySpec:
 class VmDeploySpecInternal:
     vm_id: str = DEFAULT_VM_ID
     vm_spec: VmDeploySpec = field(default_factory=VmDeploySpec)
-
+    vm_ip_dict : dict = field(default_factory=dict)
     def is_valid(self) -> bool:
         if not self.vm_spec.is_valid():
             return False
@@ -64,6 +69,22 @@ class VmDeploySpecInternal:
             return False
 
         return True
+
+    def allocate_ip(self, vlan_pool_manager: config.VlanPoolManager, node_ip: str):
+        if self.vm_spec.net_vf_num != 0:
+            net_interface_num = self.vm_spec.net_vf_num
+        else:
+            net_interface_num = self.vm_spec.net_pf_num
+
+        vm_ip_dict = {}
+        for i in range(self.vm_spec.vm_num):
+            ip_list = []
+            cvm_name = f"{self.vm_id}-{i + 1}"
+            for j in range(net_interface_num):
+                ip = vlan_pool_manager.allocate_vlan_ips(self.vm_spec.vlan_id + j, node_ip,cvm_name)
+                ip_list.append(ip)
+            vm_ip_dict[cvm_name] = ip_list
+        self.vm_ip_dict = vm_ip_dict
 
 
 @dataclass

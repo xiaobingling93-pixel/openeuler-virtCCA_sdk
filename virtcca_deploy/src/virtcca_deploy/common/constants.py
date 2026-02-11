@@ -17,7 +17,8 @@ LIBVIRT_QEMU_LOG_PATH = "/var/log/libvirt/qemu/"
 CVM_COLLECT_LOG_PATH = "/var/log/virtcca_deploy/compute"
 CVM_MANAGER_SOFTWARE_PATH = "/var/lib/virtcca_deploy/upload/manager"
 CVM_COMPUTE_SOFTWARE_PATH = "/var/lib/virtcca_deploy/upload/compute"
-
+MOUNT_PATH = "/var/lib/virtcca_deploy/qcow2/mnt"
+GUEST_SCRIPT_PATH = "/etc/virtcca_deploy/script"
 # Cvm template
 CVM_TEMPLATE_XML = '/etc/virtcca_deploy/cvm_template.xml'
 
@@ -47,7 +48,7 @@ POST = "POST"
 GET = "GET"
 
 # Cvm spec limitations
-MAX_CVM_NUM_PER_NODE = 1
+MAX_CVM_NUM_PER_NODE = 8
 MIN_CVM_MEM = 1024
 MAX_CVM_MEM = 1024 * 512
 MAX_CVM_CORE = 32
