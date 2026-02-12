@@ -188,6 +188,7 @@ def config_disk(cvm_name: str, file_path: str, ip_list: List[str], server_config
         util_service.qcow2_mount(new_qcow2_path)
         net_perfix = server_config.config.get("NET", "prefix")
         config_net(ip_list, net_perfix)
+        config_startup_script()
     except Exception as e:
         g_logger.error("Error while config QCOW2 file: {}".format(e))
         return ""

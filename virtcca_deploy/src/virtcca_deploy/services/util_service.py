@@ -64,20 +64,21 @@ class UtilService:
 @timeout(60)
 def qcow2_mount(qcow2_image_path):
     os.makedirs(constants.MOUNT_PATH, exist_ok=True)
-    env = os.environ.copy()
-    env["LIBGUESTFS_BACKEND"] = "direct"
     mount_cmd = [
         "guestmount", 
         "-a", qcow2_image_path, 
         "-i", constants.MOUNT_PATH, 
     ]
     try:
-        subprocess.run(mount_cmd, check=True, env=env)
+        subprocess.run(mount_cmd, check=True)
     except subprocess.CalledProcessError as e:
         g_logger.error("Error mounting file: %s", e)
         raise Exception("Failed to mount qcow2 image.")
 
 def qcow2_unmount():
+    if not os.path.ismount(constants.MOUNT_PATH):
+        g_logger.info("Directory %s is not mounted. No need to unmount.", constants.MOUNT_PATH)
+        return
     unmount_cmd = ["guestunmount",  constants.MOUNT_PATH]
     try:
         subprocess.run(unmount_cmd, check=True)
