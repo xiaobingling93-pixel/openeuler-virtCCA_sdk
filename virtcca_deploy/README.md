@@ -21,6 +21,15 @@ mkdir -p /etc/virtcca_deploy/
 cp conf/* /etc/virtcca_deploy/
 ```
 
+### 配置虚拟机运行环境和虚拟机镜像
+通过执行下面脚本自动安装libvirt、qemu等组件
+可以自主配置镜像大小（默认10G），镜像版本（默认版本为Host操作系统版本）
+
+```
+cd scripts
+bash tmm_cvm_env_setup.sh
+```
+
 ### 管理节点运行virtcca-manager
 配置https证书与秘钥，加入本节点证书和秘钥，以及计算节点证书
 ```
