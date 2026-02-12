@@ -4,7 +4,7 @@
 
 import logging
 import socket
-import sys
+import os
 
 import flask
 
@@ -25,6 +25,7 @@ def create_app():
     server_config = config.Config(constants.DEFAULT_CONFIG_PATH)
     server_config.configure_log(constants.COMPUTE_LOG_NEME)
     server_config.configure_ssl()
+    server_config.configure_device()
 
     root_logger = logging.getLogger()
     app.logger.setLevel(logging.INFO)
@@ -95,21 +96,100 @@ def create_app():
                     ).to_dict()), HTTPStatusCodes.BAD_REQUEST
         vm_id = cvm_spec_json['vm_id']
         vm_spec_data = cvm_spec_json['vm_spec']
+        vm_ip_dict = cvm_spec_json['vm_ip_dict']
+
         vm_spec = VmDeploySpec(**vm_spec_data)
-        g_logger.info("vm_spec: %s", vm_spec)
-        cvm_deploy_spec_internal = VmDeploySpecInternal(vm_id=vm_id, vm_spec=vm_spec)
+        cvm_deploy_spec_internal = VmDeploySpecInternal(vm_id=vm_id, vm_spec=vm_spec, vm_ip_dict=vm_ip_dict)
         if cvm_deploy_spec_internal.is_valid():
-            cvm_deploy_config = cvm_deploy_spec_internal
+            deployed_cvms, deploy_err_msg = virt_service.deploy_cvm(cvm_deploy_spec_internal, server_config)
+            if (deployed_cvms is None or len(deployed_cvms) < vm_spec.vm_num):
+                if deployed_cvms is None:
+                    succe_cvm_num = 0
+                else:
+                    succe_cvm_num = len(deployed_cvms)
+                error_msg = (
+                    "Deploy cvm failed, "
+                    "total %d cvms, "
+                    "deployed %d, "
+                    "reason: %s"
+                ) % (vm_spec.vm_num, succe_cvm_num, deploy_err_msg)
+                g_logger.error(error_msg)
+                return flask.jsonify(ApiResponse(
+                        status = OperationCodes.FAILED, 
+                        message = error_msg,
+                        data = deployed_cvms).to_dict())
         else:
             g_logger.error("Invalid spec")
             return flask.jsonify(ApiResponse(
                     status = OperationCodes.FAILED, 
-                    message = "Invalid cvm spec").to_dict()), HTTPStatusCodes.BAD_REQUEST
+                    message = "Invalid cvm spec").to_dict(),
+                    data = 0), HTTPStatusCodes.BAD_REQUEST
 
-        xml_list = virt_service.config_xml(constants.CVM_TEMPLATE_XML, cvm_deploy_config)
+        g_logger.info("deploy all cvms success")
+        return flask.jsonify(ApiResponse(data = deployed_cvms).to_dict())
 
-        g_logger.info("deploy xml success: %s", xml_list)
+    @app.route(constants.ROUTE_VM_UNDEPLOY_INTERNAL, methods=[constants.POST])
+    def undeploy_cvm_internal():
+        cvm_id_json = flask.request.get_json()
+        if not cvm_id_json or not isinstance(cvm_id_json, list):
+            g_logger.error("Invalid param")
+            return flask.jsonify(ApiResponse(
+                        status = OperationCodes.FAILED,
+                        message = "Content-Type must be application/json"
+                    ).to_dict()), HTTPStatusCodes.BAD_REQUEST
+        g_logger.info("get cvm undeploy request: %s\n", cvm_id_json)
+        failed_cvm = []
+        for vm_id in cvm_id_json:
+            result = virt_service.undeploy_cvm(vm_id, server_config)
+            if result is False:
+                failed_cvm.append(vm_id)
+        if failed_cvm:
+            return flask.jsonify(ApiResponse(
+                    status = OperationCodes.FAILED, 
+                    message = "some cvm destroy failed",
+                    data = failed_cvm
+                    ).to_dict())
         return flask.jsonify(ApiResponse().to_dict())
+    @app.route(constants.ROUTE_VM_STATE_INTERNAL, methods=[constants.GET])
+    def get_cvm_state_internal():
+        cvm_state = virt_service.get_all_cvm_state()
+        return flask.jsonify(ApiResponse(data = cvm_state).to_dict())
+
+    @app.route(constants.ROUTE_VM_LOG_COLLECT_INTERNAL, methods=[constants.GET])
+    def get_cvm_log_internal(vm_name: str):
+        cvm_log_file_path = os.path.join(constants.LIBVIRT_QEMU_LOG_PATH, f"{vm_name}.log")
+        g_logger.info("collect cvm log request: %s", cvm_log_file_path)
+        if not os.path.exists(cvm_log_file_path):
+            g_logger.error("cvm log not found: %s", cvm_log_file_path)
+            return flask.jsonify(ApiResponse(
+                    status = OperationCodes.FAILED, 
+                    message = "cvm log not found",
+                    ).to_dict()), HTTPStatusCodes.NOT_FOUND
+        g_logger.info("collect cvm log request success: %s", cvm_log_file_path)
+        return flask.send_from_directory(constants.LIBVIRT_QEMU_LOG_PATH, f"{vm_name}.log", as_attachment=True)
+
+    @app.route(constants.ROUTE_VM_SOFTWARE_INTERNAL, methods=[constants.POST])
+    def upload_cvm_software_internal():
+        if not flask.request.files['file']:
+            return flask.jsonify(ApiResponse(
+                    status = OperationCodes.FAILED, 
+                    message = "cvm log not found",
+                    ).to_dict()), HTTPStatusCodes.BAD_REQUEST
+        g_logger.info("upload_cvm_software_internal: %s", flask.request.files)
+        upload_file = flask.request.files['file']
+        filename = upload_file.filename
+        os.makedirs(constants.CVM_COMPUTE_SOFTWARE_PATH, exist_ok=True)
+        filepath = os.path.join(constants.CVM_COMPUTE_SOFTWARE_PATH, filename)
+
+        try:
+            upload_file.save(filepath)
+            return flask.jsonify(ApiResponse().to_dict())
+        except Exception as e:
+            g_logger.error("Error saving file: %s", e)
+            return flask.jsonify(ApiResponse(
+                        status = OperationCodes.FAILED,
+                        message = "Error saving file"
+                    ).to_dict()), HTTPStatusCodes.BAD_REQUEST
 
     return app
 
