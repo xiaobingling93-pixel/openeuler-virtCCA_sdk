@@ -10,11 +10,12 @@
 2. `./build.sh k8s`
     初始化k8s集群（单节点）。
 
-3. `./build.sh kdeploy`
+3. `./build.sh kdeploy` 或 `./build.sh kdeploy with_dim`
     制作`kata-deploy`镜像：安装docker并启动registry本地镜像仓，下载组件源码并应用patch，编译构建kata-deploy镜像并推送本地镜像仓。
     注意：
     - **此步骤只需执行一次即可，后续的机密容器环境部署可以复用该镜像。**
     - 支持在非virtCCA的普通机器执行，则后续virtCCA执行机拉取镜像时需要：①registry本地镜像仓的rootCA需要部署到执行机；②执行机的/etc/hosts中添加registry本地镜像仓与其IP的映射；③mount到执行机机密容器文件系统，添加域名映射（同②）。
+    - 可选参数 **`with_dim`**：传入后会在构建时应用 DIM 相关补丁，以支持 **DIM 远程证明**（Device Identity/Measurement）。若需使用 DIM 远程证明能力，请使用 `./build.sh kdeploy with_dim`。
 
 4. `./build operator`
     拉取kata-deploy镜像，启动cc-operator系列容器（manage & daemon），完成机密容器环境部署。至此，环境已经可以启动virtCCA机密容器，后续步骤用户按需参考执行，非必要步骤。
