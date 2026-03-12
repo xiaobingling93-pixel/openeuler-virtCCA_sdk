@@ -489,7 +489,7 @@ git apply --reject --whitespace=fix ../virtCCA_sdk/kata-v"$KATA_VERSION"/guest-c
     echo "Warning: guest-components patch issues detected, check .rej files"
 }
 
-if [[ $1 == "with_dim" ]]; then
+if [[ ${1:-} == "with_dim" ]]; then
     git apply --reject --whitespace=fix ./build/virtCCA_sdk/kata-v"$KATA_VERSION"/guest-components-virtcca-dim.patch || {
         echo "Warning: kata-containers patch issues detected, check .rej files"
     }
@@ -500,7 +500,7 @@ git apply --reject --whitespace=fix ../virtCCA_sdk/kata-v"$KATA_VERSION"/trustee
     echo "Warning: trustee patch issues detected, check .rej files"
 }
 
-if [[ $1 == "with_dim" ]]; then
+if [[ ${1:-} == "with_dim" ]]; then
     git apply --reject --whitespace=fix ./build/virtCCA_sdk/kata-v"$KATA_VERSION"/trustee-virtcca-dim.patch || {
         echo "Warning: kata-containers patch issues detected, check .rej files"
     }
@@ -1441,7 +1441,7 @@ case "$1" in
         init_k8s
         ;;
     kdeploy*)
-        kata_deploy $2
+        kata_deploy ${2:-}
         ;;
     operator*)
         launch_cc_operator
