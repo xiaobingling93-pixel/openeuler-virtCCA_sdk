@@ -236,6 +236,7 @@ install_dependencies() {
         git
         wget
         rsync
+        edk2-aarch64
     )
     
     # Install base packages
@@ -244,6 +245,9 @@ install_dependencies() {
     # Install development tools group
     yum groupinstall -y "Development Tools"
     
+    # Align the size of edk2 fd
+    fallocate -l $((64 * 1024 * 1024)) /usr/share/edk2/aarch64/QEMU_EFI.fd
+
     # Check KAE driver dependencies (if needed)
     if [ "$INSTALL_KAE" = "true" ]; then
         echo "Installing KAE driver compilation dependencies..."

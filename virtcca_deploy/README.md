@@ -30,7 +30,16 @@ cd scripts
 bash tmm_cvm_env_setup.sh
 ```
 
+注：
+1.检查libvirt、qemu权限设置，确保计算节点能够正常运行机密虚机
+2.检查系统防护墙和selinux配置，管理节点使用5001端口，计算节点使用5000端口，确保对应端口能够正常访问
+
 ### 管理节点运行virtcca-manager
+获取管理节点域名
+```
+hostname
+```
+
 配置https证书与秘钥，加入本节点证书和秘钥，以及计算节点证书
 ```
 mkdir -p /etc/virtcca_deploy/cert/

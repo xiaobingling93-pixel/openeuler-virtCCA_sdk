@@ -406,7 +406,6 @@ def create_app():
                 if not result:
                     deployment_results[node.ip] = {
                         "message": "VM upload software failed",
-                        "failed_undeploy_cvm": node.nodename
                     }
                     continue
                 if result.get("status") != OperationCodes.SUCCESS.value:
@@ -417,7 +416,6 @@ def create_app():
                 else:
                     deployment_results[node.ip] = {"message": "Successfully upload software"}
                     success_nodes += 1
-                    continue
 
             except Exception as e:
                 err_msg = "Failed to unload CVM software at {}, error reason: {}".format(node.ip, e)

@@ -195,8 +195,8 @@ class IPPoolManager:
         """
         ip_key = f"{node_ip}-{vm_name}"
         if ip_key not in self.vm_ip_mapping:
-            raise ValueError(f"VM {vm_name} on node {node_ip} not found in mapping.")
-
+            g_logger.info("VM %s on node %s not found in mapping, skip it.", vm_name, node_ip)
+            return
         for ip in self.vm_ip_mapping[ip_key]:
             self.ip_pool.append(ipaddress.IPv4Address(ip))
 
