@@ -59,7 +59,7 @@ def create_app():
     def before_request_check_ip():
         req_ip = flask.request.remote_addr
         if req_ip != manager_ip:
-            g_logger.info('Access denied for IP: %s', req_ip)
+            g_logger.warning('Access denied for IP: %s', req_ip)
             return flask.jsonify(ApiResponse(status=OperationCodes.IP_FORBIDDEN,
                 message="Not allowed to access internal api").to_dict()), HTTPStatusCodes.FORBIDDEN
 
@@ -170,14 +170,24 @@ def create_app():
 
     @app.route(constants.ROUTE_VM_SOFTWARE_INTERNAL, methods=[constants.POST])
     def upload_cvm_software_internal():
-        if not flask.request.files['file']:
+        if 'file' not in flask.request.files:
             return flask.jsonify(ApiResponse(
                     status = OperationCodes.FAILED, 
-                    message = "cvm log not found",
+                    message = "No file part in request",
                     ).to_dict()), HTTPStatusCodes.BAD_REQUEST
-        g_logger.info("upload_cvm_software_internal: %s", flask.request.files)
+
         upload_file = flask.request.files['file']
-        filename = upload_file.filename
+        if upload_file.filename == '':
+            return flask.jsonify(ApiResponse(
+                    status = OperationCodes.FAILED, 
+                    message = "No selected file",
+                    ).to_dict()), HTTPStatusCodes.BAD_REQUEST
+
+        g_logger.info("upload_cvm_software_internal: %s", flask.request.files)
+
+        # 防止路径穿越攻击，只保留文件名部分
+        filename = os.path.basename(upload_file.filename)
+
         os.makedirs(constants.CVM_COMPUTE_SOFTWARE_PATH, exist_ok=True)
         filepath = os.path.join(constants.CVM_COMPUTE_SOFTWARE_PATH, filename)
 
