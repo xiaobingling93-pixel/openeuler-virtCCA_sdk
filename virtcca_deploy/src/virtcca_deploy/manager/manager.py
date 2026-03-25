@@ -406,7 +406,6 @@ def create_app():
                 if not result:
                     deployment_results[node.ip] = {
                         "message": "VM upload software failed",
-                        "failed_undeploy_cvm": node.nodename
                     }
                     continue
                 if result.get("status") != OperationCodes.SUCCESS.value:
@@ -417,7 +416,6 @@ def create_app():
                 else:
                     deployment_results[node.ip] = {"message": "Successfully upload software"}
                     success_nodes += 1
-                    continue
 
             except Exception as e:
                 err_msg = "Failed to unload CVM software at {}, error reason: {}".format(node.ip, e)
@@ -430,13 +428,22 @@ def create_app():
 
     @app.route(constants.ROUTE_VM_SOFTWARE, methods=[constants.POST])
     def upload_cvm_software():
-        if not flask.request.files['file'] or not flask.request.files['file'].filename:
+        if 'file' not in flask.request.files:
             return flask.jsonify(ApiResponse(
                     status = OperationCodes.FAILED, 
-                    message = "cvm log not found",
+                    message = "No file part in request",
                     ).to_dict()), HTTPStatusCodes.BAD_REQUEST
-
-        g_logger.info("receive upload software: %s", flask.request.files['file'].filename)
+        
+        upload_file = flask.request.files['file']
+        if upload_file.filename == '':
+            return flask.jsonify(ApiResponse(
+                    status = OperationCodes.FAILED, 
+                    message = "No selected file",
+                    ).to_dict()), HTTPStatusCodes.BAD_REQUEST
+                    
+        # 防止路径穿越攻击，只保留文件名部分
+        filename = os.path.basename(upload_file.filename)
+        g_logger.info("receive upload software: %s", filename)
 
         target_nodes, error_response = node_service.NodeService.get_nodes_by_ip_list()
         if error_response:
@@ -446,8 +453,6 @@ def create_app():
                     ).to_dict()), HTTPStatusCodes.BAD_REQUEST
 
         g_logger.info("upload cvm software to compute nodes, %s", target_nodes)
-        upload_file = flask.request.files['file']
-        filename = upload_file.filename
         os.makedirs(constants.CVM_MANAGER_SOFTWARE_PATH, exist_ok=True)
         filepath = os.path.join(constants.CVM_MANAGER_SOFTWARE_PATH, filename)
 
