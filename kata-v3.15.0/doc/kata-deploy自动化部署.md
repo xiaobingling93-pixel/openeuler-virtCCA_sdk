@@ -279,6 +279,21 @@ kata-deploy的operator创建成功后集群状态如下：
 ![](./figures/zh-cn_image_0000002304612102.png)
 
 
+## 安装registry镜像仓根证书到机密容器文件系统中
+```shell
+# 挂载文件系统
+mount -o loop,offset=3145728 /opt/kata/share/kata-containers/kata-containers-confidential.img /mnt
+
+# 手动安装根证书到文件系统中
+cat /home/registry/certs/rootCA.crt >> /mnt/etc/ssl/certs/ca-certificates.crt
+
+# 将registry的域名解析配置到文件系统中
+vim /mnt/etc/hosts
+reigstry域名解析配置改成实际的IP,例如：192.168.122.1 registry.hw.com
+
+# 取消挂载
+umount /mnt
+```
 
 ## 执行测试pod，检查集群是否成功部署。
 
