@@ -7,14 +7,15 @@ from typing import List, Tuple, Optional, Dict
 
 from virtcca_deploy.services.db_service import db
 from virtcca_deploy.services.db_service import ComputeNode
+import virtcca_deploy.common.config as config
 
+g_logger = config.g_logger
 
 class NodeService:
     @staticmethod
     def create_node(ip, node_data):
         int_fields = [
             ('physical_cpu', node_data.get('physical_cpu')),
-            ('logical_cpu', node_data.get('logical_cpu')), 
             ('memory', node_data.get('memory')),
             ('memory_free', node_data.get('memory_free')),
             ('secure_memory', node_data.get('secure_memory')),
@@ -33,7 +34,6 @@ class NodeService:
         if existing_node:
             existing_node.nodename = node_data.get('hostname')
             existing_node.physical_cpu = node_data.get('physical_cpu')
-            existing_node.logical_cpu = node_data.get('logical_cpu')
             existing_node.memory = node_data.get('memory')
             existing_node.memory_free = node_data.get('memory_free')
             existing_node.secure_memory = node_data.get('secure_memory')
@@ -46,7 +46,6 @@ class NodeService:
             new_node = ComputeNode(ip=ip,
                 nodename=node_data.get('hostname'), 
                 physical_cpu=node_data.get('physical_cpu'),
-                logical_cpu=node_data.get('logical_cpu'),
                 memory=node_data.get('memory'),
                 memory_free=node_data.get('memory_free'),
                 secure_memory=node_data.get('secure_memory'),
@@ -97,4 +96,25 @@ class NodeService:
                 else:
                     return None, "Invalid compute node ip: {}".format(ip)
 
-        return deploy_nodes, None
+        return deploy_nodes, None
+
+    @staticmethod
+    def get_nodes_by_name_list(node_names: List[str] = None) -> Tuple[List[ComputeNode], Optional[str]]:
+        try:
+            query_nodes = []
+            
+            if not node_names:
+                query_nodes = NodeService.get_all_nodes()
+            else:
+                for name in node_names:
+                    node = ComputeNode.query.filter_by(nodename=name).first()
+                    if node:
+                        query_nodes.append(node)
+                    else:
+                        return None, f"Node not found for {name}"
+            
+            return query_nodes, None
+            
+        except Exception as e:
+            g_logger.error(f"Error querying nodes by name list: {str(e)}")
+            return None, f"Error querying nodes: {str(e)}"

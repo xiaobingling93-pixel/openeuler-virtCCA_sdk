@@ -16,17 +16,39 @@ g_logger = config.g_logger
 VIRTCCA_MEMORY_FILE_PATH = "/sys/kernel/tmm/memory_info"
 
 
+def get_disk_info():
+    disks = []
+
+    partitions = psutil.disk_partitions(all=False)
+
+    for p in partitions:
+        usage = psutil.disk_usage(p.mountpoint)
+
+        disk_info = {
+            "device": p.device,
+            "filesystem": p.fstype,
+            "mount_point": p.mountpoint,
+            "total_gb": round(usage.total / (1024**3), 2),
+            "available_gb": round(usage.free / (1024**3), 2),
+        }
+
+        disks.append(disk_info)
+
+    return disks
+
 def get_hardware_info():
     memory_info = psutil.virtual_memory()
     memory_mb = int(memory_info.total / (1024 ** 2))
     available_memory_mb = int(memory_info.available / (1024 ** 2))
+    disk_info = get_disk_info()
 
     info = {
         'hostname': platform.node(),
         'physical_cpu': psutil.cpu_count(logical=False),
-        'logical_cpu': psutil.cpu_count(logical=True),
+        'physical_cpu_free': psutil.cpu_count(logical=False),
         'memory': memory_mb,
         'memory_free': available_memory_mb,
+        'disk': disk_info
     }
     return info
 

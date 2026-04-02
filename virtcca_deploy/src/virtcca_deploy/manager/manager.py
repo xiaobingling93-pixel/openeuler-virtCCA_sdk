@@ -8,6 +8,7 @@ import os
 from typing import List, Tuple, Dict
 
 import flask
+from http import HTTPStatus
 
 import virtcca_deploy.common.config as config
 import virtcca_deploy.common.constants as constants
@@ -15,8 +16,9 @@ from virtcca_deploy.common.constants import HTTPStatusCodes, OperationCodes
 import virtcca_deploy.services.db_service as db_service
 import virtcca_deploy.services.node_service as node_service
 import virtcca_deploy.services.network_service as network_service
+import virtcca_deploy.services.util_service as util_service
 from virtcca_deploy.common.data_model import VmDeploySpec, ApiResponse, VmDeploySpecInternal
-from virtcca_deploy.services.db_service import ComputeNode
+from virtcca_deploy.services.db_service import ComputeNode, VmDeploySpecModel
 
 g_logger = config.g_logger
 g_cvm_deploy_spec = VmDeploySpec()
@@ -43,6 +45,20 @@ def create_app():
     manager_db.db.init_app(app)
     with app.app_context():
         manager_db.db.create_all()
+
+        # Load existing spec from database if it exists
+        global g_cvm_deploy_spec
+        existing_spec = db_service.db.session.query(VmDeploySpecModel).first()
+        if not existing_spec:
+            default_spec = g_cvm_deploy_spec.to_db_model()
+            default_spec.is_default = True
+            db_service.db.session.add(default_spec)
+            db_service.db.session.commit()
+
+            g_logger.info("Created default cvm spec with uuid: %s", default_spec.uuid)
+        else:
+            g_cvm_deploy_spec = VmDeploySpec.from_db_model(existing_spec)
+            g_logger.info("Loaded existing cvm spec from database with uuid: %s", existing_spec.uuid)
 
     g_logger.info("Virtcca Deploy Manager node start!")
 
@@ -73,41 +89,116 @@ def create_app():
     @app.route(constants.ROUTE_NODE_INFO, methods=[constants.POST])
     def query_node_info():
         data = flask.request.get_json()
-        if not data or 'ips' not in data or not data['ips']:
+
+        if not data:
             return flask.jsonify(ApiResponse(
-                    status = OperationCodes.FAILED,
-                    message = "Request must contain a list of IPs.").to_dict()), HTTPStatusCodes.BAD_REQUEST
+                message="Request must contain JSON data."
+            ).to_dict()), HTTPStatus.BAD_REQUEST
+        
+        nodes = data.get('nodes', [])
+        ips = data.get('ips', [])
 
-        existing_node_infos = {}
-        ip_list = data['ips']
-        valid_nodes = {}
-        for ip in ip_list:
-            node = node_service.NodeService.get_node_by_ip(ip)
-            if not node:
-                g_logger.error("Node not found for IP: %s", ip)
-                return flask.jsonify(ApiResponse(
-                    status=OperationCodes.FAILED,
-                    message=f"Node not found for IP: {ip}").to_dict()), HTTPStatusCodes.BAD_REQUEST
+        if nodes and ips:
+            return flask.jsonify(ApiResponse(
+                message="Parameters 'nodes' and 'ips' cannot be non-empty at the same time."
+            ).to_dict()), HTTPStatus.BAD_REQUEST
+        
+        success, error_msg, page, page_size = util_service.validate_and_extract_pagination(data)
+        if not success:
+            return flask.jsonify(ApiResponse(
+                message=error_msg
+            ).to_dict()), HTTPStatus.BAD_REQUEST
+
+        try:
+            error_response = None
+            if nodes:
+                query_nodes, error_response = node_service.NodeService.get_nodes_by_name_list(nodes)
+            elif ips:
+                query_nodes, error_response = node_service.NodeService.get_nodes_by_ip_list(ips)
             else:
-                valid_nodes[ip] = node
-        for ip in ip_list:
-            try:
-                compute_link = network_service.NetworkService(
-                valid_nodes[ip].nodename, constants.COMPUTE_PORT, True, server_config.ssl_cert)
-                result = compute_link.query_node_info()
-                if result.get("status") == OperationCodes.SUCCESS.value:
-                    existing_node_infos[ip] = result.get("data")
-                else:
-                    g_logger.error("Query failed for IP %s: %s", ip, result.get('message', 'Unknown error'))
-                    existing_node_infos[ip] = None
-
-            except Exception as e:
-                g_logger.error("Error querying node for IP %s: %s", ip, str(e))
-                existing_node_infos[ip] = None
-
-        g_logger.info("Node queries completed")
-        return flask.jsonify(ApiResponse(
-            data=existing_node_infos).to_dict())
+                query_nodes = node_service.NodeService.get_all_nodes()
+            
+            if error_response:
+                return flask.jsonify(ApiResponse(
+                    message=error_response
+                ).to_dict()), HTTPStatus.BAD_REQUEST
+            
+            if not query_nodes:
+                return flask.jsonify(ApiResponse(
+                    data={
+                        "host_info": {},
+                        "pagination": {
+                            "page": page,
+                            "page_size": page_size,
+                            "entry_num": 0
+                        }
+                    },
+                    message=""
+                ).to_dict())
+            
+            total_nodes = len(query_nodes)
+            start_idx = (page - 1) * page_size
+            end_idx = start_idx + page_size
+            paged_nodes = query_nodes[start_idx:end_idx]
+            
+            host_infos = {}
+            for node in paged_nodes:
+                try:
+                    compute_link = network_service.NetworkService(
+                        node.nodename, constants.COMPUTE_PORT, True, server_config.ssl_cert
+                    )
+                    result = compute_link.query_node_info()
+                    
+                    if result.get("message"):
+                        return flask.jsonify(ApiResponse(
+                            message=f"Node not found for {node.nodename}"
+                        ).to_dict()), HTTPStatus.BAD_REQUEST
+                    
+                    node_data = result.get("data", {})
+                    host_info = {
+                        "hostname": node.nodename,
+                        "ip": node.ip,
+                        "physical_cpu": node_data.get("physical_cpu", 0),
+                        "physical_cpu_free": node_data.get("physical_cpu_free", 0),
+                        "memory": node_data.get("memory", 0),
+                        "memory_free": node_data.get("memory_free", 0),
+                        "pf_num_total": node_data.get("pf_num_total", 0),
+                        "pf_num_free": node_data.get("pf_num_free", 0),
+                        "disks": node_data.get("disks", []),
+                        "secure_memory": node_data.get("secure_memory", 0),
+                        "secure_memory_free": node_data.get("secure_memory_free", 0),
+                        "secure_numa_topology": node_data.get("secure_numa_topology", {})
+                    }
+                    
+                    host_infos[node.nodename] = host_info
+                    
+                except Exception as e:
+                    g_logger.error(f"Error querying node {node.nodename}: {str(e)}")
+                    return flask.jsonify(ApiResponse(
+                        message=f"Failed to query node {node.nodename}"
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
+            
+            g_logger.info("Node queries completed")
+            
+            response_data = {
+                "host_info": host_infos,
+                "pagination": {
+                    "page": page,
+                    "page_size": page_size,
+                    "entry_num": total_nodes
+                }
+            }
+            
+            return flask.jsonify(ApiResponse(
+                data=response_data,
+                message=""
+            ).to_dict())
+            
+        except Exception as e:
+            g_logger.error(f"Unexpected error in query_node_info: {str(e)}")
+            return flask.jsonify(ApiResponse(
+                message="Internal server error"
+            ).to_dict()), HTTPStatus.INTERNAL_SERVER_ERROR
 
     @app.route(constants.ROUTE_SET_NODE_DEPLOY_CONFIG, methods=[constants.POST])
     def set_node_deploy_config():
@@ -115,32 +206,64 @@ def create_app():
         cvm_spec_json = flask.request.get_json()
         if not cvm_spec_json:
             return flask.jsonify(ApiResponse(
-                    status = OperationCodes.FAILED,
-                    message = "Content-Type must be application/json").to_dict()), HTTPStatusCodes.BAD_REQUEST
+                    message = "Content-Type must be application/json").to_dict()), HTTPStatus.BAD_REQUEST
         try:
             cvm_spec = VmDeploySpec(**cvm_spec_json)
         except TypeError as e:
             return flask.jsonify(ApiResponse(
-                    status = OperationCodes.FAILED,
-                    message = "Invalid cvm config format").to_dict()), HTTPStatusCodes.BAD_REQUEST
+                    message = "Invalid cvm config format").to_dict()), HTTPStatus.BAD_REQUEST
 
         if not cvm_spec.is_valid():
             return flask.jsonify(ApiResponse(
-                    status = OperationCodes.FAILED,
                     message = "Invalid cvm config value").to_dict())
-        if cvm_spec.net_vf_num != 0:
-            net_interface = cvm_spec.net_vf_num
-        else:
-            net_interface = cvm_spec.net_pf_num
-        for i in range(net_interface):
-            server_config.vlan_pool_manager.add_vlan_pool(cvm_spec.vlan_id + i,
-                                                          server_config.config.get('NET', 'base_ip'),
-                                                          server_config.config.get('NET', 'prefix'))
-
+        try:
+            # Delete all existing specs to ensure only one is stored
+            db_service.db.session.query(VmDeploySpecModel).delete()
+            
+            # Create new spec
+            new_spec_model = cvm_spec.to_db_model()
+            new_spec_model.is_default = True
+            db_service.db.session.add(new_spec_model)
+            db_service.db.session.commit()
+            g_logger.info("Saved cvm spec to database with uuid: %s, all existing specs deleted", g_cvm_deploy_spec.uuid)
+        except Exception as e:
+            db_service.db.session.rollback()
+            g_logger.error("Failed to save cvm spec to database: %s", str(e))
+            return flask.jsonify(ApiResponse(
+                    message="Failed to save config to database").to_dict())
+        
         g_cvm_deploy_spec = cvm_spec
         g_logger.info("set cvm spec success: %s", g_cvm_deploy_spec)
-        return flask.jsonify(ApiResponse().to_dict())
+        return flask.jsonify(ApiResponse(data = g_cvm_deploy_spec.uuid).to_dict())
 
+    @app.route(constants.ROUTE_GET_NODE_DEPLOY_CONFIG, methods=[constants.GET])
+    def get_node_deploy_config():
+        """根据deploy_id获取部署配置"""
+        try:
+            deploy_id = flask.request.args.get('deploy_config_id')
+            
+            if deploy_id:
+                deploy_config = db_service.db.session.query(VmDeploySpecModel).filter_by(uuid=deploy_id).first()
+            else:
+                deploy_config = db_service.db.session.query(VmDeploySpecModel).filter_by(is_default=True).first()
+            
+            if not deploy_config:
+                 return flask.jsonify(ApiResponse(
+                    message=f"Unable to get deploy config with ID {deploy_id}"
+                 ).to_dict()), HTTPStatus.NOT_FOUND
+
+            cvm_deploy_spec = VmDeploySpec.from_db_model(deploy_config)
+            return flask.jsonify(ApiResponse(
+                data = {
+                    cvm_deploy_spec.uuid: asdict(cvm_deploy_spec)
+                }
+            ).to_dict())
+            
+        except Exception as e:
+            g_logger.error(f"Failed to get deploy config: {e}")
+            return flask.jsonify(ApiResponse(
+                message=f"Failed to get deploy config: {str(e)}"
+            ).to_dict()), HTTPStatus.INTERNAL_SERVER_ERROR
 
     def _execute_deployment(deploy_nodes: List[ComputeNode],
                             cvm_spec_internal: VmDeploySpecInternal) -> Tuple[Dict, int]:
@@ -343,7 +466,12 @@ def create_app():
                         ).to_dict())
 
     @app.route(constants.ROUTE_VM_LOG_COLLECT, methods=[constants.GET])
-    def get_cvm_log(host_ip: str, vm_name: str):
+    def get_cvm_log():
+        host_ip = flask.request.args.get('host_ip')
+        vm_id = flask.request.args.get('vm_id')
+        if not host_ip or not vm_id:
+            return flask.jsonify(ApiResponse(
+                message="Missing required parameters: host_name and vm_id").to_dict()), HTTPStatus.BAD_REQUEST
         target_node = node_service.NodeService.get_node_by_ip(host_ip)
         if not target_node:
             return flask.jsonify(ApiResponse(
