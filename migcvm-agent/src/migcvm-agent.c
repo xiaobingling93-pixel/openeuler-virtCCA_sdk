@@ -183,7 +183,11 @@ static void ras_tls_handler_client(const struct socket_msg *msg, int conn_fd, mi
     }
     printf("[CLIENT] host srv ip is: %s\n", host_srv_ip);
     if (host_srv_ip && strcmp(host_srv_ip, "127.0.0.1") != 0) {
-        strncpy(args->srv_ip, host_srv_ip, MAX_PAYLOAD_SIZE - 1);
+        free(args->srv_ip);
+        if (safe_strdup(&args->srv_ip, host_srv_ip) != 0) {
+            ret = TSI_ERROR_INPUT;
+            goto out;
+        }
     }
 
     if (strcmp(args->srv_ip, "127.0.0.1") == 0 || args->guest_rd == 0) {
@@ -551,6 +555,8 @@ static void rim_initialize(void)
     virtcca_token = (virtcca_attestation_evidence_t *)malloc(sizeof(virtcca_attestation_evidence_t));
     if (!virtcca_token) {
         printf("cannot malloc evidence buffer.\n");
+        tsi_free_ctx(ctx);
+        return;
     }
     token = virtcca_token->report + sizeof(token_len);
     token_len = REPORT_MAX_LENGTH - sizeof(token_len);
