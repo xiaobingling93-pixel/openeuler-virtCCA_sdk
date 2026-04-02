@@ -120,7 +120,7 @@ int handle_connect(int connfd, tsi_ctx *ctx)
             if (use_fde) {
                 printf("Client indicated FDE is enabled, receiving key file...\n");
                 unsigned char key_file[MAX] = {};
-                size_t key_file_len = 0;
+                ssize_t key_file_len = 0;
                 key_file_len = read(connfd, key_file, sizeof(key_file));
                 if (key_file_len <= 0) {
                     printf("Failed to receive key file data.\n");
