@@ -23,25 +23,24 @@ GUEST_SCRIPT_PATH = "/etc/virtcca_deploy/script"
 CVM_TEMPLATE_XML = '/etc/virtcca_deploy/cvm_template.xml'
 
 # Internal interface route
-ROUTE_NODE_REGISTRY_INTERNAL = "/virtcca/internal/node/register"
-ROUTE_NODE_INFO_INTERNAL = "/virtcca/internal/host/node-info"
-ROUTE_SET_NODE_DEPLOY_CONFIG_INTERNAL = "/virtcca/internal/vm/node-info"
-
-ROUTE_VM_DEPLOY_INTERNAL = "/virtcca/internal/vm/deploy"
-ROUTE_VM_UNDEPLOY_INTERNAL = "/virtcca/internal/vm/undeploy"
-ROUTE_VM_STATE_INTERNAL = "/virtcca/internal/vm/state"
-ROUTE_VM_LOG_COLLECT_INTERNAL = "/virtcca/internal/vm/log-collect/<vm_name>"
-ROUTE_VM_SOFTWARE_INTERNAL = "/virtcca/internal/vm/software"
+ROUTE_NODE_REGISTRY_INTERNAL = "/api/v1/internal/host/register"
+ROUTE_NODE_INFO_INTERNAL = "/api/v1/internal/host/node-info"
+ROUTE_VM_DEPLOY_INTERNAL = "/api/v1/internal/vm/deploy"
+ROUTE_VM_UNDEPLOY_INTERNAL = "/api/v1/internal/vm/undeploy"
+ROUTE_VM_STATE_INTERNAL = "/api/v1/internal/vm/state"
+ROUTE_VM_LOG_COLLECT_INTERNAL = "/api/v1/internal/vm/logs/<vm_id>"
+ROUTE_VM_SOFTWARE_INTERNAL = "/api/v1/internal/vm/software"
 
 # External interface route
 ROUTE_HELLO = "/"
-ROUTE_NODE_INFO = "/virtcca/host/node-info"
-ROUTE_SET_NODE_DEPLOY_CONFIG = "/virtcca/vm/node-info"
-ROUTE_VM_DEPLOY = "/virtcca/vm/deploy"
-ROUTE_VM_UNDEPLOY = "/virtcca/vm/undeploy"
-ROUTE_VM_STATE = "/virtcca/vm/state"
-ROUTE_VM_LOG_COLLECT = "/virtcca/vm/log-collect/<host_ip>/<vm_name>"
-ROUTE_VM_SOFTWARE = "/virtcca/vm/software"
+ROUTE_NODE_INFO = "/api/v1/host/node-info"
+ROUTE_SET_NODE_DEPLOY_CONFIG = "/api/v1/vm/deploy-config"
+ROUTE_GET_NODE_DEPLOY_CONFIG = "/api/v1/vm/deploy-config"
+ROUTE_VM_DEPLOY = "/api/v1/vm/deploy"
+ROUTE_VM_UNDEPLOY = "/api/v1/vm/undeploy"
+ROUTE_VM_STATE = "/api/v1/vm/state"
+ROUTE_VM_LOG_COLLECT = "/api/v1/vm/logs/"
+ROUTE_VM_SOFTWARE = "/api/v1/vm/software"
 
 # restful methods
 POST = "POST"

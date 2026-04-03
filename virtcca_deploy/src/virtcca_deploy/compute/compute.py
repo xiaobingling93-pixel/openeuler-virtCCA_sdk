@@ -32,7 +32,7 @@ def create_app():
     for handler in root_logger.handlers:
         app.logger.addHandler(handler)
 
-    manager_domain_name = server_config.config.get("DEFAULT", "manager")
+    manager_domain_name = server_config.config.get("DEFAULT", "manager").strip().strip('"').strip("'")
     try:
         manager_ip = socket.gethostbyname(manager_domain_name)
         g_logger.info("Resolve manager ip success: %s -> %s", manager_domain_name, manager_ip)
@@ -42,7 +42,7 @@ def create_app():
     g_logger.info("Virtcca Deploy Compute node start!")
 
     manager_link = network_service.NetworkService(
-            server_config.config.get("DEFAULT", "manager").strip().strip('"').strip("'"),
+            manager_domain_name,
             constants.MANAGER_PORT,
             True,
             server_config.ssl_cert)
