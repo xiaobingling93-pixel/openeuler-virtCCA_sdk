@@ -39,11 +39,11 @@ void DataHelper::ReleaseDgPairList(DG_PairList *pairList)
     if (pairList) {
         for (size_t i = 0; i < pairList->size; i++) {
             if (pairList->dgPair[i].key) {
-                delete[] pairList->dgPair[i].key->str;
+                free(pairList->dgPair[i].key->str);
                 delete pairList->dgPair[i].key;
             };
             if (pairList->dgPair[i].value) {
-                delete[] pairList->dgPair[i].value->str;
+                free(pairList->dgPair[i].value->str);
                 delete pairList->dgPair[i].value;
             };
         }
@@ -59,7 +59,7 @@ void DataHelper::ReleaseOutput(DG_TeeOutput **output)
     }
     if ((*output)->dataType == MPC_STRING && (*output)->data.strings != nullptr) {
         for (uint64_t i = 0; i < (*output)->size; ++i) {
-            delete[] (*output)->data.strings[i].str;
+            free((*output)->data.strings[i].str);
         }
         delete[] (*output)->data.strings;
     } else if ((*output)->dataType == MPC_DOUBLE && (*output)->data.doubleNumbers != nullptr) {

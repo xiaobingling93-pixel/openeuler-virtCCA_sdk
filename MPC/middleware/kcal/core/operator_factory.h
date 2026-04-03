@@ -14,9 +14,10 @@
 #define OPERATOR_FACTORY_H
 
 #include <memory>
-#include "kcal/operator/kcal_psi.h"
-#include "kcal/operator/kcal_pir.h"
+
 #include "kcal/operator/kcal_make_share.h"
+#include "kcal/operator/kcal_pir.h"
+#include "kcal/operator/kcal_psi.h"
 #include "kcal/operator/kcal_reveal_share.h"
 
 namespace kcal {

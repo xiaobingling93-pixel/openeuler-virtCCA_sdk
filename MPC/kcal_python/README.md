@@ -49,6 +49,8 @@
 2. 创建虚拟环境
 
    ```bash
+   # 避免用系统自带的 python，可能不包含完整的开发组件
+   uv python install 3.11
    uv venv --python 3.11
    source .venv/bin/activate
    ```
@@ -56,7 +58,7 @@
 3. 安装 pdm 工具
 
    ```bash
-   uv pip install pdm
+   uv pip install pdm pybind11
    ```
 
 ### 打包

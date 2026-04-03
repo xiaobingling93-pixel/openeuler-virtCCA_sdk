@@ -14,6 +14,7 @@
 #define OPERATOR_BASE_H
 
 #include <memory>
+
 #include "kcal/core/context.h"
 #include "kcal/enumeration/kcal_enum.h"
 #include "kcal/utils/io.h"

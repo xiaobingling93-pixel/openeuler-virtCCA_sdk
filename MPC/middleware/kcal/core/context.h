@@ -14,9 +14,10 @@
 #define CONTEXT_H
 
 #include <memory>
+
 #include "kcal/api/kcal_api.h"
-#include "kcal/enumeration/kcal_enum.h"
 #include "kcal/core/tee_ctx_manager.h"
+#include "kcal/enumeration/kcal_enum.h"
 
 namespace kcal {
 
