@@ -15,6 +15,7 @@
 
 #include <memory>
 #include <utility>
+
 #include "kcal/core/context.h"
 #include "kcal/core/mpc_operator_base.h"
 

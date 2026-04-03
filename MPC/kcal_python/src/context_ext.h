@@ -2,9 +2,9 @@
 
 #pragma once
 
+#include <cstring>
 #include <functional>
 #include <memory>
-#include <cstring>
 
 #include "kcal/core/context.h"
 

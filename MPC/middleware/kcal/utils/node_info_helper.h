@@ -15,6 +15,7 @@
 
 #include <optional>
 #include <vector>
+
 #include "kcal/api/kcal_api.h"
 
 namespace kcal::utils {

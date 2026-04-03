@@ -13,11 +13,11 @@
 #ifndef KCAL_MIDDLEWARE_IO_H
 #define KCAL_MIDDLEWARE_IO_H
 
-#include <vector>
-#include <string>
-#include "kcal/api/kcal_api.h"
-
 #include <memory>
+#include <string>
+#include <vector>
+
+#include "kcal/api/kcal_api.h"
 
 namespace kcal::io {
 
@@ -89,7 +89,7 @@ using Output = Input;
 class KcalPairList {
 public:
     KcalPairList() = default;
-    explicit KcalPairList(DG_PairList *pairList) : pairList_(pairList) {};
+    explicit KcalPairList(DG_PairList *pairList) : pairList_(pairList){};
     ~KcalPairList() { DataHelper::ReleaseDgPairList(pairList_); };
     static KcalPairList *Create();
     DG_PairList *Get() { return pairList_; };

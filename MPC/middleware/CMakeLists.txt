@@ -8,12 +8,13 @@ find_package(libkcal REQUIRED)
 
 add_subdirectory(kcal)
 
-install(DIRECTORY kcal
-        DESTINATION include
-        FILES_MATCHING PATTERN "*.h"
-)
+install(
+  DIRECTORY kcal
+  DESTINATION include
+  FILES_MATCHING
+  PATTERN "*.h")
 
-install(EXPORT kcal_middlewareTargets
-        FILE kcal_middleConfig.cmake
-        DESTINATION lib/cmake/kcal_middle
-)
+install(
+  EXPORT kcal_middlewareTargets
+  FILE kcal_middleConfig.cmake
+  DESTINATION lib/cmake/kcal_middle)

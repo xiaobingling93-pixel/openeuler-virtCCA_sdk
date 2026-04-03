@@ -77,7 +77,6 @@ void FeedKcalPairList(const py::list &key, const py::list &value, io::KcalPairLi
     size_t i = 0;
     for (i = 0; i < key.size(); ++i) {
         pairList->Get()->dgPair[i].key = new (std::nothrow) DG_String();
-        pairList->Get()->dgPair[i].key = new (std::nothrow) DG_String();
         pairList->Get()->dgPair[i].value = new (std::nothrow) DG_String();
         if (!pairList->Get()->dgPair[i].key || !pairList->Get()->dgPair[i].value) {
             pairList->Get()->size = i + 1;
@@ -94,7 +93,6 @@ void FeedKcalPairList(const py::list &key, const py::list &value, io::KcalPairLi
                 throw std::bad_alloc();
             }
             pairList->Get()->dgPair[i].key->str = strdup(utf8);
-            pairList->Get()->dgPair[i].key->str = strdup(utf8);
             pairList->Get()->dgPair[i].key->size = static_cast<int>(sz) + 1;
         }
         // 填充 value
@@ -107,7 +105,6 @@ void FeedKcalPairList(const py::list &key, const py::list &value, io::KcalPairLi
             if (!utf8) {
                 throw std::bad_alloc();
             }
-            pairList->Get()->dgPair[i].value->str = strdup(utf8);
             pairList->Get()->dgPair[i].value->str = strdup(utf8);
             pairList->Get()->dgPair[i].value->size = static_cast<int>(sz) + 1;
         }
@@ -365,21 +362,21 @@ PYBIND11_MODULE(kcal, m)
     BindMpcOperators(m);
 
     m.def("create_psi", [](const std::shared_ptr<ContextExt> &context) -> std::shared_ptr<Psi> {
-        return std::shared_ptr(OperatorFactory::CreatePsi(context->GetKcalContext()));
+        return OperatorFactory::CreatePsi(context->GetKcalContext());
     });
 
     m.def("create_pir", [](const std::shared_ptr<ContextExt> &context) -> std::shared_ptr<Pir> {
-        return std::shared_ptr(OperatorFactory::CreatePir(context->GetKcalContext()));
+        return OperatorFactory::CreatePir(context->GetKcalContext());
     });
 
     BindOtherOperators(m);
 
     m.def("create_make_share", [](const std::shared_ptr<ContextExt> &context) -> std::shared_ptr<MakeShare> {
-        return std::shared_ptr(OperatorFactory::CreateMakeShare(context->GetKcalContext()));
+        return OperatorFactory::CreateMakeShare(context->GetKcalContext());
     });
 
     m.def("create_reveal_share", [](const std::shared_ptr<ContextExt> &context) -> std::shared_ptr<RevealShare> {
-        return std::shared_ptr(OperatorFactory::CreateRevealShare(context->GetKcalContext()));
+        return OperatorFactory::CreateRevealShare(context->GetKcalContext());
     });
 
     m.def("create_mpc",

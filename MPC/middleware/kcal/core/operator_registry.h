@@ -13,10 +13,11 @@
 #ifndef OPERATOR_REGISTRY_H
 #define OPERATOR_REGISTRY_H
 
-#include <memory>
-#include <unordered_map>
 #include <functional>
+#include <memory>
 #include <mutex>
+#include <unordered_map>
+
 #include "kcal/core/mpc_operator_base.h"
 #include "kcal/enumeration/kcal_enum.h"
 
@@ -26,8 +27,7 @@ class OperatorRegistry {
 public:
     static OperatorRegistry &Instance();
 
-    template <typename OperatorType>
-    void RegisterOperator(KCAL_AlgorithmsType type);
+    template <typename OperatorType> void RegisterOperator(KCAL_AlgorithmsType type);
 
     std::unique_ptr<MpcOperatorBase> CreateOperator(KCAL_AlgorithmsType type);
     bool IsOperatorInitialized(KCAL_AlgorithmsType type) const;
@@ -41,8 +41,7 @@ private:
     mutable std::mutex mutex_;
 };
 
-template <typename OperatorType>
-void OperatorRegistry::RegisterOperator(KCAL_AlgorithmsType type)
+template <typename OperatorType> void OperatorRegistry::RegisterOperator(KCAL_AlgorithmsType type)
 {
     static_assert(std::is_base_of_v<MpcOperatorBase, OperatorType>, "OperatorType must derive from OperatorBase");
 

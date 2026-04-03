@@ -13,12 +13,13 @@
 #ifndef TEE_CTX_MANAGER_H
 #define TEE_CTX_MANAGER_H
 
-#include <unordered_map>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
-#include "kcal/core/tee_ctx_initializer.h"
+
 #include "kcal/api/kcal_api.h"
+#include "kcal/core/tee_ctx_initializer.h"
 #include "kcal/enumeration/kcal_enum.h"
 
 namespace kcal {
