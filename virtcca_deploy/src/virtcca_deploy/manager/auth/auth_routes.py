@@ -44,26 +44,26 @@ def login():
     # 仅支持root用户
     if username != "root":
         return flask.jsonify(ApiResponse(
-            message="用户不存在"
+            message="The user does not exist."
         ).to_dict()), HTTPStatus.NOT_FOUND
 
     user = User.query.filter_by(username=username).first()
     if not user:
         return flask.jsonify(ApiResponse(
-            message="用户不存在"
+            message="The user does not exist."
         ).to_dict()), HTTPStatus.NOT_FOUND
 
     # 检查密码是否已设置
     if not AuthService.is_root_password_set():
         return flask.jsonify(ApiResponse(
-            message="root用户密码未设置，请使用 virtcca-deploy-tool set-password 设置密码"
+            message="The password of user root is not set"
         ).to_dict()), HTTPStatus.UNAUTHORIZED
 
     # 检查账户锁定状态
     is_locked, remaining = AuthService.check_account_locked(user)
     if is_locked:
         return flask.jsonify(ApiResponse(
-            message=f"账户已被锁定，请在{remaining}秒后重试"
+            message=f"The account has been locked. Please try again in {remaining} seconds."
         ).to_dict()), HTTPStatus.TOO_MANY_REQUESTS
 
     # 验证密码
@@ -74,7 +74,7 @@ def login():
             lockout_minutes=flask.current_app.config.get('LOCKOUT_DURATION_MINUTES', 15)
         )
         return flask.jsonify(ApiResponse(
-            message="用户名或密码错误"
+            message="Incorrect user name or password"
         ).to_dict()), HTTPStatus.UNAUTHORIZED
 
     # 密码正确，重置失败计数
@@ -111,7 +111,7 @@ def login():
     g_logger.info("User %s logged in successfully from %s", username, flask.request.remote_addr)
 
     return flask.jsonify(ApiResponse(
-        message="登录成功",
+        message="Login succeeded.",
         data={"token": token}
     ).to_dict())
 
@@ -131,12 +131,12 @@ def logout():
 
     if not payload:
         return flask.jsonify(ApiResponse(
-            message="无效或已过期的token"
+            message="Invalid or expired token"
         ).to_dict()), HTTPStatus.UNAUTHORIZED
 
     username = payload.get('sub', '')
     AuthService.clear_active_session(username)
 
     return flask.jsonify(ApiResponse(
-        message="登出成功"
+        message="Logged out successfully."
     ).to_dict())

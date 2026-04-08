@@ -210,7 +210,7 @@ class AuthService:
 
         user = db.session.query(User).filter_by(username=constants.ROOT_USERNAME).first()
         if not user:
-            return False, f"用户 {constants.ROOT_USERNAME} 不存在"
+            return False, f"User {constants.ROOT_USERNAME} does not exist."
 
         hashed, salt = AuthService.hash_password(password)
         user.password_hash = hashed
