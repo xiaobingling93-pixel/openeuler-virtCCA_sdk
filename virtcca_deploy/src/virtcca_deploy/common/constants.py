@@ -61,6 +61,7 @@ class HTTPStatusCodes:
     UNAUTHORIZED = 401
     FORBIDDEN = 403
     NOT_FOUND = 404
+    TOO_MANY_REQUESTS = 429
     INTERNAL_SERVER_ERROR = 500
 
 
@@ -71,3 +72,17 @@ class OperationCodes(Enum):
     COMPUTE_NODE_FAILED = 2
     IP_FORBIDDEN = 3
     INTERNAL_EXCEPTION = 3
+
+
+# Auth routes
+ROUTE_AUTH_LOGIN = "/api/v1/auth/login"
+ROUTE_AUTH_LOGOUT = "/api/v1/auth/logout"
+
+# Auth defaults
+DEFAULT_JWT_EXPIRATION_MINUTES = 30
+DEFAULT_MAX_LOGIN_ATTEMPTS = 5
+DEFAULT_LOCKOUT_DURATION_MINUTES = 15
+ROOT_USERNAME = "root"
+
+# JWT secret key file path
+JWT_SECRET_KEY_FILE = "/etc/virtcca_deploy/jwt_secret.key"

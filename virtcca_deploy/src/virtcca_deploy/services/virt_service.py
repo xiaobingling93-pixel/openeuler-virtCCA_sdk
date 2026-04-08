@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 import os
 import shutil
 import xml.etree.ElementTree as ET
@@ -258,7 +258,7 @@ def cvm_name_check(base_vm_name: str, vm_num: int) -> str:
             return f"CVM name '{cvm_name}' is already exist"
     return None
 
-def cvm_numa_check(core_num: int, mem_size: int, vm_num: int) -> Tuple[List[int]: str]:
+def cvm_numa_check(core_num: int, mem_size: int, vm_num: int) -> Tuple[Optional[List[int]], str]:
     secure_numa_info = hardware.get_virtcca_info()
     non_secure_numa_info = hardware.get_numa_cpu_topology()
 
@@ -461,19 +461,6 @@ def check_launch_security(xml_desc):
         return False
 
 class libvirtDriver:
-    @staticmethod
-    def _get_state_string(self, state_code):
-        """transfer libvirt state code to string"""
-        state_dict = {
-            libvirt.VIR_DOMAIN_RUNNING: "RUNNING",
-            libvirt.VIR_DOMAIN_BLOCKED: "BLOCKED",
-            libvirt.VIR_DOMAIN_PAUSED: "PAUSED",
-            libvirt.VIR_DOMAIN_SHUTOFF: "SHUTOFF",
-            libvirt.VIR_DOMAIN_CRASHED: "CRASHED",
-            libvirt.VIR_DOMAIN_PMSUSPENDED: "SUSPENDED"
-        }
-        return state_dict.get(state_code, "UNKNOWN")
-
     def start_vm_by_xml(self, xml: str) -> bool:
         with self._get_connection() as conn:
             try:

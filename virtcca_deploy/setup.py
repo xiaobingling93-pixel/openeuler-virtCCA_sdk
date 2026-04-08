@@ -19,8 +19,9 @@ with open('requirements.txt') as f:
             ],
             entry_points={
                 'console_scripts': [
-                'virtcca-compute=virtcca_deploy.compute.compute:main',
-                'virtcca-manager=virtcca_deploy.manager.manager:main',
+                    'virtcca-compute=virtcca_deploy.compute.compute:main',
+                    'virtcca-manager=virtcca_deploy.manager.manager:main',
+                    'virtcca-deploy-tool=virtcca_deploy.manager.auth.cli_tool:main',
                 ],
-    },
+            },
 )
