@@ -122,13 +122,11 @@ class VmDeploySpecInternal:
 
 @dataclass
 class ApiResponse:
-    status: int = OperationCodes.SUCCESS
     message: str = ""
     data: Any = None
 
     def to_dict(self):
         return {
-            'status': self.status.value,
             'message': self.message,
             'data': self.data
         }

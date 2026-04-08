@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 import os
 import shutil
 import xml.etree.ElementTree as ET

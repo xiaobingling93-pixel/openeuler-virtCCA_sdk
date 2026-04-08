@@ -2,6 +2,10 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
+# 首先应用gevent猴子补丁，确保在导入其他模块之前完成
+from gevent import monkey
+monkey.patch_all()
+
 import logging
 import socket
 import os

@@ -2,6 +2,10 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
+# 首先应用gevent猴子补丁，确保在导入其他模块之前完成
+from gevent import monkey
+monkey.patch_all()
+
 import logging
 from dataclasses import asdict
 import os
@@ -29,6 +33,7 @@ def create_app():
     server_config.configure_log(constants.MANAGER_LOG_NEME)
     server_config.configure_ssl()
     server_config.configure_vlan_pool()
+    server_config.configure_auth()
     root_logger = logging.getLogger()
 
     if not os.path.exists(constants.MANAGER_DB_PATH):
@@ -59,6 +64,9 @@ def create_app():
         else:
             g_cvm_deploy_spec = VmDeploySpec.from_db_model(existing_spec)
             g_logger.info("Loaded existing cvm spec from database with uuid: %s", existing_spec.uuid)
+
+        from virtcca_deploy.manager.auth import init_auth
+        init_auth(app, server_config)
 
     g_logger.info("Virtcca Deploy Manager node start!")
 
@@ -482,7 +490,7 @@ def create_app():
             compute_link = network_service.NetworkService(
                 target_node.nodename, constants.COMPUTE_PORT, True, server_config.ssl_cert
             )
-            response = compute_link.collect_cvm_log(vm_name)
+            response = compute_link.collect_cvm_log(vm_id)
             if not response:
                 return flask.jsonify(ApiResponse(
                             status = OperationCodes.FAILED,
@@ -493,7 +501,7 @@ def create_app():
                             status = OperationCodes.FAILED,
                             ).to_dict())
             os.makedirs(constants.CVM_COLLECT_LOG_PATH, exist_ok=True)
-            log_file_name = f"{host_ip}-{vm_name}.log"
+            log_file_name = f"{host_ip}-{vm_id}.log"
             log_file_path = os.path.join(constants.CVM_COLLECT_LOG_PATH, log_file_name)
             g_logger.info("log_file_path: %s", log_file_path)
             try:

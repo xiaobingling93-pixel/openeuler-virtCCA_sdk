@@ -125,21 +125,20 @@ class NetworkService:
 
     def upload_cvm_software(self, file_path):
         upload_cvm_software_url = f"{self.base_url}/{constants.ROUTE_VM_SOFTWARE_INTERNAL}"
-        files = {
-            'file': open(file_path, 'rb')
-        }
 
         try:
-            response = self.make_request(upload_cvm_software_url, method=constants.POST, files=files)
-            if response.status_code == HTTPStatusCodes.OK:
-                return response.json()
-            else:
-                g_logger.error("Failed to unload software, status code: %s", response.status_code)
-                return {
-                        "status": OperationCodes.INTERNAL_EXCEPTION,
-                        "message": response.json(),
-                        "data": None
-                }
+            with open(file_path, 'rb') as f:
+                files = {'file': f}
+                response = self.make_request(upload_cvm_software_url, method=constants.POST, files=files)
+                if response.status_code == HTTPStatusCodes.OK:
+                    return response.json()
+                else:
+                    g_logger.error("Failed to unload software, status code: %s", response.status_code)
+                    return {
+                            "status": OperationCodes.INTERNAL_EXCEPTION,
+                            "message": response.json(),
+                            "data": None
+                    }
         except Exception as e:
             g_logger.error(f"Error upload file to {upload_cvm_software_url}: {e}")
             return None
