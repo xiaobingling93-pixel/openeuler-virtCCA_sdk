@@ -79,12 +79,11 @@ def create_app():
                 flask.request.remote_addr, node_data)
             g_logger.info("compute node register success: %s", new_node)
             return flask.jsonify(ApiResponse().to_dict())
-        except ValueError:
+        except ValueError as e:
             g_logger.error("Registration error: %s", str(e))
             return flask.jsonify(ApiResponse(
-                        status = OperationCodes.FAILED,
                         message = "Invalid register data"
-                        ).to_dict()), HTTPStatusCodes.Failed
+                        ).to_dict()), HTTPStatus.BAD_REQUEST
 
     @app.route(constants.ROUTE_NODE_INFO, methods=[constants.POST])
     def query_node_info():
@@ -507,7 +506,7 @@ def create_app():
             except Exception as e:
                 err_msg = f"Failed to collect CVM log, error reason 1: {e}"
                 g_logger.error(err_msg)
-                flask.jsonify(ApiResponse(status = OperationCodes.FAILED,
+                return flask.jsonify(ApiResponse(
                               message = err_msg
                               ).to_dict())
             return flask.jsonify(ApiResponse().to_dict())
@@ -612,6 +611,24 @@ def create_app():
 
 app = create_app()
 
+
+def main():
+    from gunicorn.app.base import BaseApplication
+
+    class ManagerApp(BaseApplication):
+        def load_config(self):
+            self.cfg.set("bind", "0.0.0.0:5001")
+            self.cfg.set("workers", 1)
+            self.cfg.set("worker_class", "gevent")
+            self.cfg.set("timeout", 300)
+            self.cfg.set("certfile", "/etc/virtcca_deploy/cert/manager.crt")
+            self.cfg.set("keyfile", "/etc/virtcca_deploy/cert/manager.key")
+
+        def load(self):
+            return app
+
+    ManagerApp().run()
+
+
 if __name__ == "__main__":
-    app.run(host='0.0.0.0',
-        port=constants.MANAGER_PORT)
+    main()

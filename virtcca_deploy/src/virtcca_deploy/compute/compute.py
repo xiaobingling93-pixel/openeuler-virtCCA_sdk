@@ -150,10 +150,6 @@ def create_app():
                     data = failed_cvm
                     ).to_dict())
         return flask.jsonify(ApiResponse().to_dict())
-    @app.route(constants.ROUTE_VM_STATE_INTERNAL, methods=[constants.GET])
-    def get_cvm_state_internal():
-        cvm_state = virt_service.get_all_cvm_state()
-        return flask.jsonify(ApiResponse(data = cvm_state).to_dict())
 
     @app.route(constants.ROUTE_VM_LOG_COLLECT_INTERNAL, methods=[constants.GET])
     def get_cvm_log_internal(vm_name: str):
@@ -206,5 +202,24 @@ def create_app():
 
 app = create_app()
 
+
+def main():
+    from gunicorn.app.base import BaseApplication
+
+    class ComputeApp(BaseApplication):
+        def load_config(self):
+            self.cfg.set("bind", "0.0.0.0:5000")
+            self.cfg.set("workers", 1)
+            self.cfg.set("worker_class", "gevent")
+            self.cfg.set("timeout", 300)
+            self.cfg.set("certfile", "/etc/virtcca_deploy/cert/compute.crt")
+            self.cfg.set("keyfile", "/etc/virtcca_deploy/cert/compute.key")
+
+        def load(self):
+            return app
+
+    ComputeApp().run()
+
+
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=constants.COMPUTE_PORT)
+    main()

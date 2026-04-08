@@ -50,7 +50,7 @@ cp compute.crt /etc/virtcca_deploy/cert/
 
 运行virtcca-manager
 ```
-gunicorn -c manager_config.py --worker-class gevent virtcca_deploy.manager.manager:app
+virtcca-manager
 ```
 
 ### 计算节点运行virtcca-compute
@@ -71,7 +71,7 @@ manager = ${manager_domain}
 
 运行virtcca-compute
 ```
-gunicorn -c compute_config.py --worker-class gevent virtcca_deploy.compute.compute:app
+virtcca-compute
 ```
 
 ## 通信矩阵
