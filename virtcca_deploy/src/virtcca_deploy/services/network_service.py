@@ -68,22 +68,11 @@ class NetworkService:
     def vm_deploy(self, vm_config):
         vm_deploy_url = f"{self.base_url}/{constants.ROUTE_VM_DEPLOY_INTERNAL}"
         try:
-            response = self.make_request(vm_deploy_url, method=constants.POST, json_data=vm_config)
-
-            if response.status_code == HTTPStatusCodes.OK:
-                return response.json()
-            else:
-                g_logger.error("Failed to deploy cvm, status code: %s", response.status_code)
-                return {
-                        "status": OperationCodes.INTERNAL_EXCEPTION,
-                        "message": response.json(),
-                        "data": None
-                    }
+            return self.make_request(vm_deploy_url, method=constants.POST, json_data=vm_config)
 
         except Exception as e:
             g_logger.error(f"Error occurred while deploy vm: {e}")
             return {
-                "status": OperationCodes.INTERNAL_EXCEPTION,
                 "message": f"Error occurred: {str(e)}",
                 "data": None
             }
@@ -91,16 +80,7 @@ class NetworkService:
     def vm_undeploy(self, vm_id: List[str]):
         vm_undeploy_url = f"{self.base_url}/{constants.ROUTE_VM_UNDEPLOY_INTERNAL}"
         try:
-            response = self.make_request(vm_undeploy_url, method=constants.POST, json_data=vm_id)
-            if response.status_code == HTTPStatusCodes.OK:
-                return response.json()
-            else:
-                g_logger.error("Failed to undeploy cvm, status code: %s", response.status_code)
-                return {
-                        "status": OperationCodes.INTERNAL_EXCEPTION,
-                        "message": response.json(),
-                        "data": None
-                }
+            return self.make_request(vm_undeploy_url, method=constants.POST, json_data=vm_id)
 
         except Exception as e:
             g_logger.error(f"Error occurred while undeploy vm: {e}")

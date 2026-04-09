@@ -8,6 +8,8 @@ import logging
 import json
 import ast
 import ipaddress
+import gevent
+import gevent.lock
 from typing import List, Dict
 
 LOG_DIR = "/var/log/virtcca_deploy"
@@ -229,6 +231,7 @@ class IPPoolManager:
         self.network = ipaddress.IPv4Network(prefix, strict=False)
         self.ip_pool = list(self.network.hosts())
         self.vm_ip_mapping = {}
+        self._lock = gevent.lock.RLock()
 
     def allocate_ips(self, node_ip: str, vm_name: str) -> str:
         """
@@ -237,25 +240,27 @@ class IPPoolManager:
         :param num_ips: Number of IP addresses to be assigned
         :return: List of IP addresses assigned to the VM
         """
-        ip = self.ip_pool.pop(0)
-        ip_key = f"{node_ip}-{vm_name}"
-        self.vm_ip_mapping[ip_key] = self.vm_ip_mapping.get(ip_key, []) + [str(ip)]
+        with self._lock:
+            ip = self.ip_pool.pop(0)
+            ip_key = f"{node_ip}-{vm_name}"
+            self.vm_ip_mapping[ip_key] = self.vm_ip_mapping.get(ip_key, []) + [str(ip)]
 
-        return str(ip)
+            return str(ip)
 
     def release_ips(self, node_ip: str, vm_name: str) -> None:
         """
         Release all IP addresses of a VM.
         :param vm_name: VM name
         """
-        ip_key = f"{node_ip}-{vm_name}"
-        if ip_key not in self.vm_ip_mapping:
-            g_logger.info("VM %s on node %s not found in mapping, skip it.", vm_name, node_ip)
-            return
-        for ip in self.vm_ip_mapping[ip_key]:
-            self.ip_pool.append(ipaddress.IPv4Address(ip))
+        with self._lock:
+            ip_key = f"{node_ip}-{vm_name}"
+            if ip_key not in self.vm_ip_mapping:
+                g_logger.info("VM %s on node %s not found in mapping, skip it.", vm_name, node_ip)
+                return
+            for ip in self.vm_ip_mapping[ip_key]:
+                self.ip_pool.append(ipaddress.IPv4Address(ip))
 
-        del self.vm_ip_mapping[ip_key]
+            del self.vm_ip_mapping[ip_key]
 
 
 class VlanPoolManager:

@@ -69,6 +69,10 @@ class NodeService:
         return ComputeNode.query.filter_by(ip=ip).first()
 
     @staticmethod
+    def get_node_by_name(name: str) -> ComputeNode:
+        return ComputeNode.query.filter_by(nodename=name).first()
+
+    @staticmethod
     def get_secure_numa_by_ip(ip):
         node = ComputeNode.query.filter_by(ip=ip).first()
         return json.loads(node.secure_numa_topology)
