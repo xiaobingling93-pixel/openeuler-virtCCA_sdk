@@ -41,6 +41,7 @@ ROUTE_VM_UNDEPLOY = "/api/v1/vm/undeploy"
 ROUTE_VM_STATE = "/api/v1/vm/state"
 ROUTE_VM_LOG_COLLECT = "/api/v1/vm/logs/"
 ROUTE_VM_SOFTWARE = "/api/v1/vm/software"
+ROUTE_VM_TASKS = "/api/v1/vm/tasks/"
 
 # restful methods
 POST = "POST"

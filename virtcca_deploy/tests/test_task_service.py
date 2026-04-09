@@ -14,7 +14,6 @@ if SRC_ROOT not in sys.path:
 import json
 import pytest
 from unittest.mock import patch, MagicMock
-from virtcca_deploy.services.db_service import db
 from virtcca_deploy.services.task_service import TaskService, init_task_service, get_task_service
 import virtcca_deploy.common.constants as constants
 
@@ -26,9 +25,11 @@ class TestTaskService:
             # 初始化任务服务
             init_task_service()
             task_service = get_task_service()
-            
-            # 创建任务
-            task_params = ["vm-1", "vm-2"]
+            task_params = {
+                "success_vms": [],
+                "fail_vms": [],
+                "total_vms": ["compute01-1"]
+            }
             task_id = task_service.create_task("vm-create", task_params)
             
             # 验证任务创建成功
@@ -51,7 +52,11 @@ class TestTaskService:
             task_service = get_task_service()
             
             # 创建任务
-            task_params = ["vm-1"]
+            task_params = {
+                "success_vms": [],
+                "fail_vms": [],
+                "total_vms": ["compute01-1"]
+            }
             task_id = task_service.create_task("vm-create", task_params)
             
             # 获取任务
@@ -74,7 +79,11 @@ class TestTaskService:
             task_service = get_task_service()
             
             # 创建任务
-            task_params = ["vm-1"]
+            task_params = {
+                "success_vms": [],
+                "fail_vms": [],
+                "total_vms": ["compute01-1"]
+            }
             task_id = task_service.create_task("vm-create", task_params)
             
             # 更新任务状态为running
@@ -98,41 +107,28 @@ class TestTaskService:
             result = task_service.update_task_status("non-existent-task-id", "failed")
             assert result is False
     
-    def test_update_task_results(self, app):
-        """测试更新任务结果"""
-        with app.app_context():
-            # 初始化任务服务
-            init_task_service()
-            task_service = get_task_service()
-            
-            # 创建任务
-            task_params = ["vm-1"]
-            task_id = task_service.create_task("vm-create", task_params)
-            
-            # 更新任务结果
-            results = {"success": True, "message": "Deployment completed"}
-            result = task_service.update_task_results(task_id, results)
-            assert result is True
-            
-            # 验证结果更新
-            task = task_service.get_task(task_id)
-            assert json.loads(task.results) == results
-            
-            # 测试更新不存在的任务
-            result = task_service.update_task_results("non-existent-task-id", results)
-            assert result is False
-    
     def test_get_tasks_by_status(self, app):
         """测试根据状态获取任务列表"""
         with app.app_context():
             # 初始化任务服务
             init_task_service()
             task_service = get_task_service()
-            
             # 创建不同状态的任务
-            task_service.create_task("vm-create", ["vm-1"])
-            task_id_running = task_service.create_task("vm-create", ["vm-2"])
-            task_id_success = task_service.create_task("vm-delete", ["vm-3"])
+            task_service.create_task("vm-create", {
+                "success_vms": [],
+                "fail_vms": [],
+                "total_vms": ["compute01-1"]
+            })
+            task_id_running = task_service.create_task("vm-create", {
+                "success_vms": [],
+                "fail_vms": [],
+                "total_vms": ["compute02-1"]
+            })
+            task_id_success = task_service.create_task("vm-delete", {
+                "success_vms": [],
+                "fail_vms": [],
+                "total_vms": ["compute03-1"]
+            })
             
             # 更新任务状态
             task_service.update_task_status(task_id_running, "running")
@@ -155,10 +151,21 @@ class TestTaskService:
             init_task_service()
             task_service = get_task_service()
             
-            # 创建不同类型的任务
-            task_service.create_task("vm-create", ["vm-1"])
-            task_service.create_task("vm-create", ["vm-2"])
-            task_service.create_task("vm-delete", ["vm-3"])
+            task_service.create_task("vm-create", {
+                "success_vms": [],
+                "fail_vms": [],
+                "total_vms": ["compute01-1"]
+            })
+            task_service.create_task("vm-create", {
+                "success_vms": [],
+                "fail_vms": [],
+                "total_vms": ["compute02-1"]
+            })
+            task_service.create_task("vm-delete", {
+                "success_vms": [],
+                "fail_vms": [],
+                "total_vms": ["compute03-1"]
+            })
             
             # 获取不同类型的任务
             create_tasks = task_service.get_tasks_by_type("vm-create")

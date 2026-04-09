@@ -19,24 +19,18 @@ class TaskService:
         """
         创建任务
         :param task_type: 任务类型，如 'vm-create', 'vm-delete'
-        :param task_params: 任务参数
+        :param task_params: 任务参数，支持结构字典
         :return: 任务ID
         """
         try:
             task_id = str(uuid.uuid4())
             
-            # 将参数转换为JSON字符串
-            if isinstance(task_params, list) or isinstance(task_params, dict):
-                params_json = json.dumps(task_params)
-            else:
-                params_json = str(task_params)
-            
             task = Task(
                 task_id=task_id,
                 task_type=task_type,
-                task_params=params_json,
                 status="created"
             )
+            task.set_task_params(task_params)
             
             db.session.add(task)
             db.session.commit()
@@ -89,32 +83,27 @@ class TaskService:
             db.session.rollback()
             return False
 
-    def update_task_results(self, task_id: str, results) -> bool:
+    def update_task_params(self, task_id: str, task_params) -> bool:
         """
-        更新任务结果
+        更新任务参数
         :param task_id: 任务ID
-        :param results: 任务结果
+        :param task_params: 新的任务参数
         :return: 是否更新成功
         """
         try:
             task = Task.query.filter_by(task_id=task_id).first()
             if task:
-                # 将结果转换为JSON字符串
-                if isinstance(results, list) or isinstance(results, dict):
-                    results_json = json.dumps(results)
-                else:
-                    results_json = str(results)
-                
-                task.results = results_json
+                task.set_task_params(task_params)
                 task.updated_at = datetime.now()
+                
                 db.session.commit()
-                self.logger.info(f"Updated task {task_id} results")
+                self.logger.info(f"Updated task {task_id} parameters")
                 return True
             else:
                 self.logger.warning(f"Task {task_id} not found")
                 return False
         except Exception as e:
-            self.logger.error(f"Failed to update task {task_id} results: {e}")
+            self.logger.error(f"Failed to update task {task_id} parameters: {e}")
             db.session.rollback()
             return False
 

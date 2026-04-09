@@ -643,6 +643,40 @@ def create_app():
                 data = upload_results
             ).to_dict())
 
+    @app.route(constants.ROUTE_VM_TASKS, methods=[constants.GET])
+    def get_vm_tasks():
+        """查询虚机部署和卸载进度接口"""
+        # 获取请求参数
+        task_id = flask.request.args.get('task_id')
+        if not task_id:
+            return flask.jsonify(ApiResponse(
+                message = "Invalid task id").to_dict()), HTTPStatus.BAD_REQUEST
+        
+        try:
+            from virtcca_deploy.services.task_service import get_task_service
+            task_service_instance = get_task_service()
+            
+            task = task_service_instance.get_task(task_id)
+            if not task:
+                return flask.jsonify(ApiResponse(
+                    message = "Invalid task id").to_dict()), HTTPStatus.BAD_REQUEST
+            
+            task_data = {
+                "task_id": task.task_id,
+                "type": task.task_type,
+                "status": task.status
+            }
+            
+            task_data["params"] = task.get_task_params()
+            return flask.jsonify(ApiResponse(
+                data = task_data,
+                message = "").to_dict()), HTTPStatus.OK
+        
+        except Exception as e:
+            g_logger.error(f"Failed to query VM tasks: {e}")
+            return flask.jsonify(ApiResponse(
+                message = f"Failed to query VM tasks: {e}").to_dict()), HTTPStatus.INTERNAL_SERVER_ERROR
+
     return app
 
 

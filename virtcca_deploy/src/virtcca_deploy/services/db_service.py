@@ -79,23 +79,45 @@ class Task(db.Model):
     task_type = db.Column(db.String(20), nullable=False)  # vm-create/vm-delete
     task_params = db.Column(db.Text, nullable=True)
     status = db.Column(db.String(20), nullable=False)  # created/running/success/failed
-    results = db.Column(db.Text, nullable=True)  # JSON格式的结果
     created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
     updated_at = db.Column(db.DateTime, default=db.func.current_timestamp(), onupdate=db.func.current_timestamp())
     completed_at = db.Column(db.DateTime, nullable=True)
 
     def set_task_params(self, params):
-        if self.task_type == "vm-delete" or self.task_type == "vm-delete":
+        if isinstance(params, dict):
+            if "success_vms" not in params:
+                params["success_vms"] = []
+            if "fail_vms" not in params:
+                params["fail_vms"] = []
+            if "total_vms" not in params:
+                params["total_vms"] = []
+            
             self.task_params = json.dumps(params)
+        else:
+            self.task_params = json.dumps({
+                "success_vms": [],
+                "fail_vms": [],
+                "total_vms": []
+            })
 
     def get_task_params(self):
-        if self.task_type == "vm-delete" or self.task_type == "vm-delete":
-            return json.loads(self.vm_id_list or "[]")
+        if self.task_params:
+            try:
+                return json.loads(self.task_params)
+            except json.JSONDecodeError:
+                return {
+                    "success_vms": [],
+                    "fail_vms": [],
+                    "total_vms": []
+                }
+        return {
+            "success_vms": [],
+            "fail_vms": [],
+            "total_vms": []
+        }
 
     def __repr__(self):
-        return (
-            "<task_id: {}, task_type: {}, task_params: {}, status: {}>"
-        ).format(
+        return "<Task(task_id: {}, task_type: {}, task_params: {}, status: {})>".format(
             self.task_id,
             self.task_type,
             self.get_task_params(),

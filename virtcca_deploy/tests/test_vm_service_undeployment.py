@@ -4,6 +4,7 @@
 
 import os
 import sys
+from http import HTTPStatus
 
 # 确保项目src目录在sys.path中
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -15,10 +16,8 @@ import json
 import pytest
 from unittest.mock import patch, MagicMock
 from virtcca_deploy.services.db_service import db, ComputeNode, VmInstance
-from virtcca_deploy.services.vm_service import VmService, init_vm_service
+from virtcca_deploy.services.vm_service import VmService
 from virtcca_deploy.services.task_service import init_task_service
-from virtcca_deploy.common.data_model import VmDeploySpec
-import virtcca_deploy.common.constants as constants
 
 class TestVmServiceUndeployment:
     def test_execute_undeployment_success(self, app):
@@ -67,9 +66,9 @@ class TestVmServiceUndeployment:
                 mock_get_task_service.return_value = mock_task
 
                 mock_network_instance = MagicMock()
-                mock_network_instance.vm_undeploy.return_value = {
-                    "status": constants.OperationCodes.SUCCESS.value
-                }
+                mock_response = MagicMock()
+                mock_response.status_code = HTTPStatus.OK
+                mock_network_instance.vm_undeploy.return_value = mock_response
                 mock_network_service.return_value = mock_network_instance
 
                 # Mock gevent → 同步执行
@@ -139,8 +138,9 @@ class TestVmServiceUndeployment:
                 mock_get_task_service.return_value = mock_task
 
                 mock_network_instance = MagicMock()
+                mock_response = MagicMock()
+                mock_response.status_code = HTTPStatus.OK
                 mock_network_instance.vm_undeploy.return_value = {
-                    "status": constants.OperationCodes.FAILED.value,
                     "data": ["compute01-1"],
                     "message": "Undeployment failed"
                 }
@@ -280,9 +280,9 @@ class TestVmServiceUndeployment:
                 mock_get_task_service.return_value = mock_task
 
                 mock_network_instance = MagicMock()
-                mock_network_instance.vm_undeploy.return_value = {
-                    "status": constants.OperationCodes.SUCCESS.value
-                }
+                mock_response = MagicMock()
+                mock_response.status_code = HTTPStatus.OK
+                mock_network_instance.vm_undeploy.return_value = mock_response
                 mock_network_service.return_value = mock_network_instance
 
                 # Mock gevent → 同步执行
@@ -375,9 +375,9 @@ class TestVmServiceUndeployment:
                 mock_get_task_service.return_value = mock_task
 
                 mock_network_instance = MagicMock()
-                mock_network_instance.vm_undeploy.return_value = {
-                    "status": constants.OperationCodes.SUCCESS.value
-                }
+                mock_response = MagicMock()
+                mock_response.status_code = HTTPStatus.OK
+                mock_network_instance.vm_undeploy.return_value = mock_response
                 mock_network_service.return_value = mock_network_instance
 
                 # Mock gevent → 同步执行
