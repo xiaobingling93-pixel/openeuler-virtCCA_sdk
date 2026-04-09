@@ -3,10 +3,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, List
 import uuid
 import virtcca_deploy.common.constants as constants
-from virtcca_deploy.common.constants import OperationCodes
 import virtcca_deploy.common.config as config
 from virtcca_deploy.services.db_service import VmDeploySpecModel
 
@@ -92,14 +91,19 @@ class VmDeploySpec:
 
 @dataclass
 class VmDeploySpecInternal:
-    vm_id: str = DEFAULT_VM_ID
+    vm_id_list: List[str] = field(default_factory=list)
     vm_spec: VmDeploySpec = field(default_factory=VmDeploySpec)
     vm_ip_dict : dict = field(default_factory=dict)
     def is_valid(self) -> bool:
         if not self.vm_spec.is_valid():
             return False
-        if not (1 <= len(self.vm_id) <= constants.MAX_CVM_ID_LENGTH):
-            return False
+
+        if not self.vm_id_list or len(self.vm_id_list) == 0:
+                    return False
+
+        for vm_id in self.vm_id_list:
+            if not (1 <= len(vm_id) <= constants.MAX_CVM_ID_LENGTH):
+                return False
 
         return True
 
@@ -110,13 +114,12 @@ class VmDeploySpecInternal:
             net_interface_num = self.vm_spec.net_pf_num
 
         vm_ip_dict = {}
-        for i in range(self.vm_spec.vm_num):
+        for vm_id in self.vm_id_list:
             ip_list = []
-            cvm_name = f"{self.vm_id}-{i + 1}"
             for j in range(net_interface_num):
-                ip = vlan_pool_manager.allocate_vlan_ips(self.vm_spec.vlan_id + j, node_ip,cvm_name)
+                ip = vlan_pool_manager.allocate_vlan_ips(self.vm_spec.vlan_id + j, node_ip, vm_id)
                 ip_list.append(ip)
-            vm_ip_dict[cvm_name] = ip_list
+            vm_ip_dict[vm_id] = ip_list
         self.vm_ip_dict = vm_ip_dict
 
 

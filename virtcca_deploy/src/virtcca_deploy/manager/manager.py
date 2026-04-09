@@ -21,7 +21,8 @@ import virtcca_deploy.services.db_service as db_service
 import virtcca_deploy.services.node_service as node_service
 import virtcca_deploy.services.network_service as network_service
 import virtcca_deploy.services.util_service as util_service
-from virtcca_deploy.common.data_model import VmDeploySpec, ApiResponse, VmDeploySpecInternal
+import virtcca_deploy.services.vm_service as vm_service
+from virtcca_deploy.common.data_model import VmDeploySpec, ApiResponse
 from virtcca_deploy.services.db_service import ComputeNode, VmDeploySpecModel
 
 g_logger = config.g_logger
@@ -68,6 +69,9 @@ def create_app():
         from virtcca_deploy.manager.auth import init_auth
         init_auth(app, server_config)
 
+        # Initialize VM service
+        vm_service.init_vm_service(server_config.ssl_cert, server_config.vlan_pool_manager)
+
     g_logger.info("Virtcca Deploy Manager node start!")
 
     @app.route("/")
@@ -80,7 +84,7 @@ def create_app():
         if not flask.request.is_json:
             return flask.jsonify(ApiResponse(
                     status = OperationCodes.FAILED,
-                    message = "Content-Type must be application/json").to_dict()), HTTPStatusCodes.BAD_REQUEST
+                    message = "Content-Type must be application/json").to_dict()), HTTPStatus.BAD_REQUEST
         try:
             node_data = flask.request.get_json()
             new_node = node_service.NodeService.create_node(
@@ -272,155 +276,181 @@ def create_app():
                 message=f"Failed to get deploy config: {str(e)}"
             ).to_dict()), HTTPStatus.INTERNAL_SERVER_ERROR
 
-    def _execute_deployment(deploy_nodes: List[ComputeNode],
-                            cvm_spec_internal: VmDeploySpecInternal) -> Tuple[Dict, int]:
-        deployment_results = {}
-        success_nodes = 0
-        result = {}
-        vm_names_to_release = []
-        for node in deploy_nodes:
-            try:
-                compute_link = network_service.NetworkService(
-                    node.nodename, constants.COMPUTE_PORT, True, server_config.ssl_cert
-                )
-                cvm_spec_internal.allocate_ip(server_config.vlan_pool_manager, node.ip)
-                result = compute_link.vm_deploy(asdict(cvm_spec_internal))
-                deployment_results[node.ip] = {
-                    "message": result.get('message', 'Unknown error'),
-                    "success_cvm": result.get("data")
-                }
-                if result.get("status") == OperationCodes.SUCCESS.value:
-                    success_nodes += 1
-                else:
-                    # release ip of failed cvm
-                    if result.get("data"):
-                        vm_names_to_release = [
-                            f"{cvm_spec_internal.vm_id}-{i + 1}" 
-                            for i in range(cvm_spec_internal.vm_spec.vm_num) 
-                            if f"{cvm_spec_internal.vm_id}-{i + 1}" not in result.get("data")
-                        ]
-                    else:
-                        vm_names_to_release = [
-                            f"{cvm_spec_internal.vm_id}-{i + 1}" 
-                            for i in range(cvm_spec_internal.vm_spec.vm_num)
-                        ]
-
-            except Exception as e:
-                err_msg = "Failed to deploy CVM at {}, error reason: {}".format(node.ip, e)
-                g_logger.error(err_msg)
-                vm_names_to_release = [
-                            f"{cvm_spec_internal.vm_id}-{i + 1}" 
-                            for i in range(cvm_spec_internal.vm_spec.vm_num)
-                        ]
-                deployment_results[node.ip] = {
-                    "message": str(e),
-                    "success_cvm": 0
-                }
-            for vm_name in vm_names_to_release:
-                        server_config.vlan_pool_manager.release_ips_for_vm(node.ip, vm_name)
-        return deployment_results, success_nodes
-
     @app.route(constants.ROUTE_VM_DEPLOY, methods=[constants.POST])
     def deploy_cvm():
         global g_cvm_deploy_spec
-        g_logger.info("cvm_deploy_spec: %s", g_cvm_deploy_spec)
+        g_logger.info("Received VM deploy request")
 
-        deploy_data = flask.request.get_json()
-        if not deploy_data or 'host_ip' not in deploy_data or "vm_id" not in deploy_data:
-            return flask.jsonify(ApiResponse(status = OperationCodes.FAILED,
-                    message = "Invalid cvm config value").to_dict()), HTTPStatusCodes.BAD_REQUEST
+        def validate_deploy_params(deploy_data):
+            """验证部署参数"""
+            if not deploy_data or "deploy_config_id" not in deploy_data or "vm_id" not in deploy_data:
+                return False, None, "Invalid request format"
+            return True, deploy_data, ""
 
-        cvm_spec_internal = VmDeploySpecInternal(vm_id=deploy_data["vm_id"], vm_spec=g_cvm_deploy_spec)
-
-        deploy_nodes, error_response = node_service.NodeService.get_nodes_by_ip_list(deploy_data.get('host_ip', []))
-        if error_response:
-            return flask.jsonify(ApiResponse(
-                        status = OperationCodes.FAILED,
-                        message = error_response
-                    ).to_dict()), HTTPStatusCodes.BAD_REQUEST
-
-        deployment_results, success_nodes = _execute_deployment(deploy_nodes, cvm_spec_internal)
-        if success_nodes == len(deploy_nodes):
-            return flask.jsonify(ApiResponse(
-                status = OperationCodes.SUCCESS,
-                message = "Successfully deployed CVM to all nodes",
-                data = deployment_results
-            ).to_dict())
-        else:
-            return flask.jsonify(ApiResponse(
-                status = OperationCodes.COMPUTE_NODE_FAILED,
-                message = "Some nodes failed to deploy CVM",
-                data = deployment_results
-            ).to_dict())
-
-    def _execute_undeployment(deploy_nodes: List[ComputeNode], vm_id_list: List[str], vlan_pool_manager: config.VlanPoolManager) -> Tuple[Dict, int]:
-        deployment_results = {}
-        success_nodes = 0
-
-        for node in deploy_nodes:
+        def process_deploy_config_id(deploy_config_id):
+            """处理部署配置ID"""
+            # 如果deploy_config_id为空，使用默认配置
+            if not deploy_config_id:
+                try:
+                    default_config = db_service.db.session.query(db_service.VmDeploySpecModel).filter_by(is_default=True).first()
+                    if not default_config:
+                        return False, None, "No default deployment config found"
+                    return True, default_config, ""
+                except Exception as e:
+                    g_logger.error(f"Failed to get default deployment config: {e}")
+                    return False, None, "Failed to get default deployment config"
+            
+            # 使用指定的配置ID
             try:
-                success_vm_ids = []
-                compute_link = network_service.NetworkService(
-                    node.nodename, constants.COMPUTE_PORT, True, server_config.ssl_cert
-                )
-                result = compute_link.vm_undeploy(vm_id_list)
-                if not result:
-                    deployment_results[node.ip] = {
-                        "message": "VM undeploy failed",
-                        "failed_undeploy_cvm": vm_id_list
-                    }
-                    continue
-                if result.get("status") != OperationCodes.SUCCESS.value:
-                    deployment_results[node.ip] = {
-                        "message": result.get('message', 'Unknown error'),
-                        "failed_undeploy_cvm": result.get("data")
-                    }
-                    success_vm_ids = []
-                    success_vm_ids = list(set(vm_id_list) - set(result.get("data")))
-                else:
-                    deployment_results[node.ip] = {"message": "Successfully undeploy CVM"}
-                    success_vm_ids = vm_id_list
-                    success_nodes += 1
-
-                g_logger.info("Releasing IPs for successfully undeployed VMs: %s", success_vm_ids)
-                for vm_id in success_vm_ids:
-                    vlan_pool_manager.release_ips_for_vm(node.ip, vm_id)
-
+                requested_config = db_service.db.session.query(db_service.VmDeploySpecModel).filter_by(uuid=deploy_config_id).first()
+                if not requested_config:
+                    return False, None, "Invalid deploy_config_id"
+                return True, requested_config, ""
             except Exception as e:
-                err_msg = (
-                    "Failed to undeploy CVM at {}, error reason: {}"
-                    .format(node.ip, e)
-                )
-                g_logger.error(err_msg)
-                deployment_results[node.ip] = {
-                    "message": str(e),
-                }
-                continue
-        return deployment_results, success_nodes
+                g_logger.error(f"Failed to get deployment config: {e}")
+                return False, None, "Failed to get deployment config"
+
+        def check_config_conflict(deploy_config_id):
+            """检查是否有VM使用不同的配置"""
+            try:
+                active_vms = db_service.db.session.query(db_service.VmInstance).filter(
+                    db_service.VmInstance.vm_spec_uuid != deploy_config_id
+                ).all()
+                if active_vms:
+                    return False, "Please undeploy all VMs using different config first"
+                return True, ""
+            except Exception as e:
+                g_logger.error(f"Failed to check active VMs: {e}")
+                return False, "Failed to check active VMs"
+
+        def get_target_nodes(vm_id_dict):
+            """根据vm_id_dict获取目标节点"""
+            target_nodes = []
+            if vm_id_dict:
+                for node_name in vm_id_dict.keys():
+                    node = node_service.NodeService.get_node_by_name(node_name)
+                    if node:
+                        target_nodes.append(node)
+                    else:
+                        return False, None, f"Node {node_name} not found"
+            else:
+                # 如果没有指定节点，使用所有可用节点
+                try:
+                    target_nodes = node_service.NodeService.get_all_nodes()
+                except Exception as e:
+                    g_logger.error(f"Failed to get all nodes: {e}")
+                    return False, None, "Failed to get all nodes"
+
+            if not target_nodes:
+                return False, None, "No target nodes found"
+            
+            return True, target_nodes, ""
+
+        def check_vm_id(vm_id_dict):
+            """检查vm_id参数"""
+            if not vm_id_dict:
+                g_logger.info("vm_id is empty, will use default naming convention (hostname-number)")
+                # 默认命名规则：以hostname-编号的形式为每个vm命名
+                return True, None, ""
+            return True, None, ""
+
+        # Step 1: Validate basic parameters
+        deploy_data = flask.request.get_json()
+        success, deploy_data, error_msg = validate_deploy_params(deploy_data)
+        if not success:
+            return flask.jsonify(ApiResponse(
+                    data = None,
+                    message = error_msg).to_dict()), HTTPStatus.BAD_REQUEST
+
+        # Step 2: Process deploy_config_id
+        deploy_config_id = deploy_data.get('deploy_config_id')
+        success, requested_config, error_msg = process_deploy_config_id(deploy_config_id)
+        if not success:
+            return flask.jsonify(ApiResponse(
+                    data = None,
+                    message = error_msg).to_dict()), HTTPStatus.BAD_REQUEST
+
+        # Step 3: Check config conflict
+        success, error_msg = check_config_conflict(requested_config.uuid)
+        if not success:
+            return flask.jsonify(ApiResponse(
+                    data = None,
+                    message = error_msg).to_dict()), HTTPStatus.BAD_REQUEST
+
+        # Step 4: Get target nodes
+        vm_id_dict = deploy_data.get('vm_id', {})
+        g_logger.info(f"vm_id_dict: {vm_id_dict}")
+        success, target_nodes, error_msg = get_target_nodes(vm_id_dict)
+        if not success:
+            return flask.jsonify(ApiResponse(
+                    data = None,
+                    message = error_msg).to_dict()), HTTPStatus.BAD_REQUEST
+
+        # Step 5: Check vm_id
+        success, _, error_msg = check_vm_id(vm_id_dict)
+        if not success:
+            return flask.jsonify(ApiResponse(
+                    data = None,
+                    message = error_msg).to_dict()), HTTPStatus.BAD_REQUEST
+
+        # Step 7: Execute deployment
+        vm_service_instance = vm_service.get_vm_service()
+        try:
+            vm_instances = vm_service_instance.execute_deployment(target_nodes, requested_config, vm_id_dict)
+            return flask.jsonify(ApiResponse(
+                data = vm_instances,
+                message = ""
+            ).to_dict()), HTTPStatus.ACCEPTED  # 202 Accepted
+        except Exception as e:
+            g_logger.error(f"Failed to start deployment: {e}")
+            return flask.jsonify(ApiResponse(
+                data = None,
+                message = "Failed to start deployment"
+            ).to_dict()), HTTPStatus.BAD_REQUEST
+
 
     @app.route(constants.ROUTE_VM_UNDEPLOY, methods=[constants.POST])
     def undeploy_cvm():
+        # 处理外部传入的格式：{["compute01-1", "compute02-1"]}
         undeploy_data = flask.request.get_json()
-        if not undeploy_data or not isinstance(undeploy_data.get('host_ip'), list) or not isinstance(undeploy_data.get('vm_id'), list):
-            return flask.jsonify(ApiResponse(status = OperationCodes.FAILED,
-                    message = "Invalid cvm config value").to_dict()), HTTPStatusCodes.BAD_REQUEST
-        target_nodes, error_response = node_service.NodeService.get_nodes_by_ip_list(undeploy_data.get('host_ip', []))
-        if error_response:
-            return flask.jsonify(ApiResponse(
-                        status = OperationCodes.FAILED,
-                        message = error_response
-                    ).to_dict())
-        deployment_results, success_nodes = _execute_undeployment(target_nodes, undeploy_data.get('vm_id', []), server_config.vlan_pool_manager)
-        if success_nodes == len(target_nodes):
-            return flask.jsonify(ApiResponse(
-                message = "Successfully undeploy CVM to all nodes",
-            ).to_dict())
+        
+        # 基本参数检查和格式处理
+        vm_id_list = None
+        if isinstance(undeploy_data, list):
+            # 直接是列表格式：["compute01-1", "compute02-1"]
+            vm_id_list = undeploy_data
+        elif isinstance(undeploy_data, dict) and "vm_ids" in undeploy_data:
+            # 包含一个列表的对象格式：{["compute01-1", "compute02-1"]}
+            first_key = next(iter(undeploy_data))
+            if isinstance(undeploy_data[first_key], list):
+                vm_id_list = undeploy_data[first_key]
         else:
             return flask.jsonify(ApiResponse(
-                status = OperationCodes.COMPUTE_NODE_FAILED,
-                message = "Some nodes failed to undeploy CVM",
-                data = deployment_results
-            ).to_dict())
+                message = "Invalid request format, expected a list of VM IDs").to_dict()), HTTPStatus.BAD_REQUEST
+
+        if not vm_id_list or not isinstance(vm_id_list, list):
+            return flask.jsonify(ApiResponse(
+                message = "Invalid request format, expected a list of VM IDs").to_dict()), HTTPStatus.BAD_REQUEST
+        
+        if len(vm_id_list) == 0:
+            return flask.jsonify(ApiResponse(
+                message = "VM ID list cannot be empty").to_dict()), HTTPStatus.BAD_REQUEST
+        
+        # 获取VM服务实例
+        vm_service_instance = vm_service.get_vm_service()
+        
+        # 调用execute_undeployment，传入空的nodes列表，由service内部根据vm_id查询节点
+        try:
+            deployment_results = vm_service_instance.execute_undeployment([], vm_id_list)
+            return flask.jsonify(ApiResponse(
+                data = deployment_results,
+                message = ""
+            ).to_dict()), HTTPStatus.ACCEPTED  # 202 Accepted
+        except Exception as e:
+            g_logger.error(f"Failed to start undeployment: {e}")
+            return flask.jsonify(ApiResponse(
+                message = f"Failed to start undeployment: {e}"
+            ).to_dict()), HTTPStatus.INTERNAL_SERVER_ERROR
 
     @app.route(constants.ROUTE_VM_STATE, methods=[constants.GET])
     def get_cvm_state():

@@ -1,0 +1,278 @@
+#!/usr/bin
+# -*- coding: utf-8 -*-
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+import logging
+from typing import List, Tuple, Dict
+from dataclasses import asdict
+from http import HTTPStatus
+
+from gevent import monkey
+import gevent
+
+# 确保猴子补丁已应用
+monkey.patch_all()
+
+from flask import current_app
+
+from virtcca_deploy.common.constants import OperationCodes, COMPUTE_PORT
+from virtcca_deploy.common.data_model import VmDeploySpecInternal
+from virtcca_deploy.services.db_service import ComputeNode, VmInstance, VmDeploySpecModel, db
+from virtcca_deploy.services.network_service import NetworkService
+from virtcca_deploy.services.task_service import get_task_service
+
+
+class VmService:
+    def __init__(self, ssl_cert, vlan_pool_manager):
+        self.ssl_cert = ssl_cert
+        self.vlan_pool_manager = vlan_pool_manager
+        self.logger = logging.getLogger(__name__)
+
+    def execute_deployment(self, deploy_nodes: List[ComputeNode],
+                           deploy_config: VmDeploySpecModel, vm_id_dict: Dict) -> Dict:
+        vm_instances = {}
+        node_task = {}
+        
+        task_service = get_task_service()
+        
+        # Create individual tasks for each node
+        for node in deploy_nodes:
+            # Generate all VM names for this node
+            cvm_spec_internal = VmDeploySpecInternal(vm_spec=deploy_config)
+            cvm_spec_internal.vm_id_list = [f"{node.nodename}-{i + 1}" for i in range(cvm_spec_internal.vm_spec.vm_num)]
+            
+            try:
+                instance_task_id = task_service.create_task("vm-create", cvm_spec_internal.vm_id_list)
+                node_task[node.nodename] = instance_task_id
+                
+                for vm_name in cvm_spec_internal.vm_id_list:
+                    # Record VM instance info in the response
+                    vm_instances[vm_name] = {
+                        "task_id": instance_task_id,
+                        "host_ip": node.ip
+                    }
+            except Exception as e:
+                self.logger.error(f"Failed to create instance task for node {node.nodename}: {e}")
+                continue
+        
+        def deploy_node_async(node, node_task_id: str, node_cvm_spec_internal, app):
+            with app.app_context():
+                try:
+                    # Allocate IP for this node specifically
+                    node_cvm_spec_internal.allocate_ip(self.vlan_pool_manager, node.ip)
+
+                    task_service.update_task_status(node_task_id, "running")
+                    
+                    # Perform actual deployment
+                    compute_link = NetworkService(
+                        node.nodename, COMPUTE_PORT, True, self.ssl_cert
+                    )
+                    result = compute_link.vm_deploy(asdict(node_cvm_spec_internal))
+                    if result.status_code == HTTPStatus.OK:
+                        task_service.update_task_status(node_task_id, "success")
+                        
+                        # Record successful VM deployment to database
+                        for vm_name, ips in node_cvm_spec_internal.vm_ip_dict.items():
+                            ip_list_str = ",".join(ips)
+
+                            # Create VM instance record
+                            vm_instance = VmInstance(
+                                vm_id=vm_name,
+                                host_ip=node.ip,
+                                host_name=node.nodename,
+                                vm_spec_uuid=cvm_spec_internal.vm_spec.uuid,
+                                ip_list=ip_list_str
+                            )
+                        
+                            try:
+                                db.session.add(vm_instance)
+                                db.session.commit()
+                                self.logger.info(f"Successfully recorded VM {cvm_spec_internal.vm_id} in database for node {node.ip}")
+                            except Exception as e:
+                                self.logger.error(f"Failed to record VM instance to database: {e}")
+                                db.session.rollback()
+                    else:
+                        # 使用TaskService更新任务状态为failed
+                        task_service.update_task_status(node_task_id, "failed")
+                        
+                        for vm_name in cvm_spec_internal.vm_id_list:
+                            self.vlan_pool_manager.release_ips_for_vm(node.ip, vm_name)
+                except Exception as e:
+                    err_msg = f"Failed to deploy CVM at {node.ip}, error reason: {e}"
+                    self.logger.error(err_msg)
+                    
+                    # 使用TaskService更新任务状态为failed
+                    task_service.update_task_status(node_task_id, "failed")
+                        
+                    # Release IPs
+                    for vm_name in cvm_spec_internal.vm_id_list:
+                        self.vlan_pool_manager.release_ips_for_vm(node.ip, vm_name)
+        
+        node_to_spec = {}
+        for node in deploy_nodes:
+            if node.nodename in node_task:
+                cvm_spec_internal = VmDeploySpecInternal(vm_spec=deploy_config)
+                cvm_spec_internal.vm_id_list = [f"{node.nodename}-{i + 1}" for i in range(cvm_spec_internal.vm_spec.vm_num)]
+                node_to_spec[node.nodename] = cvm_spec_internal
+        
+        # Start deployment asynchronously for all nodes
+        
+        jobs = []
+        for node in deploy_nodes:
+            if node.nodename in node_task:  # 只处理任务创建成功的节点
+                jobs.append(gevent.spawn(
+                    deploy_node_async, 
+                    node, 
+                    node_task[node.nodename], 
+                    node_to_spec[node.nodename],
+                    current_app._get_current_object()
+                ))
+        
+        return vm_instances
+
+    def execute_undeployment(self, deploy_nodes: List[ComputeNode], vm_id_list: List[str]) -> Dict:
+        vm_instances = {}
+        node_task = {}
+        
+        task_service = get_task_service()
+        
+        # Step 1: If no nodes provided, find nodes based on VM IDs
+        if not deploy_nodes:
+            try:
+                # 查询所有VM ID对应的节点IP
+                vm_instances_db = VmInstance.query.filter(VmInstance.vm_id.in_(vm_id_list)).all()
+                if not vm_instances_db:
+                    self.logger.warning(f"No VM instances found for IDs: {vm_id_list}")
+                    return vm_instances
+                
+                # 按节点分组VM IDs
+                node_vm_map = {}
+                for vm in vm_instances_db:
+                    if vm.host_ip not in node_vm_map:
+                        node_vm_map[vm.host_ip] = []
+                    node_vm_map[vm.host_ip].append(vm.vm_id)
+                
+                # 根据IP获取节点对象
+                deploy_nodes = []
+                for host_ip in node_vm_map.keys():
+                    node = ComputeNode.query.filter_by(ip=host_ip).first()
+                    if node:
+                        deploy_nodes.append(node)
+                    else:
+                        self.logger.warning(f"Node not found for IP: {host_ip}")
+            except Exception as e:
+                self.logger.error(f"Failed to find nodes for VM IDs: {e}")
+                return vm_instances
+        
+        # Step 2: Create individual tasks for each node
+        for node in deploy_nodes:
+            try:
+                # Find VMs on this specific node
+                node_vm_ids = []
+                for vm_id in vm_id_list:
+                    if VmInstance.query.filter_by(vm_id=vm_id, host_ip=node.ip).first():
+                        node_vm_ids.append(vm_id)
+                
+                if not node_vm_ids:
+                    self.logger.info(f"No VMs found on node {node.nodename} for undeployment")
+                    continue
+                
+                instance_task_id = task_service.create_task("vm-delete", node_vm_ids)
+                node_task[node.nodename] = instance_task_id
+                
+                for vm_name in node_vm_ids:
+                    # Record VM instance info in the response
+                    vm_instances[vm_name] = {
+                        "task_id": instance_task_id,
+                        "host_ip": node.ip
+                    }
+            except Exception as e:
+                self.logger.error(f"Failed to create undeployment task for node {node.nodename}: {e}")
+                continue
+        
+        def undeploy_node_async(node, node_task_id: str, node_vm_ids: List[str], app):
+            with app.app_context():
+                try:
+                    task_service.update_task_status(node_task_id, "running")
+                    
+                    # Perform actual undeployment
+                    compute_link = NetworkService(
+                        node.nodename, COMPUTE_PORT, True, self.ssl_cert
+                    )
+                    result = compute_link.vm_undeploy(node_vm_ids)
+                    
+                    success_vm_ids = []
+                    failed_vm_ids = []
+                    
+                    if result.status_code == HTTPStatus.OK:
+                        success_vm_ids = node_vm_ids
+                        task_service.update_task_status(node_task_id, "success")
+                    else:
+                        failed_vm_ids = result.get("data", node_vm_ids) if result else node_vm_ids
+                        success_vm_ids = list(set(node_vm_ids) - set(failed_vm_ids))
+                        task_service.update_task_status(node_task_id, "failed")
+                    
+                    # Process successful undeployments
+                    self.logger.info(f"Releasing IPs for successfully undeployed VMs on {node.ip}: {success_vm_ids}")
+                    for vm_id in success_vm_ids:
+                        try:
+                            # Release IPs
+                            self.vlan_pool_manager.release_ips_for_vm(node.ip, vm_id)
+                            
+                            # Delete VM from database
+                            db_vm_instances = VmInstance.query.filter_by(
+                                vm_id=vm_id,
+                                host_ip=node.ip
+                            ).all()
+                            
+                            for vm_instance in db_vm_instances:
+                                db.session.delete(vm_instance)
+                            
+                            db.session.commit()
+                            self.logger.info(f"Successfully deleted {len(db_vm_instances)} VM instances from database for VM ID {vm_id}")
+                        except Exception as e:
+                            self.logger.error(f"Failed to process undeployment cleanup for VM {vm_id} on {node.ip}: {e}")
+                            db.session.rollback()
+                
+                except Exception as e:
+                    err_msg = f"Failed to undeploy VMs at {node.ip}, error reason: {e}"
+                    self.logger.error(err_msg)
+                    
+                    # Update task status to failed
+                    task_service.update_task_status(node_task_id, "failed")
+        
+        # Start undeployment asynchronously for all nodes
+        jobs = []
+        for node in deploy_nodes:
+            if node.nodename in node_task:
+                # Get node-specific VM IDs again
+                node_vm_ids = []
+                for vm_id in vm_id_list:
+                    if VmInstance.query.filter_by(vm_id=vm_id, host_ip=node.ip).first():
+                        node_vm_ids.append(vm_id)
+                
+                if node_vm_ids:
+                    jobs.append(gevent.spawn(
+                        undeploy_node_async, 
+                        node, 
+                        node_task[node.nodename], 
+                        node_vm_ids,
+                        current_app._get_current_object()
+                    ))
+        
+        # Return immediate response with task information, same format as deployment
+        return vm_instances
+
+
+_vm_service_instance = None
+
+def get_vm_service():
+    """获取VM服务实例"""
+    global _vm_service_instance
+    return _vm_service_instance
+
+def init_vm_service(ssl_cert, vlan_pool_manager):
+    """初始化VM服务实例"""
+    global _vm_service_instance
+    _vm_service_instance = VmService(ssl_cert, vlan_pool_manager)
+    return _vm_service_instance
