@@ -376,6 +376,194 @@ class VmService:
         
         # Return immediate response with task information, same format as deployment
         return vm_instances
+        
+    def query_vm_states(self, nodes: List[str] = None, vm_ids: List[str] = None, 
+                       page: int = 1, page_size: int = 10) -> Tuple[Dict, str]:
+        """
+        查询虚拟机状态
+        
+        :param nodes: 节点列表
+        :param vm_ids: 虚拟机ID列表
+        :param page: 页码
+        :param page_size: 每页大小
+        :return: (vm_info_result, message)
+        """
+        try:
+            # 构建查询条件
+            query = VmInstance.query
+            
+            if nodes and len(nodes) > 0:
+                # 根据节点名查询节点
+                nodes_db = ComputeNode.query.filter(ComputeNode.nodename.in_(nodes)).all()
+                if not nodes_db:
+                    return {}, "No nodes found"
+                
+                # 获取节点IP列表
+                node_ips = [node.ip for node in nodes_db]
+                query = query.filter(VmInstance.host_ip.in_(node_ips))
+            elif vm_ids and len(vm_ids) > 0:
+                query = query.filter(VmInstance.vm_id.in_(vm_ids))
+            
+            # 分页查询
+            total_vms = query.count()
+            offset = (page - 1) * page_size
+            vm_instances = query.offset(offset).limit(page_size).all()
+            
+            if not vm_instances:
+                return {
+                    "vm_info": {},
+                    "pagination": {
+                        "page": page,
+                        "page_size": page_size,
+                        "entry_num": 0,
+                        "total": 0
+                    }
+                }, "No VM instances found"
+            
+            # 按主机IP分组VM实例
+            vms_by_host = {}
+            for vm in vm_instances:
+                if vm.host_ip not in vms_by_host:
+                    vms_by_host[vm.host_ip] = []
+                vms_by_host[vm.host_ip].append(vm)
+            
+            # 获取相关节点信息
+            host_ips = list(vms_by_host.keys())
+            from virtcca_deploy.services.node_service import NodeService
+            target_nodes, error_response = NodeService.get_nodes_by_ip_list(host_ips)
+            if error_response:
+                return {}, error_response
+            
+            # 构建节点IP到节点对象的映射
+            node_by_ip = {node.ip: node for node in target_nodes}
+            
+            # 收集所有VM的状态信息
+            vm_info_result = {}
+            failed_nodes = []
+            
+            for host_ip, vms in vms_by_host.items():
+                node = node_by_ip.get(host_ip)
+                if not node:
+                    self.logger.warning(f"Node not found for host IP: {host_ip}")
+                    # 对于找不到节点的VM，只返回数据库中的基本信息
+                    for vm in vms:
+                        vm_info_result[vm.vm_id] = {
+                            "state": "UNKNOWN",
+                            "create_at": vm.created_at.isoformat() + "Z" if vm.created_at else "",
+                            "os": vm.os_version or "Unknown",
+                            "ip_list": vm.ip_list.split(",") if vm.ip_list else [],
+                            "mem_used": 0.0,
+                            "host_ip": vm.host_ip
+                        }
+                    continue
+                
+                try:
+                    # 查询计算节点的VM状态
+                    compute_link = NetworkService(
+                        node.nodename, COMPUTE_PORT, True, self.ssl_cert
+                    )
+                    result = compute_link.query_cvm_state()
+                    self.logger.info(f"Response from node {node.ip}: {result.text if result else 'No response'}")
+                    
+                    if result and result.status_code == HTTPStatus.OK:
+                        response_data = result.json()
+                        self.logger.info(f"Parsed response data: {response_data}")
+                        
+                        if isinstance(response_data, dict):
+                            node_vm_data = response_data.get("data", {})
+                            self.logger.info(f"VM data from node: {node_vm_data}")
+                            
+                            vm_states = {}
+                            if isinstance(node_vm_data, dict):
+                                # 直接是字典格式，如 {'cvm-migvm1': 'SHUTOFF', 'cvm-nemoclaw-phc': 'SHUTOFF'}
+                                vm_states = node_vm_data
+                            elif isinstance(node_vm_data, str):
+                                # 如果是字符串，尝试解析为JSON
+                                import json
+                                try:
+                                    vm_states = json.loads(node_vm_data)
+                                except json.JSONDecodeError:
+                                    self.logger.error(f"Failed to parse VM data as JSON: {node_vm_data}")
+                                    vm_states = {}
+                            
+                            # 合并数据库信息和状态信息
+                            for vm in vms:
+                                vm_state = vm_states.get(vm.vm_id, "UNKNOWN")
+                                
+                                vm_info_result[vm.vm_id] = {
+                                    "state": vm_state,
+                                    "create_at": vm.created_at.isoformat() + "Z" if vm.created_at else "",
+                                    "os": vm.os_version or "Unknown",
+                                    "ip_list": vm.ip_list.split(",") if vm.ip_list else [],
+                                    "mem_used": 0.0,  # 从节点返回的数据中没有内存使用信息，使用默认值
+                                    "host_ip": vm.host_ip
+                                }
+                        else:
+                            # 非标准响应格式，直接使用整个响应作为VM状态数据
+                            self.logger.warning(f"Non-standard response format from node {node.ip}")
+                            vm_states = response_data if isinstance(response_data, dict) else {}
+                            
+                            for vm in vms:
+                                vm_state = vm_states.get(vm.vm_id, "UNKNOWN")
+                                
+                                vm_info_result[vm.vm_id] = {
+                                    "state": vm_state,
+                                    "create_at": vm.created_at.isoformat() + "Z" if vm.created_at else "",
+                                    "os": vm.os_version or "Unknown",
+                                    "ip_list": vm.ip_list.split(",") if vm.ip_list else [],
+                                    "mem_used": 0.0,
+                                    "host_ip": vm.host_ip
+                                }
+                    else:
+                        # 网络请求失败
+                        status_code = getattr(result, 'status_code', 'Unknown')
+                        self.logger.error(f"Failed to query CVM state from node {node.ip}, status code: {status_code}")
+                        failed_nodes.append(node.ip)
+                        for vm in vms:
+                            vm_info_result[vm.vm_id] = {
+                                "state": "UNKNOWN",
+                                "create_at": vm.created_at.isoformat() + "Z" if vm.created_at else "",
+                                "os": vm.os_version or "Unknown",
+                                "ip_list": vm.ip_list.split(",") if vm.ip_list else [],
+                                "mem_used": 0.0,
+                                "host_ip": vm.host_ip
+                            }
+                            
+                except Exception as e:
+                    err_msg = f"Failed to query CVM at {node.ip}, error reason: {e}"
+                    self.logger.error(err_msg)
+                    failed_nodes.append(node.ip)
+                    for vm in vms:
+                        vm_info_result[vm.vm_id] = {
+                            "state": "UNKNOWN",
+                            "create_at": vm.created_at.isoformat() + "Z" if vm.created_at else "",
+                            "os": vm.os_version or "Unknown",
+                            "ip_list": vm.ip_list.split(",") if vm.ip_list else [],
+                            "mem_used": 0.0,
+                            "host_ip": vm.host_ip
+                        }
+            
+            # 构建响应数据
+            response_data = {
+                "vm_info": vm_info_result,
+                "pagination": {
+                    "page": page,
+                    "page_size": page_size,
+                    "entry_num": len(vm_instances),
+                    "total": total_vms
+                }
+            }
+            
+            if failed_nodes:
+                message = f"Successfully queried VM state, but failed to get real-time status from nodes: {failed_nodes}"
+            else:
+                message = "Successfully queried VM state from all nodes"
+            
+            return response_data, message
+            
+        except Exception as e:
+            self.logger.error(f"Unexpected error while querying VM state: {e}")
+            return {}, f"Internal server error: {str(e)}"
 
 
 _vm_service_instance = None

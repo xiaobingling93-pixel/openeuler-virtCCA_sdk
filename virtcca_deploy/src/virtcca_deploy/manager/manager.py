@@ -453,55 +453,87 @@ def create_app():
                 message = f"Failed to start undeployment: {e}"
             ).to_dict()), HTTPStatus.INTERNAL_SERVER_ERROR
 
-    @app.route(constants.ROUTE_VM_STATE, methods=[constants.GET])
+    @app.route(constants.ROUTE_VM_STATE, methods=[constants.POST])
     def get_cvm_state():
-        target_nodes, error_response = node_service.NodeService.get_nodes_by_ip_list()
-        if error_response:
-            return flask.jsonify(ApiResponse(
-                        status = OperationCodes.FAILED,
-                        message = error_response
-                    ).to_dict()), HTTPStatusCodes.BAD_REQUEST
-
-        state_results = {}
-        success_nodes = 0
-        for node in target_nodes:
-            try:
-                compute_link = network_service.NetworkService(
-                    node.nodename, constants.COMPUTE_PORT, True, server_config.ssl_cert
-                )
-                result = compute_link.query_cvm_state()
-                if not result or result.status_code != HTTPStatusCodes.OK:
-                    g_logger.error("Failed to query cvm state, status code: %s", result.status_code)
-                    return flask.jsonify(ApiResponse(
-                            status = OperationCodes.FAILED,
-                            message = "Failed to query cvm state",
-                            ).to_dict())
-                if result.status_code != HTTPStatusCodes.OK or result.json().get("status") != OperationCodes.SUCCESS.value:
-                    state_results[node.ip] = {
-                        "message": result.json().get('message', 'Unknown error'),
-                        "cvm_state": result.json().get("data")
-                    }
-                    continue
-                state_results[node.ip] = {
-                        "message": "Successfully query CVM state",
-                        "cvm_state": result.json().get("data")
-                    }
-                success_nodes += 1
-
-            except Exception as e:
-                err_msg ="Failed to query CVM at {}, error reason: {}".format(node.ip, e)
-                g_logger.error(err_msg)
-                state_results[node.ip] = {"message": err_msg}
-        if (success_nodes == len(target_nodes)):
+        """
+        查询虚拟机状态接口
+        请求格式: {"nodes": ["compute01", "compute02"], "vm_ids": [], "pagination": {"page":1, "page_size": 10}}
+        """
+        try:
+            # 获取请求数据
+            request_data = flask.request.get_json()
+            
+            # 参数检查
+            if not request_data or not isinstance(request_data, dict):
                 return flask.jsonify(ApiResponse(
-                            message = "Successfully query CVM state to all nodes",
-                            data = state_results
-                        ).to_dict())
-        return flask.jsonify(ApiResponse(
-                            status = OperationCodes.FAILED,
-                            message = "Some nodes failed to query CVM state",
-                            data = state_results
-                        ).to_dict())
+                    message="Invalid request format, expected JSON object"
+                ).to_dict()), HTTPStatus.BAD_REQUEST
+            
+            # 解析参数
+            nodes = request_data.get("nodes", [])
+            vm_ids = request_data.get("vm_ids", [])
+            pagination = request_data.get("pagination", {})
+            
+            # 检查nodes和vm_ids不能同时非空
+            if nodes and vm_ids:
+                return flask.jsonify(ApiResponse(
+                    message="Nodes and vm_ids cannot be non-empty at the same time"
+                ).to_dict()), HTTPStatus.BAD_REQUEST
+            
+            # 检查nodes类型
+            if nodes and not isinstance(nodes, list):
+                return flask.jsonify(ApiResponse(
+                    message="Invalid nodes parameter, expected list"
+                ).to_dict()), HTTPStatus.BAD_REQUEST
+            
+            # 检查vm_ids类型
+            if vm_ids and not isinstance(vm_ids, list):
+                return flask.jsonify(ApiResponse(
+                    message="Invalid vm_ids parameter, expected list"
+                ).to_dict()), HTTPStatus.BAD_REQUEST
+            
+            # 解析分页参数
+            if pagination and isinstance(pagination, dict):
+                page = pagination.get("page", 1)
+                page_size = pagination.get("page_size", 10)
+            else:
+                page = 1
+                page_size = 10
+            
+            # 转换为整数
+            try:
+                page = int(page)
+                page_size = int(page_size)
+            except (ValueError, TypeError):
+                return flask.jsonify(ApiResponse(
+                    message="Invalid pagination parameters, expected integers"
+                ).to_dict()), HTTPStatus.BAD_REQUEST
+            
+            # 验证分页参数
+            if page < 1 or page_size < 1 or page_size > 100:
+                return flask.jsonify(ApiResponse(
+                    message="Invalid pagination parameters, page must be >= 1, page_size must be between 1 and 100"
+                ).to_dict()), HTTPStatus.BAD_REQUEST
+            
+            # 调用vm_service查询虚拟机状态
+            vm_service_instance = vm_service.get_vm_service()
+            response_data, message = vm_service_instance.query_vm_states(nodes, vm_ids, page, page_size)
+            
+            if not response_data:
+                return flask.jsonify(ApiResponse(
+                    message=message
+                ).to_dict()), HTTPStatus.INTERNAL_SERVER_ERROR
+            
+            return flask.jsonify(ApiResponse(
+                message=message,
+                data=response_data
+            ).to_dict()), HTTPStatus.OK
+            
+        except Exception as e:
+            g_logger.error(f"Unexpected error while querying VM state: {e}")
+            return flask.jsonify(ApiResponse(
+                message=f"Internal server error: {str(e)}"
+            ).to_dict()), HTTPStatus.INTERNAL_SERVER_ERROR
 
     @app.route(constants.ROUTE_VM_LOG_COLLECT, methods=[constants.GET])
     def get_cvm_log():

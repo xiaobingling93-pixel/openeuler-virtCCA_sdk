@@ -63,14 +63,15 @@ class VmInstance(db.Model):
     host_name = db.Column(db.String(80), nullable=False)
     vm_spec_uuid = db.Column(db.String(36), db.ForeignKey('vm_deploy_spec_model.uuid'), nullable=False)
     ip_list = db.Column(db.Text, nullable=True)  # 存储VM的IP列表，使用逗号分隔
-    deployed_at = db.Column(db.DateTime, default=db.func.current_timestamp())
+    os_version = db.Column(db.String(50), nullable=True)
+    created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
 
     def __repr__(self):
         return (
             "<vm_id: {}, host_ip: {}, host_name: {}, "
-            "vm_spec_uuid: {}, ip_list: {}>"
-            ).format(self.vm_id, self.host_ip, self.host_name,
-                    self.vm_spec_uuid, self.ip_list)
+            "vm_spec_uuid: {}, ip_list: {}, os_version: {}>"
+            ).format(self.vm_id, self.host_ip, self.host_name, 
+                    self.vm_spec_uuid, self.ip_list, self.os_version)
 
 
 class Task(db.Model):
