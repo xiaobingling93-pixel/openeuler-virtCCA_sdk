@@ -388,6 +388,15 @@ class VmService:
         :param page_size: 每页大小
         :return: (vm_info_result, message)
         """
+        response_data = {
+            "vm_info": {},
+            "pagination": {
+                "page": page,
+                "page_size": page_size,
+                "entry_num": 0,
+                "total": 0
+            }
+        }
         try:
             # 构建查询条件
             query = VmInstance.query
@@ -396,7 +405,7 @@ class VmService:
                 # 根据节点名查询节点
                 nodes_db = ComputeNode.query.filter(ComputeNode.nodename.in_(nodes)).all()
                 if not nodes_db:
-                    return {}, "No nodes found"
+                    return response_data, "No nodes found"
                 
                 # 获取节点IP列表
                 node_ips = [node.ip for node in nodes_db]
@@ -410,15 +419,7 @@ class VmService:
             vm_instances = query.offset(offset).limit(page_size).all()
             
             if not vm_instances:
-                return {
-                    "vm_info": {},
-                    "pagination": {
-                        "page": page,
-                        "page_size": page_size,
-                        "entry_num": 0,
-                        "total": 0
-                    }
-                }, "No VM instances found"
+                return response_data, "No VM instances found"
             
             # 按主机IP分组VM实例
             vms_by_host = {}
@@ -432,7 +433,7 @@ class VmService:
             from virtcca_deploy.services.node_service import NodeService
             target_nodes, error_response = NodeService.get_nodes_by_ip_list(host_ips)
             if error_response:
-                return {}, error_response
+                return response_data, error_response
             
             # 构建节点IP到节点对象的映射
             node_by_ip = {node.ip: node for node in target_nodes}
@@ -563,7 +564,7 @@ class VmService:
             
         except Exception as e:
             self.logger.error(f"Unexpected error while querying VM state: {e}")
-            return {}, f"Internal server error: {str(e)}"
+            return response_data, f"Internal server error: {str(e)}"
 
 
 _vm_service_instance = None
