@@ -38,7 +38,7 @@ class TestVmDeployEndpoint:
             db.session.add(node1)
             
             # 创建部署配置
-            deploy_spec = VmDeploySpec(vm_num=2, memory=4096, core_num=2, vlan_id=100)
+            deploy_spec = VmDeploySpec(max_vm_num=2, memory=4096, core_num=2, vlan_id=100)
             deploy_spec_model = deploy_spec.to_db_model()
             deploy_spec_model.is_default = True
             db.session.add(deploy_spec_model)
@@ -90,7 +90,7 @@ class TestVmDeployEndpoint:
         # 没有可用节点
         with app.app_context():
             # 创建部署配置
-            deploy_spec = VmDeploySpec(vm_num=2, memory=4096, core_num=2, vlan_id=100)
+            deploy_spec = VmDeploySpec(max_vm_num=2, memory=4096, core_num=2, vlan_id=100)
             deploy_spec_model = deploy_spec.to_db_model()
             deploy_spec_model.is_default = True
             db.session.add(deploy_spec_model)
@@ -122,7 +122,7 @@ class TestVmDeployEndpoint:
             db.session.add(node1)
             
             # 创建部署配置
-            deploy_spec = VmDeploySpec(vm_num=1, memory=4096, core_num=2, vlan_id=100)
+            deploy_spec = VmDeploySpec(max_vm_num=1, memory=4096, core_num=2, vlan_id=100)
             deploy_spec_model = deploy_spec.to_db_model()
             deploy_spec_model.is_default = True
             db.session.add(deploy_spec_model)
@@ -152,7 +152,7 @@ class TestVmDeployEndpoint:
         # 无效的节点名
         with app.app_context():
             # 创建部署配置
-            deploy_spec = VmDeploySpec(vm_num=1, memory=4096, core_num=2, vlan_id=100)
+            deploy_spec = VmDeploySpec(max_vm_num=1, memory=4096, core_num=2, vlan_id=100)
             deploy_spec_model = deploy_spec.to_db_model()
             deploy_spec_model.is_default = True
             db.session.add(deploy_spec_model)
@@ -186,13 +186,13 @@ class TestVmDeployEndpoint:
             db.session.add(node1)
             
             # 创建第一个部署配置
-            deploy_spec1 = VmDeploySpec(vm_num=1, memory=4096, core_num=2, vlan_id=100)
+            deploy_spec1 = VmDeploySpec(max_vm_num=1, memory=4096, core_num=2, vlan_id=100)
             deploy_spec_model1 = deploy_spec1.to_db_model()
             deploy_spec_model1.is_default = True
             db.session.add(deploy_spec_model1)
             
             # 创建第二个部署配置
-            deploy_spec2 = VmDeploySpec(vm_num=1, memory=8192, core_num=4, vlan_id=200)
+            deploy_spec2 = VmDeploySpec(max_vm_num=1, memory=8192, core_num=4, vlan_id=200)
             deploy_spec_model2 = deploy_spec2.to_db_model()
             deploy_spec_model2.is_default = False
             db.session.add(deploy_spec_model2)
@@ -237,7 +237,7 @@ class TestVmDeployEndpoint:
             db.session.add(node1)
             
             # 创建默认部署配置
-            deploy_spec = VmDeploySpec(vm_num=1, memory=4096, core_num=2, vlan_id=100)
+            deploy_spec = VmDeploySpec(max_vm_num=1, memory=4096, core_num=2, vlan_id=100)
             deploy_spec_model = deploy_spec.to_db_model()
             deploy_spec_model.is_default = True
             db.session.add(deploy_spec_model)
