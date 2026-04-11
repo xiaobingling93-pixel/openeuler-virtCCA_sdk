@@ -4,6 +4,7 @@
 from typing import List
 
 import requests
+from http import HTTPStatus
 import virtcca_deploy.common.constants as constants
 from virtcca_deploy.common.constants import HTTPStatusCodes, OperationCodes
 import virtcca_deploy.common.config as config
@@ -47,12 +48,11 @@ class NetworkService:
         query_url = f"{self.base_url}/{constants.ROUTE_NODE_INFO_INTERNAL}"
         try:
             response = self.make_request(query_url, method=constants.GET)
-            if response.status_code == HTTPStatusCodes.OK:
+            if response.status_code == HTTPStatus.OK:
                 return response.json()
             else:
                 g_logger.error("Failed to retrieve data, status code: %s", response.status_code)
                 return {
-                        "status": OperationCodes.INTERNAL_EXCEPTION,
                         "message": f"Request failed with status code {response.status_code}",
                         "data": None
                     }
@@ -60,7 +60,6 @@ class NetworkService:
         except Exception as e:
             g_logger.error(f"Error occurred while querying node info: {e}")
             return {
-                "status": OperationCodes.INTERNAL_EXCEPTION,
                 "message": f"Error occurred: {str(e)}",
                 "data": None
             }

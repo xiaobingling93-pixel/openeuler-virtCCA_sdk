@@ -30,7 +30,7 @@ class TaskService:
                 task_type=task_type,
                 status="created"
             )
-            task.set_task_params(task_params)
+            task.set_task_params(task_params.copy())
             
             db.session.add(task)
             db.session.commit()
@@ -93,7 +93,7 @@ class TaskService:
         try:
             task = Task.query.filter_by(task_id=task_id).first()
             if task:
-                task.set_task_params(task_params)
+                task.set_task_params(task_params.copy())
                 task.updated_at = datetime.now()
                 
                 db.session.commit()

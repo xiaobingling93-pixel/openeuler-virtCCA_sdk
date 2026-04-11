@@ -395,24 +395,18 @@ def _execute_deploy_cvm(
         return err_msg
     return None
 
-def deploy_cvm(cvm_deploy_spec: VmDeploySpecInternal, server_config: config) -> Tuple[List[str], str]:
-    vm_spec = cvm_deploy_spec.vm_spec
-    base_vm_name = cvm_deploy_spec.vm_id
+def deploy_cvm(cvm_deploy_spec_internal: VmDeploySpecInternal, server_config: config) -> Tuple[List[str], str]:
+    vm_spec = cvm_deploy_spec_internal.vm_spec
     successfully_deployed_vms = []
     device_list = []
 
-    err_msg = cvm_name_check(base_vm_name, vm_spec.vm_num)
-    if err_msg:
-        g_logger.error(err_msg)
-        return None, err_msg
 
-    available_nodes, err_msg = cvm_numa_check(vm_spec.core_num, vm_spec.memory, vm_spec.vm_num)
+    available_nodes, err_msg = cvm_numa_check(vm_spec.core_num, vm_spec.memory, vm_spec.max_vm_num)
     if not available_nodes:
         g_logger.error(err_msg)
         return None, err_msg
 
-    for i in range(vm_spec.vm_num):
-        cvm_name = f"{base_vm_name}-{i + 1}"
+    for i, cvm_name in enumerate(cvm_deploy_spec_internal.vm_id_list):
         device_list = []
         device_list, err_msg = cvm_device_check(cvm_name,
                                                 server_config.device_manager,
@@ -423,21 +417,24 @@ def deploy_cvm(cvm_deploy_spec: VmDeploySpecInternal, server_config: config) -> 
             cvm_resource_reclaim(cvm_name, server_config)
             return successfully_deployed_vms, err_msg
 
+        node_index = i % len(available_nodes)
         err_msg = _execute_deploy_cvm(cvm_name,
-                                      vm_spec, available_nodes[i],
+                                      vm_spec, available_nodes[node_index],
                                       device_list,
-                                      cvm_deploy_spec.vm_ip_dict[cvm_name],
+                                      cvm_deploy_spec_internal.vm_ip_dict.get(cvm_name, []),
                                       server_config)
         if err_msg:
             cvm_resource_reclaim(cvm_name, server_config)
             return successfully_deployed_vms, err_msg
 
-        unreachable_ips = cvm_net_check(cvm_deploy_spec.vm_ip_dict[cvm_name])
-        if unreachable_ips:
-            err_msg = f"Test network for {cvm_name} failed, unreachable_ips: {unreachable_ips}"
-            g_logger.error(err_msg)
-            cvm_resource_reclaim(cvm_name, server_config)
-            return successfully_deployed_vms, err_msg
+        vm_ips = cvm_deploy_spec_internal.vm_ip_dict.get(cvm_name, [])
+        if vm_ips:
+            unreachable_ips = cvm_net_check(vm_ips)
+            if unreachable_ips:
+                err_msg = f"Test network for {cvm_name} failed, unreachable_ips: {unreachable_ips}"
+                g_logger.error(err_msg)
+                cvm_resource_reclaim(cvm_name, server_config)
+                return successfully_deployed_vms, err_msg
         successfully_deployed_vms.append(cvm_name)
 
     return successfully_deployed_vms, None

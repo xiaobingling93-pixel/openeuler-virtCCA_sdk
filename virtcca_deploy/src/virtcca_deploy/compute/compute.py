@@ -9,7 +9,7 @@ monkey.patch_all()
 import logging
 import socket
 import os
-
+from http import HTTPStatus
 import flask
 
 import virtcca_deploy.common.config as config
@@ -64,8 +64,8 @@ def create_app():
         req_ip = flask.request.remote_addr
         if req_ip != manager_ip:
             g_logger.warning('Access denied for IP: %s', req_ip)
-            return flask.jsonify(ApiResponse(status=OperationCodes.IP_FORBIDDEN,
-                message="Not allowed to access internal api").to_dict()), HTTPStatusCodes.FORBIDDEN
+            return flask.jsonify(ApiResponse(
+                message="Not allowed to access internal api").to_dict()), HTTPStatus.FORBIDDEN
 
     @app.route(constants.ROUTE_NODE_INFO_INTERNAL, methods=[constants.GET])
     def query_node_info_internal():
@@ -93,44 +93,79 @@ def create_app():
         cvm_spec_json = flask.request.get_json()
         g_logger.info("get cvm deploy request: %s", cvm_spec_json)
         if not cvm_spec_json:
-            g_logger.error("Invalid param")
+            g_logger.error("Invalid param: request body is empty")
             return flask.jsonify(ApiResponse(
-                        status = OperationCodes.FAILED,
                         message = "Content-Type must be application/json"
-                    ).to_dict()), HTTPStatusCodes.BAD_REQUEST
-        vm_id = cvm_spec_json['vm_id']
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
+        
+        required_fields = ['vm_id_list', 'vm_spec', 'vm_ip_dict']
+        for field in required_fields:
+            if field not in cvm_spec_json:
+                g_logger.error(f"Invalid param: missing required field {field}")
+                return flask.jsonify(ApiResponse(
+                            message = f"Missing required field: {field}"
+                        ).to_dict()), HTTPStatus.BAD_REQUEST
+        
+        vm_id_list = cvm_spec_json['vm_id_list']
+        if not isinstance(vm_id_list, list) or len(vm_id_list) == 0:
+            g_logger.error("Invalid param: vm_id_list must be a non-empty list")
+            return flask.jsonify(ApiResponse(
+                        message = "vm_id_list must be a non-empty list"
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
+        
         vm_spec_data = cvm_spec_json['vm_spec']
+        if not isinstance(vm_spec_data, dict):
+            g_logger.error("Invalid param: vm_spec must be a dictionary")
+            return flask.jsonify(ApiResponse(
+                        message = "vm_spec must be a dictionary"
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
+        
         vm_ip_dict = cvm_spec_json['vm_ip_dict']
-
-        vm_spec = VmDeploySpec(**vm_spec_data)
-        cvm_deploy_spec_internal = VmDeploySpecInternal(vm_id=vm_id, vm_spec=vm_spec, vm_ip_dict=vm_ip_dict)
-        if cvm_deploy_spec_internal.is_valid():
+        if not isinstance(vm_ip_dict, dict):
+            g_logger.error("Invalid param: vm_ip_dict must be a dictionary")
+            return flask.jsonify(ApiResponse(
+                        message = "vm_ip_dict must be a dictionary"
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
+        
+        try:
+            vm_spec = VmDeploySpec(**vm_spec_data)
+            cvm_deploy_spec_internal = VmDeploySpecInternal(
+                vm_id_list=vm_id_list, 
+                vm_spec=vm_spec, 
+                vm_ip_dict=vm_ip_dict
+            )
+            
+            if not cvm_deploy_spec_internal.is_valid():
+                g_logger.error("Invalid deployment specification")
+                return flask.jsonify(ApiResponse( 
+                        message = "Invalid deployment specification"
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
+            
             deployed_cvms, deploy_err_msg = virt_service.deploy_cvm(cvm_deploy_spec_internal, server_config)
-            if (deployed_cvms is None or len(deployed_cvms) < vm_spec.vm_num):
+            if deployed_cvms is None or len(deployed_cvms) < len(vm_id_list):
                 if deployed_cvms is None:
-                    succe_cvm_num = 0
+                    success_cvm_num = 0
                 else:
-                    succe_cvm_num = len(deployed_cvms)
+                    success_cvm_num = len(deployed_cvms)
                 error_msg = (
                     "Deploy cvm failed, "
                     "total %d cvms, "
                     "deployed %d, "
                     "reason: %s"
-                ) % (vm_spec.vm_num, succe_cvm_num, deploy_err_msg)
+                ) % (len(vm_id_list), success_cvm_num, deploy_err_msg)
                 g_logger.error(error_msg)
                 return flask.jsonify(ApiResponse(
-                        status = OperationCodes.FAILED, 
                         message = error_msg,
                         data = deployed_cvms).to_dict())
-        else:
-            g_logger.error("Invalid spec")
+            
+            g_logger.info("deploy all cvms success")
+            return flask.jsonify(ApiResponse(data = deployed_cvms).to_dict())
+        
+        except Exception as e:
+            g_logger.error(f"Unexpected error during deployment: {e}")
             return flask.jsonify(ApiResponse(
-                    status = OperationCodes.FAILED, 
-                    message = "Invalid cvm spec").to_dict(),
-                    data = 0), HTTPStatusCodes.BAD_REQUEST
-
-        g_logger.info("deploy all cvms success")
-        return flask.jsonify(ApiResponse(data = deployed_cvms).to_dict())
+                    message = f"Unexpected error: {str(e)}"
+                ).to_dict()), HTTPStatus.INTERNAL_SERVER_ERROR
 
     @app.route(constants.ROUTE_VM_UNDEPLOY_INTERNAL, methods=[constants.POST])
     def undeploy_cvm_internal():
@@ -138,9 +173,8 @@ def create_app():
         if not cvm_id_json or not isinstance(cvm_id_json, list):
             g_logger.error("Invalid param")
             return flask.jsonify(ApiResponse(
-                        status = OperationCodes.FAILED,
                         message = "Content-Type must be application/json"
-                    ).to_dict()), HTTPStatusCodes.BAD_REQUEST
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
         g_logger.info("get cvm undeploy request: %s\n", cvm_id_json)
         failed_cvm = []
         for vm_id in cvm_id_json:
@@ -149,7 +183,6 @@ def create_app():
                 failed_cvm.append(vm_id)
         if failed_cvm:
             return flask.jsonify(ApiResponse(
-                    status = OperationCodes.FAILED, 
                     message = "some cvm destroy failed",
                     data = failed_cvm
                     ).to_dict())

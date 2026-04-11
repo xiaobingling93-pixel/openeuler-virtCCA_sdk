@@ -37,7 +37,7 @@ class ComputeNode(db.Model):
 
 class VmDeploySpecModel(db.Model):
     uuid = db.Column(db.String(36), primary_key=True)
-    vm_num = db.Column(db.Integer, nullable=False)
+    max_vm_num = db.Column(db.Integer, nullable=False)
     memory = db.Column(db.Integer, nullable=False)
     core_num = db.Column(db.Integer, nullable=False)
     vlan_id = db.Column(db.Integer, nullable=False)
@@ -50,9 +50,9 @@ class VmDeploySpecModel(db.Model):
 
     def __repr__(self):
         return (
-            "<uuid: {}, vm_num: {}, memory: {}, core_num: {}, vlan_id: {}, "
+            "<uuid: {}, max_vm_num: {}, memory: {}, core_num: {}, vlan_id: {}, "
             "gateway_ip: {}, net_pf_num: {}, net_vf_num: {}, disk_size: {}, is_default: {}>"
-            ).format(self.uuid, self.vm_num, self.memory, self.core_num, self.vlan_id,
+            ).format(self.uuid, self.max_vm_num, self.memory, self.core_num, self.vlan_id,
                     self.gateway_ip, self.net_pf_num, self.net_vf_num, self.disk_size, self.is_default)
 
 

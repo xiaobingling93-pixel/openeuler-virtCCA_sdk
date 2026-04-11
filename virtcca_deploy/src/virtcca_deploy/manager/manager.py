@@ -22,6 +22,7 @@ import virtcca_deploy.services.node_service as node_service
 import virtcca_deploy.services.network_service as network_service
 import virtcca_deploy.services.util_service as util_service
 import virtcca_deploy.services.vm_service as vm_service
+import virtcca_deploy.services.task_service as task_service
 from virtcca_deploy.common.data_model import VmDeploySpec, ApiResponse
 from virtcca_deploy.services.db_service import ComputeNode, VmDeploySpecModel
 
@@ -69,8 +70,8 @@ def create_app():
         from virtcca_deploy.manager.auth import init_auth
         init_auth(app, server_config)
 
-        # Initialize VM service
         vm_service.init_vm_service(server_config.ssl_cert, server_config.vlan_pool_manager)
+        task_service.init_task_service()
 
     g_logger.info("Virtcca Deploy Manager node start!")
 

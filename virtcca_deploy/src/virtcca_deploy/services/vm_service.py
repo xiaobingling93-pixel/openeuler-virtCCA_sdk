@@ -15,8 +15,8 @@ monkey.patch_all()
 
 from flask import current_app
 
-from virtcca_deploy.common.constants import OperationCodes, COMPUTE_PORT
-from virtcca_deploy.common.data_model import VmDeploySpecInternal
+from virtcca_deploy.common.constants import COMPUTE_PORT
+from virtcca_deploy.common.data_model import VmDeploySpecInternal, VmDeploySpec
 from virtcca_deploy.services.db_service import ComputeNode, VmInstance, VmDeploySpecModel, db
 from virtcca_deploy.services.network_service import NetworkService
 from virtcca_deploy.services.task_service import get_task_service
@@ -38,8 +38,8 @@ class VmService:
         # Create individual tasks for each node
         for node in deploy_nodes:
             # Generate all VM names for this node
-            cvm_spec_internal = VmDeploySpecInternal(vm_spec=deploy_config)
-            cvm_spec_internal.vm_id_list = [f"{node.nodename}-{i + 1}" for i in range(cvm_spec_internal.vm_spec.vm_num)]
+            cvm_spec_internal = VmDeploySpecInternal.from_db_model(deploy_config)
+            cvm_spec_internal.vm_id_list = [f"{node.nodename}-{i + 1}" for i in range(cvm_spec_internal.vm_spec.max_vm_num)]
             
             try:
                 instance_task_id = task_service.create_task("vm-create", cvm_spec_internal.vm_id_list)
@@ -55,11 +55,10 @@ class VmService:
                 self.logger.error(f"Failed to create instance task for node {node.nodename}: {e}")
                 continue
         
-        def deploy_node_async(node, node_task_id: str, node_cvm_spec_internal, app):
+        def deploy_node_async(node: ComputeNode, node_task_id: str, cvm_spec_internal: VmDeploySpecInternal, app):
             with app.app_context():
                 try:
                     # Allocate IP for this node specifically
-                    node_cvm_spec_internal.allocate_ip(self.vlan_pool_manager, node.ip)
 
                     task_service.update_task_status(node_task_id, "running")
                     
@@ -67,13 +66,41 @@ class VmService:
                     compute_link = NetworkService(
                         node.nodename, COMPUTE_PORT, True, self.ssl_cert
                     )
-                    result = compute_link.vm_deploy(asdict(node_cvm_spec_internal))
+                    result = compute_link.vm_deploy(cvm_spec_internal.to_dict())
+                    all_vms = cvm_spec_internal.vm_id_list
+                    success_vms = []
+                    fail_vms = []
                     if result.status_code == HTTPStatus.OK:
-                        task_service.update_task_status(node_task_id, "success")
+                        try:
+                            response_data = result.json()
+                            if response_data and "data" in response_data:
+                                success_vms = response_data["data"]
+                                if not isinstance(success_vms, list):
+                                    success_vms = []
+                        except Exception as e:
+                            self.logger.error(f"Failed to parse deployment result: {e}")
+                            success_vms = []
                         
-                        # Record successful VM deployment to database
-                        for vm_name, ips in node_cvm_spec_internal.vm_ip_dict.items():
-                            ip_list_str = ",".join(ips)
+                        success_vms_set = set(success_vms)
+                        fail_vms = [vm for vm in all_vms if vm not in success_vms_set]
+                        
+                        task_params = {
+                            "success_vms": success_vms,
+                            "fail_vms": fail_vms,
+                            "total_vms": all_vms
+                        }
+                        task_service.update_task_params(node_task_id, task_params)
+                        
+                        if len(fail_vms) == 0:
+                            task_service.update_task_status(node_task_id, "success")
+                        else:
+                            task_service.update_task_status(node_task_id, "failed")
+                        
+                        # 只记录成功部署的VM到数据库
+                        for vm_name in success_vms:
+                            # 获取IP列表，如果没有分配IP则使用空字符串
+                            ips = cvm_spec_internal.vm_ip_dict.get(vm_name, []) if cvm_spec_internal.vm_ip_dict else []
+                            ip_list_str = ",".join(ips) if ips else ""
 
                             # Create VM instance record
                             vm_instance = VmInstance(
@@ -87,36 +114,52 @@ class VmService:
                             try:
                                 db.session.add(vm_instance)
                                 db.session.commit()
-                                self.logger.info(f"Successfully recorded VM {cvm_spec_internal.vm_id} in database for node {node.ip}")
+                                self.logger.info(f"Successfully recorded VM {vm_name} in database for node {node.ip}")
                             except Exception as e:
-                                self.logger.error(f"Failed to record VM instance to database: {e}")
+                                self.logger.error(f"Failed to record VM instance {vm_name} to database: {e}")
                                 db.session.rollback()
-                    else:
-                        # 使用TaskService更新任务状态为failed
-                        task_service.update_task_status(node_task_id, "failed")
                         
-                        for vm_name in cvm_spec_internal.vm_id_list:
+                        for vm_name in fail_vms:
+                            self.vlan_pool_manager.release_ips_for_vm(node.ip, vm_name)
+                    else:
+                        fail_vms = all_vms
+                        task_params = {
+                            "success_vms": [],
+                            "fail_vms": fail_vms,
+                            "total_vms": all_vms
+                        }
+                        task_service.update_task_params(node_task_id, task_params)
+                        task_service.update_task_status(node_task_id, "failed")
+
+                        for vm_name in all_vms:
                             self.vlan_pool_manager.release_ips_for_vm(node.ip, vm_name)
                 except Exception as e:
                     err_msg = f"Failed to deploy CVM at {node.ip}, error reason: {e}"
                     self.logger.error(err_msg)
                     
-                    # 使用TaskService更新任务状态为failed
+                    all_vms = cvm_spec_internal.vm_id_list
+                    fail_vms = all_vms
+                    
+                    task_params = {
+                        "success_vms": [],
+                        "fail_vms": fail_vms,
+                        "total_vms": all_vms
+                    }
+                    task_service.update_task_params(node_task_id, task_params)
                     task_service.update_task_status(node_task_id, "failed")
-                        
-                    # Release IPs
-                    for vm_name in cvm_spec_internal.vm_id_list:
+                    
+                    for vm_name in all_vms:
                         self.vlan_pool_manager.release_ips_for_vm(node.ip, vm_name)
         
         node_to_spec = {}
         for node in deploy_nodes:
             if node.nodename in node_task:
-                cvm_spec_internal = VmDeploySpecInternal(vm_spec=deploy_config)
-                cvm_spec_internal.vm_id_list = [f"{node.nodename}-{i + 1}" for i in range(cvm_spec_internal.vm_spec.vm_num)]
-                node_to_spec[node.nodename] = cvm_spec_internal
+                # 创建新的实例，避免引用问题
+                node_spec = VmDeploySpecInternal.from_db_model(deploy_config)
+                node_spec.vm_id_list = [f"{node.nodename}-{i + 1}" for i in range(node_spec.vm_spec.max_vm_num)]
+                node_to_spec[node.nodename] = node_spec
         
         # Start deployment asynchronously for all nodes
-        
         jobs = []
         for node in deploy_nodes:
             if node.nodename in node_task:  # 只处理任务创建成功的节点
