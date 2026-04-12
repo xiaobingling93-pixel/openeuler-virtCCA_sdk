@@ -31,6 +31,44 @@ class TestConfig:
         self.lockout_duration_minutes = 15
         self.logger = None
 
+        # 模拟配置文件内容
+        class MockConfigParser:
+            def __init__(self):
+                # 模拟配置文件的各个部分
+                self.config = {
+                    'DEFAULT': {
+                        'manager': "localhost",
+                        'ca_cert': '/etc/virtcca_deploy/cert/ca.crt',
+                        'cvm_image_path': '/var/lib/virtcca_deploy/qcow2'
+                    },
+                    'PCI': {
+                        'pf_whitelist': '[]',
+                        'vf_whitelist': '[]'
+                    },
+                    'NET': {
+                        'base_ip': '192.168.0.0',
+                        'prefix': '24'
+                    },
+                    'AUTH': {
+                        'jwt_expiration_minutes': '30',
+                        'max_login_attempts': '5',
+                        'lockout_duration_minutes': '15'
+                    }
+                }
+            
+            def get(self, section, option):
+                """模拟ConfigParser的get方法"""
+                if section in self.config and option in self.config[section]:
+                    return self.config[section][option]
+                raise KeyError(f"Option {option} not found in section {section}")
+            
+            def getint(self, section, option):
+                """模拟ConfigParser的getint方法"""
+                return int(self.get(section, option))
+        
+        # 创建模拟的config对象
+        self.config = MockConfigParser()
+
     def __del__(self):
         """析构函数，清理临时文件"""
         try:
@@ -82,11 +120,41 @@ class TestConfig:
             with open(jwt_secret_key_file, 'w') as f:
                 f.write(self.jwt_secret_key)
             # 设置文件权限（模拟生产环境）
+            import stat
             os.chmod(jwt_secret_key_file, stat.S_IRUSR | stat.S_IWUSR)
         except Exception:
             # 文件操作失败不影响测试，因为我们使用固定密钥
             pass
 
+    def configure_device(self):
+        """模拟配置设备管理器"""
+        # 创建一个简单的模拟设备管理器
+        class MockDeviceManager:
+            def __init__(self):
+                self.devices = [[], []]  # 空的PF和VF列表
+                self.device_status = {}
+            
+            def get_device_by_numa(self, numa_node, device_type, count=1):
+                """模拟获取指定NUMA节点的设备"""
+                return []  # 返回空列表，表示没有可用设备
+            
+            def allocate_device(self, device_name):
+                """模拟分配设备"""
+                return True
+            
+            def release_device(self, device_name):
+                """模拟释放设备"""
+                return True
+            
+            def get_device_status(self, device_name):
+                """模拟获取设备状态"""
+                return "available"
+            
+            def get_all_devices(self):
+                """模拟获取所有设备"""
+                return []
+        
+        self.device_manager = MockDeviceManager()
 
 @pytest.fixture(scope='function')
 def app():
@@ -139,10 +207,62 @@ def app():
                 pass
 
 
+@pytest.fixture(scope='function')
+def compute_app():
+    """创建测试用 Compute Flask 应用"""
+    import tempfile
+    from unittest import mock
+
+    # 创建主临时目录
+    main_temp_dir = tempfile.mkdtemp(prefix="virtcca_compute_test_")
+    
+    # 模拟配置文件路径和网络服务
+    with mock.patch.multiple('virtcca_deploy.common.constants',
+        DEFAULT_CONFIG_PATH=main_temp_dir,
+        COMPUTE_LOG_NEME="compute_test.log",
+        MANAGER_PORT=5001):
+        
+        # 使用测试专用的配置对象
+        test_config = TestConfig()
+
+        with mock.patch('virtcca_deploy.common.config.Config', return_value=test_config):
+            # 模拟NetworkService类
+            with mock.patch('virtcca_deploy.services.network_service.NetworkService') as mock_network_service:
+                # 模拟NetworkService实例
+                mock_manager_link = mock.MagicMock()
+                mock_manager_link.node_register.return_value = None
+                mock_network_service.return_value = mock_manager_link
+
+                from virtcca_deploy.compute import compute
+                app = compute.create_app()
+                
+                app.config.update({
+                    'TESTING': True,
+                })
+
+                yield app
+                
+                # 测试结束后清理主临时目录
+                try:
+                    import shutil
+                    if os.path.exists(main_temp_dir):
+                        shutil.rmtree(main_temp_dir)
+                except:
+                    pass
+
+
+
+
 @pytest.fixture
 def client(app):
     """Flask 测试客户端"""
     return app.test_client()
+
+
+@pytest.fixture
+def compute_client(compute_app):
+    """Compute Flask 测试客户端"""
+    return compute_app.test_client()
 
 
 @pytest.fixture

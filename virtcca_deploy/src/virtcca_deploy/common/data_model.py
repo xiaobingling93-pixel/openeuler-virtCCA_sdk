@@ -2,9 +2,10 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-from dataclasses import dataclass, field
-from typing import Any, List
+from dataclasses import dataclass, field, asdict, is_dataclass
+from typing import Any, List, Dict
 import uuid
+import json
 import virtcca_deploy.common.constants as constants
 import virtcca_deploy.common.config as config
 from virtcca_deploy.services.db_service import VmDeploySpecModel
@@ -23,7 +24,7 @@ DEFAULT_DISK_SIZE = 0
 
 @dataclass
 class VmDeploySpec:
-    vm_num: int = DEFAULT_VM_NUM
+    max_vm_num: int = DEFAULT_VM_NUM
     memory: int = DEFAULT_MEMORY
     core_num: int = DEFAULT_CORE_NUM
     vlan_id: int = DEFAULT_VLAN_ID
@@ -36,7 +37,7 @@ class VmDeploySpec:
 
     def is_valid(self) -> bool:
         int_fields = [
-            ('vm_num', self.vm_num),
+            ('max_vm_num', self.max_vm_num),
             ('memory', self.memory), 
             ('core_num', self.core_num),
             ('vlan_id', self.vlan_id),
@@ -49,7 +50,7 @@ class VmDeploySpec:
                 g_logger.error("%s must be a int", field_name)
                 return False
 
-        if not (1 <= self.vm_num <= constants.MAX_CVM_NUM_PER_NODE):
+        if not (1 <= self.max_vm_num <= constants.MAX_CVM_NUM_PER_NODE):
             return False
         if not (constants.MIN_CVM_MEM <= self.memory <= constants.MAX_CVM_MEM):
             return False
@@ -65,7 +66,7 @@ class VmDeploySpec:
     def to_db_model(self):
         return VmDeploySpecModel(
             uuid=self.uuid,
-            vm_num=self.vm_num,
+            max_vm_num=self.max_vm_num,
             memory=self.memory,
             core_num=self.core_num,
             vlan_id=self.vlan_id,
@@ -79,7 +80,7 @@ class VmDeploySpec:
     def from_db_model(cls, model):
         return cls(
             uuid=model.uuid,
-            vm_num=model.vm_num,
+            max_vm_num=model.max_vm_num,
             memory=model.memory,
             core_num=model.core_num,
             vlan_id=model.vlan_id,
@@ -89,11 +90,18 @@ class VmDeploySpec:
             disk_size=model.disk_size
         )
 
+    def to_dict(self) -> Dict:
+        return asdict(self)
+    
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict())
+
 @dataclass
 class VmDeploySpecInternal:
     vm_id_list: List[str] = field(default_factory=list)
     vm_spec: VmDeploySpec = field(default_factory=VmDeploySpec)
     vm_ip_dict : dict = field(default_factory=dict)
+
     def is_valid(self) -> bool:
         if not self.vm_spec.is_valid():
             return False
@@ -122,6 +130,17 @@ class VmDeploySpecInternal:
             vm_ip_dict[vm_id] = ip_list
         self.vm_ip_dict = vm_ip_dict
 
+    @classmethod
+    def from_db_model(cls, model):
+        return VmDeploySpecInternal(vm_spec=VmDeploySpec.from_db_model(model))
+
+    def to_dict(self) -> Dict:
+        result = asdict(self)
+        result['vm_spec'] = self.vm_spec.to_dict()
+        return result
+    
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict())
 
 @dataclass
 class ApiResponse:

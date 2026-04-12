@@ -39,7 +39,8 @@ class UtilService:
 
         secure_memory = 0
         secure_memory_free = 0
-        secure_numa_topology = {}
+        secure_numa_topology = []
+
         if virtcca_info:
             for node_id, info in virtcca_info.items():
                 size = info["size"]
@@ -48,10 +49,11 @@ class UtilService:
                 secure_memory += size
                 secure_memory_free += free
 
-                secure_numa_topology[node_id] = {
-                    "size": size,
-                    "free": free
-                }
+                secure_numa_topology.append({
+                    "numa_id": int(node_id),
+                    "free": free,
+                    "size": size
+                })
 
         hardware_info["secure_memory"] = secure_memory
         hardware_info["secure_memory_free"] = secure_memory_free

@@ -37,7 +37,7 @@ class ComputeNode(db.Model):
 
 class VmDeploySpecModel(db.Model):
     uuid = db.Column(db.String(36), primary_key=True)
-    vm_num = db.Column(db.Integer, nullable=False)
+    max_vm_num = db.Column(db.Integer, nullable=False)
     memory = db.Column(db.Integer, nullable=False)
     core_num = db.Column(db.Integer, nullable=False)
     vlan_id = db.Column(db.Integer, nullable=False)
@@ -50,9 +50,9 @@ class VmDeploySpecModel(db.Model):
 
     def __repr__(self):
         return (
-            "<uuid: {}, vm_num: {}, memory: {}, core_num: {}, vlan_id: {}, "
+            "<uuid: {}, max_vm_num: {}, memory: {}, core_num: {}, vlan_id: {}, "
             "gateway_ip: {}, net_pf_num: {}, net_vf_num: {}, disk_size: {}, is_default: {}>"
-            ).format(self.uuid, self.vm_num, self.memory, self.core_num, self.vlan_id,
+            ).format(self.uuid, self.max_vm_num, self.memory, self.core_num, self.vlan_id,
                     self.gateway_ip, self.net_pf_num, self.net_vf_num, self.disk_size, self.is_default)
 
 
@@ -63,14 +63,15 @@ class VmInstance(db.Model):
     host_name = db.Column(db.String(80), nullable=False)
     vm_spec_uuid = db.Column(db.String(36), db.ForeignKey('vm_deploy_spec_model.uuid'), nullable=False)
     ip_list = db.Column(db.Text, nullable=True)  # 存储VM的IP列表，使用逗号分隔
-    deployed_at = db.Column(db.DateTime, default=db.func.current_timestamp())
+    os_version = db.Column(db.String(50), nullable=True)
+    created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
 
     def __repr__(self):
         return (
             "<vm_id: {}, host_ip: {}, host_name: {}, "
-            "vm_spec_uuid: {}, ip_list: {}>"
-            ).format(self.vm_id, self.host_ip, self.host_name,
-                    self.vm_spec_uuid, self.ip_list)
+            "vm_spec_uuid: {}, ip_list: {}, os_version: {}>"
+            ).format(self.vm_id, self.host_ip, self.host_name, 
+                    self.vm_spec_uuid, self.ip_list, self.os_version)
 
 
 class Task(db.Model):
@@ -79,23 +80,45 @@ class Task(db.Model):
     task_type = db.Column(db.String(20), nullable=False)  # vm-create/vm-delete
     task_params = db.Column(db.Text, nullable=True)
     status = db.Column(db.String(20), nullable=False)  # created/running/success/failed
-    results = db.Column(db.Text, nullable=True)  # JSON格式的结果
     created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
     updated_at = db.Column(db.DateTime, default=db.func.current_timestamp(), onupdate=db.func.current_timestamp())
     completed_at = db.Column(db.DateTime, nullable=True)
 
     def set_task_params(self, params):
-        if self.task_type == "vm-delete" or self.task_type == "vm-delete":
+        if isinstance(params, dict):
+            if "success_vms" not in params:
+                params["success_vms"] = []
+            if "fail_vms" not in params:
+                params["fail_vms"] = []
+            if "total_vms" not in params:
+                params["total_vms"] = []
+            
             self.task_params = json.dumps(params)
+        else:
+            self.task_params = json.dumps({
+                "success_vms": [],
+                "fail_vms": [],
+                "total_vms": []
+            })
 
     def get_task_params(self):
-        if self.task_type == "vm-delete" or self.task_type == "vm-delete":
-            return json.loads(self.vm_id_list or "[]")
+        if self.task_params:
+            try:
+                return json.loads(self.task_params)
+            except json.JSONDecodeError:
+                return {
+                    "success_vms": [],
+                    "fail_vms": [],
+                    "total_vms": []
+                }
+        return {
+            "success_vms": [],
+            "fail_vms": [],
+            "total_vms": []
+        }
 
     def __repr__(self):
-        return (
-            "<task_id: {}, task_type: {}, task_params: {}, status: {}>"
-        ).format(
+        return "<Task(task_id: {}, task_type: {}, task_params: {}, status: {})>".format(
             self.task_id,
             self.task_type,
             self.get_task_params(),

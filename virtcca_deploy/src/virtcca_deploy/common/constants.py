@@ -41,6 +41,7 @@ ROUTE_VM_UNDEPLOY = "/api/v1/vm/undeploy"
 ROUTE_VM_STATE = "/api/v1/vm/state"
 ROUTE_VM_LOG_COLLECT = "/api/v1/vm/logs/"
 ROUTE_VM_SOFTWARE = "/api/v1/vm/software"
+ROUTE_VM_TASKS = "/api/v1/vm/tasks/"
 
 # restful methods
 POST = "POST"
@@ -79,9 +80,9 @@ ROUTE_AUTH_LOGIN = "/api/v1/auth/login"
 ROUTE_AUTH_LOGOUT = "/api/v1/auth/logout"
 
 # Auth defaults
-DEFAULT_JWT_EXPIRATION_MINUTES = 30
+DEFAULT_JWT_EXPIRATION_MINUTES = 720
 DEFAULT_MAX_LOGIN_ATTEMPTS = 5
-DEFAULT_LOCKOUT_DURATION_MINUTES = 15
+DEFAULT_LOCKOUT_DURATION_MINUTES = 1
 ROOT_USERNAME = "root"
 
 # JWT secret key file path
