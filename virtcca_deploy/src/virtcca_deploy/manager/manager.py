@@ -9,14 +9,12 @@ monkey.patch_all()
 import logging
 from dataclasses import asdict
 import os
-from typing import List, Tuple, Dict
 
 import flask
 from http import HTTPStatus
 
 import virtcca_deploy.common.config as config
 import virtcca_deploy.common.constants as constants
-from virtcca_deploy.common.constants import HTTPStatusCodes, OperationCodes
 import virtcca_deploy.services.db_service as db_service
 import virtcca_deploy.services.node_service as node_service
 import virtcca_deploy.services.network_service as network_service
@@ -24,7 +22,7 @@ import virtcca_deploy.services.util_service as util_service
 import virtcca_deploy.services.vm_service as vm_service
 import virtcca_deploy.services.task_service as task_service
 from virtcca_deploy.common.data_model import VmDeploySpec, ApiResponse
-from virtcca_deploy.services.db_service import ComputeNode, VmDeploySpecModel
+from virtcca_deploy.services.db_service import VmDeploySpecModel
 
 g_logger = config.g_logger
 g_cvm_deploy_spec = VmDeploySpec()
@@ -84,7 +82,6 @@ def create_app():
     def node_register():
         if not flask.request.is_json:
             return flask.jsonify(ApiResponse(
-                    status = OperationCodes.FAILED,
                     message = "Content-Type must be application/json").to_dict()), HTTPStatus.BAD_REQUEST
         try:
             node_data = flask.request.get_json()
@@ -543,92 +540,61 @@ def create_app():
 
     @app.route(constants.ROUTE_VM_LOG_COLLECT, methods=[constants.GET])
     def get_cvm_log():
-        host_ip = flask.request.args.get('host_ip')
+        host_name = flask.request.args.get('host_name')
         vm_id = flask.request.args.get('vm_id')
-        if not host_ip or not vm_id:
+
+        if not host_name or not vm_id:
             return flask.jsonify(ApiResponse(
+                data=None,
                 message="Missing required parameters: host_name and vm_id").to_dict()), HTTPStatus.BAD_REQUEST
-        target_node = node_service.NodeService.get_node_by_ip(host_ip)
+
+        target_node = node_service.NodeService.get_node_by_name(host_name)
         if not target_node:
             return flask.jsonify(ApiResponse(
-                        status = OperationCodes.FAILED,
-                        message = "No such compute node"
-                    ).to_dict()), HTTPStatusCodes.NOT_FOUND
+                        data=None,
+                        message="No such compute node"
+                    ).to_dict()), HTTPStatus.NOT_FOUND
 
         try:
             compute_link = network_service.NetworkService(
                 target_node.nodename, constants.COMPUTE_PORT, True, server_config.ssl_cert
             )
             response = compute_link.collect_cvm_log(vm_id)
+            
             if not response:
                 return flask.jsonify(ApiResponse(
-                            status = OperationCodes.FAILED,
-                            message = "Failed to collect CVM log",
-                            ).to_dict())
-            if response.status_code != HTTPStatusCodes.OK:
+                            data=None,
+                            message="Virtual machine not found"
+                            ).to_dict()), HTTPStatus.NOT_FOUND
+            
+            if response.status_code != HTTPStatus.OK:
                 return flask.jsonify(ApiResponse(
-                            status = OperationCodes.FAILED,
-                            ).to_dict())
-            os.makedirs(constants.CVM_COLLECT_LOG_PATH, exist_ok=True)
-            log_file_name = f"{host_ip}-{vm_id}.log"
-            log_file_path = os.path.join(constants.CVM_COLLECT_LOG_PATH, log_file_name)
-            g_logger.info("log_file_path: %s", log_file_path)
-            try:
-                with open(log_file_path, 'wb') as f:
-                    g_logger.info("open the file: %s", log_file_name)
-                    for chunk in response.iter_content(chunk_size=1024):
-                        if chunk:
-                            f.write(chunk)
-                g_logger.info("Log file saved successfully: %s", log_file_path)
-            except Exception as e:
-                err_msg = f"Failed to collect CVM log, error reason 1: {e}"
-                g_logger.error(err_msg)
-                return flask.jsonify(ApiResponse(
-                              message = err_msg
-                              ).to_dict())
-            return flask.jsonify(ApiResponse().to_dict())
+                            data=None,
+                            message="Failed to collect virtual machine log"
+                            ).to_dict()), HTTPStatus.INTERNAL_SERVER_ERROR
+            
+            log_file_name = f"{host_name}-{vm_id}.log"
+            headers = {
+                'Content-Type': 'text/plain; charset=utf-8',
+                'Content-Disposition': f'attachment; filename="{log_file_name}"',
+                'Content-Length': response.headers.get('Content-Length', '0')
+            }
+            
+            g_logger.info("Successfully collected log for VM %s on node %s", vm_id, host_name)
+            
+            return flask.Response(
+                response.iter_content(chunk_size=1024),
+                status=HTTPStatus.OK,
+                headers=headers
+            )
 
         except Exception as e:
-            err_msg = f"Failed to collect CVM log, error reason 2: {e}"
+            err_msg = f"Failed to collect virtual machine log: {e}"
             g_logger.error(err_msg)
             return flask.jsonify(ApiResponse(
-                            status = OperationCodes.FAILED,
-                            message = err_msg,
-                        ).to_dict())
-
-    def _execute_upload(deploy_nodes: List[ComputeNode], upload_file) -> Tuple[Dict, int]:
-        deployment_results = {}
-        success_nodes = 0
-
-        g_logger.info(f"_execute_upload deploy_nodes = {deploy_nodes}, upload_file = {upload_file}")
-        for node in deploy_nodes:
-            try:
-                compute_link = network_service.NetworkService(
-                    node.nodename, constants.COMPUTE_PORT, True, server_config.ssl_cert
-                )
-                result = compute_link.upload_cvm_software(upload_file)
-                if not result:
-                    deployment_results[node.ip] = {
-                        "message": "VM upload software failed",
-                    }
-                    continue
-                if result.get("status") != OperationCodes.SUCCESS.value:
-                    deployment_results[node.ip] = {
-                        "message": result.get('message', 'Unknown error'),
-                    }
-                    continue
-                else:
-                    deployment_results[node.ip] = {"message": "Successfully upload software"}
-                    success_nodes += 1
-
-            except Exception as e:
-                err_msg = "Failed to unload CVM software at {}, error reason: {}".format(node.ip, e)
-                g_logger.error(err_msg)
-                deployment_results[node.ip] = {
-                    "message": err_msg,
-                }
-
-        return deployment_results, success_nodes
+                            data=None,
+                            message=err_msg
+                        ).to_dict()), HTTPStatus.INTERNAL_SERVER_ERROR
 
     import hashlib
     import re
