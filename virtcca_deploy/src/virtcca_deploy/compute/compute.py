@@ -14,7 +14,6 @@ import flask
 
 import virtcca_deploy.common.config as config
 import virtcca_deploy.common.constants as constants
-from virtcca_deploy.common.constants import HTTPStatusCodes, OperationCodes
 import virtcca_deploy.services.virt_service as virt_service
 import virtcca_deploy.services.network_service as network_service
 import virtcca_deploy.services.util_service as util_service
@@ -83,10 +82,9 @@ def create_app():
             g_logger.error("Error occurred: %s", e)
             return flask.jsonify(
                 ApiResponse(
-                    status=OperationCodes.COMPUTE_NODE_FAILED,
                     message=e
                 ).to_dict()
-            ), HTTPStatusCodes.INTERNAL_SERVER_ERROR
+            ), HTTPStatus.INTERNAL_SERVER_ERROR
 
     @app.route(constants.ROUTE_VM_DEPLOY_INTERNAL, methods=[constants.POST])
     def deploy_cvm_internal():
@@ -189,32 +187,31 @@ def create_app():
         return flask.jsonify(ApiResponse().to_dict())
 
     @app.route(constants.ROUTE_VM_LOG_COLLECT_INTERNAL, methods=[constants.GET])
-    def get_cvm_log_internal(vm_name: str):
-        cvm_log_file_path = os.path.join(constants.LIBVIRT_QEMU_LOG_PATH, f"{vm_name}.log")
+    def get_cvm_log_internal(vm_id: str):
+        cvm_log_file_path = os.path.join(constants.LIBVIRT_QEMU_LOG_PATH, f"{vm_id}.log")
         g_logger.info("collect cvm log request: %s", cvm_log_file_path)
         if not os.path.exists(cvm_log_file_path):
             g_logger.error("cvm log not found: %s", cvm_log_file_path)
             return flask.jsonify(ApiResponse(
-                    status = OperationCodes.FAILED, 
                     message = "cvm log not found",
-                    ).to_dict()), HTTPStatusCodes.NOT_FOUND
+                    ).to_dict()), HTTPStatus.NOT_FOUND
         g_logger.info("collect cvm log request success: %s", cvm_log_file_path)
-        return flask.send_from_directory(constants.LIBVIRT_QEMU_LOG_PATH, f"{vm_name}.log", as_attachment=True)
+        response = flask.send_from_directory(constants.LIBVIRT_QEMU_LOG_PATH, f"{vm_id}.log", as_attachment=True)
+        response.headers['Content-Type'] = 'text/plain; charset=utf-8'
+        return response
 
     @app.route(constants.ROUTE_VM_SOFTWARE_INTERNAL, methods=[constants.POST])
     def upload_cvm_software_internal():
         if 'file' not in flask.request.files:
             return flask.jsonify(ApiResponse(
-                    status = OperationCodes.FAILED, 
                     message = "No file part in request",
-                    ).to_dict()), HTTPStatusCodes.BAD_REQUEST
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
 
         upload_file = flask.request.files['file']
         if upload_file.filename == '':
             return flask.jsonify(ApiResponse(
-                    status = OperationCodes.FAILED, 
                     message = "No selected file",
-                    ).to_dict()), HTTPStatusCodes.BAD_REQUEST
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
 
         g_logger.info("upload_cvm_software_internal: %s", flask.request.files)
 
@@ -230,9 +227,8 @@ def create_app():
         except Exception as e:
             g_logger.error("Error saving file: %s", e)
             return flask.jsonify(ApiResponse(
-                        status = OperationCodes.FAILED,
                         message = "Error saving file"
-                    ).to_dict()), HTTPStatusCodes.BAD_REQUEST
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
 
     return app
 
@@ -245,12 +241,12 @@ def main():
 
     class ComputeApp(BaseApplication):
         def load_config(self):
-            self.cfg.set("bind", "0.0.0.0:5000")
-            self.cfg.set("workers", 1)
+            self.cfg.set("bind", constants.NetworkConfig.COMPUTE_BIND)
+            self.cfg.set("workers", constants.ServerConfig.WORKERS)
             self.cfg.set("worker_class", "gevent")
-            self.cfg.set("timeout", 300)
-            self.cfg.set("certfile", "/etc/virtcca_deploy/cert/compute.crt")
-            self.cfg.set("keyfile", "/etc/virtcca_deploy/cert/compute.key")
+            self.cfg.set("timeout", constants.ServerConfig.TIMEOUT)
+            self.cfg.set("certfile", f"{constants.PathConfig.CERT_DIR}/compute.crt")
+            self.cfg.set("keyfile", f"{constants.PathConfig.CERT_DIR}/compute.key")
 
         def load(self):
             return app

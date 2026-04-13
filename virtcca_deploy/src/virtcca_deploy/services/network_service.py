@@ -6,7 +6,6 @@ from typing import List
 import requests
 from http import HTTPStatus
 import virtcca_deploy.common.constants as constants
-from virtcca_deploy.common.constants import HTTPStatusCodes, OperationCodes
 import virtcca_deploy.common.config as config
 
 g_logger = config.g_logger
@@ -38,7 +37,7 @@ class NetworkService:
 
             return response
         except requests.RequestException as e:
-            raise Exception("Error during request: {}".format(e))
+            raise Exception("Error during request: {}".format(e)) from e
 
     def node_register(self, node_info):
         register_url = f"{self.base_url}/{constants.ROUTE_NODE_REGISTRY_INTERNAL}"
@@ -94,7 +93,7 @@ class NetworkService:
             return None
 
     def collect_cvm_log(self, vm_name: str):
-        log_collect_base_url = constants.ROUTE_VM_LOG_COLLECT_INTERNAL.replace("<vm_name>", vm_name)
+        log_collect_base_url = constants.ROUTE_VM_LOG_COLLECT_INTERNAL.replace("<vm_id>", vm_name)
         log_collect_url = f"{self.base_url}/{log_collect_base_url}"
         try:
             return self.make_request(log_collect_url, method=constants.GET)
@@ -109,12 +108,11 @@ class NetworkService:
             with open(file_path, 'rb') as f:
                 files = {'file': f}
                 response = self.make_request(upload_cvm_software_url, method=constants.POST, files=files)
-                if response.status_code == HTTPStatusCodes.OK:
+                if response.status_code == HTTPStatus.OK:
                     return response.json()
                 else:
                     g_logger.error("Failed to unload software, status code: %s", response.status_code)
                     return {
-                            "status": OperationCodes.INTERNAL_EXCEPTION,
                             "message": response.json(),
                             "data": None
                     }

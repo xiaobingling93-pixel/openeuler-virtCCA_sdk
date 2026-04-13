@@ -86,14 +86,15 @@ class Task(db.Model):
 
     def set_task_params(self, params):
         if isinstance(params, dict):
-            if "success_vms" not in params:
-                params["success_vms"] = []
-            if "fail_vms" not in params:
-                params["fail_vms"] = []
-            if "total_vms" not in params:
-                params["total_vms"] = []
-            
-            self.task_params = json.dumps(params)
+            params_copy = params.copy()
+            if "success_vms" not in params_copy:
+                params_copy["success_vms"] = []
+            if "fail_vms" not in params_copy:
+                params_copy["fail_vms"] = []
+            if "total_vms" not in params_copy:
+                params_copy["total_vms"] = []
+
+            self.task_params = json.dumps(params_copy)
         else:
             self.task_params = json.dumps({
                 "success_vms": [],
@@ -123,4 +124,22 @@ class Task(db.Model):
             self.task_type,
             self.get_task_params(),
             self.status,
+        )
+
+
+class VmSoftware(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    file_name = db.Column(db.String(128), unique=True, nullable=False)
+    file_hash = db.Column(db.String(64), nullable=False)
+    file_size = db.Column(db.Integer, nullable=False)
+    file_type = db.Column(db.String(20), nullable=True)
+    signature = db.Column(db.String(256), nullable=True)
+    created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
+
+    def __repr__(self):
+        return "<VmSoftware(file_name: {}, file_hash: {}, file_size: {}, file_type: {})>".format(
+            self.file_name,
+            self.file_hash,
+            self.file_size,
+            self.file_type
         )

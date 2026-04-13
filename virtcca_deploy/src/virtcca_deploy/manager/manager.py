@@ -1,4 +1,4 @@
-#!/usr/bin
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
@@ -9,14 +9,13 @@ monkey.patch_all()
 import logging
 from dataclasses import asdict
 import os
-from typing import List, Tuple, Dict
 
 import flask
+from gevent import lock
 from http import HTTPStatus
 
 import virtcca_deploy.common.config as config
 import virtcca_deploy.common.constants as constants
-from virtcca_deploy.common.constants import HTTPStatusCodes, OperationCodes
 import virtcca_deploy.services.db_service as db_service
 import virtcca_deploy.services.node_service as node_service
 import virtcca_deploy.services.network_service as network_service
@@ -24,10 +23,11 @@ import virtcca_deploy.services.util_service as util_service
 import virtcca_deploy.services.vm_service as vm_service
 import virtcca_deploy.services.task_service as task_service
 from virtcca_deploy.common.data_model import VmDeploySpec, ApiResponse
-from virtcca_deploy.services.db_service import ComputeNode, VmDeploySpecModel
+from virtcca_deploy.services.db_service import VmDeploySpecModel
 
 g_logger = config.g_logger
 g_cvm_deploy_spec = VmDeploySpec()
+g_spec_lock = lock.RLock()
 
 
 def create_app():
@@ -55,17 +55,18 @@ def create_app():
 
         # Load existing spec from database if it exists
         global g_cvm_deploy_spec
-        existing_spec = db_service.db.session.query(VmDeploySpecModel).first()
-        if not existing_spec:
-            default_spec = g_cvm_deploy_spec.to_db_model()
-            default_spec.is_default = True
-            db_service.db.session.add(default_spec)
-            db_service.db.session.commit()
+        with g_spec_lock:
+            existing_spec = manager_db.db.session.query(VmDeploySpecModel).first()
+            if not existing_spec:
+                default_spec = g_cvm_deploy_spec.to_db_model()
+                default_spec.is_default = True
+                manager_db.db.session.add(default_spec)
+                manager_db.db.session.commit()
 
-            g_logger.info("Created default cvm spec with uuid: %s", default_spec.uuid)
-        else:
-            g_cvm_deploy_spec = VmDeploySpec.from_db_model(existing_spec)
-            g_logger.info("Loaded existing cvm spec from database with uuid: %s", existing_spec.uuid)
+                g_logger.info("Created default cvm spec with uuid: %s", default_spec.uuid)
+            else:
+                g_cvm_deploy_spec = VmDeploySpec.from_db_model(existing_spec)
+                g_logger.info("Loaded existing cvm spec from database with uuid: %s", existing_spec.uuid)
 
         from virtcca_deploy.manager.auth import init_auth
         init_auth(app, server_config)
@@ -84,7 +85,6 @@ def create_app():
     def node_register():
         if not flask.request.is_json:
             return flask.jsonify(ApiResponse(
-                    status = OperationCodes.FAILED,
                     message = "Content-Type must be application/json").to_dict()), HTTPStatus.BAD_REQUEST
         try:
             node_data = flask.request.get_json()
@@ -230,21 +230,23 @@ def create_app():
                     message = "Invalid cvm config value").to_dict())
         try:
             # Delete all existing specs to ensure only one is stored
-            db_service.db.session.query(VmDeploySpecModel).delete()
-            
+            manager_db.db.session.query(VmDeploySpecModel).delete()
+
             # Create new spec
             new_spec_model = cvm_spec.to_db_model()
             new_spec_model.is_default = True
-            db_service.db.session.add(new_spec_model)
-            db_service.db.session.commit()
-            g_logger.info("Saved cvm spec to database with uuid: %s, all existing specs deleted", g_cvm_deploy_spec.uuid)
+            manager_db.db.session.add(new_spec_model)
+            manager_db.db.session.commit()
+            with g_spec_lock:
+                g_logger.info("Saved cvm spec to database with uuid: %s, all existing specs deleted", g_cvm_deploy_spec.uuid)
         except Exception as e:
-            db_service.db.session.rollback()
+            manager_db.db.session.rollback()
             g_logger.error("Failed to save cvm spec to database: %s", str(e))
             return flask.jsonify(ApiResponse(
                     message="Failed to save config to database").to_dict())
-        
-        g_cvm_deploy_spec = cvm_spec
+
+        with g_spec_lock:
+            g_cvm_deploy_spec = cvm_spec
         g_logger.info("set cvm spec success: %s", g_cvm_deploy_spec)
         return flask.jsonify(ApiResponse(data = g_cvm_deploy_spec.uuid).to_dict())
 
@@ -255,9 +257,9 @@ def create_app():
             deploy_id = flask.request.args.get('deploy_config_id')
             
             if deploy_id:
-                deploy_config = db_service.db.session.query(VmDeploySpecModel).filter_by(uuid=deploy_id).first()
+                deploy_config = manager_db.db.session.query(VmDeploySpecModel).filter_by(uuid=deploy_id).first()
             else:
-                deploy_config = db_service.db.session.query(VmDeploySpecModel).filter_by(is_default=True).first()
+                deploy_config = manager_db.db.session.query(VmDeploySpecModel).filter_by(is_default=True).first()
             
             if not deploy_config:
                  return flask.jsonify(ApiResponse(
@@ -279,12 +281,11 @@ def create_app():
 
     @app.route(constants.ROUTE_VM_DEPLOY, methods=[constants.POST])
     def deploy_cvm():
-        global g_cvm_deploy_spec
         g_logger.info("Received VM deploy request")
 
         def validate_deploy_params(deploy_data):
             """验证部署参数"""
-            if not deploy_data or "deploy_config_id" not in deploy_data or "vm_id" not in deploy_data:
+            if not deploy_data or "deploy_config_id" not in deploy_data:
                 return False, None, "Invalid request format"
             return True, deploy_data, ""
 
@@ -293,7 +294,7 @@ def create_app():
             # 如果deploy_config_id为空，使用默认配置
             if not deploy_config_id:
                 try:
-                    default_config = db_service.db.session.query(db_service.VmDeploySpecModel).filter_by(is_default=True).first()
+                    default_config = manager_db.db.session.query(db_service.VmDeploySpecModel).filter_by(is_default=True).first()
                     if not default_config:
                         return False, None, "No default deployment config found"
                     return True, default_config, ""
@@ -303,7 +304,7 @@ def create_app():
             
             # 使用指定的配置ID
             try:
-                requested_config = db_service.db.session.query(db_service.VmDeploySpecModel).filter_by(uuid=deploy_config_id).first()
+                requested_config = manager_db.db.session.query(db_service.VmDeploySpecModel).filter_by(uuid=deploy_config_id).first()
                 if not requested_config:
                     return False, None, "Invalid deploy_config_id"
                 return True, requested_config, ""
@@ -314,7 +315,7 @@ def create_app():
         def check_config_conflict(deploy_config_id):
             """检查是否有VM使用不同的配置"""
             try:
-                active_vms = db_service.db.session.query(db_service.VmInstance).filter(
+                active_vms = manager_db.db.session.query(db_service.VmInstance).filter(
                     db_service.VmInstance.vm_spec_uuid != deploy_config_id
                 ).all()
                 if active_vms:
@@ -397,7 +398,8 @@ def create_app():
         # Step 7: Execute deployment
         vm_service_instance = vm_service.get_vm_service()
         try:
-            vm_instances = vm_service_instance.execute_deployment(target_nodes, requested_config, vm_id_dict)
+            cvm_spec = VmDeploySpec.from_db_model(requested_config)
+            vm_instances = vm_service_instance.execute_deployment(target_nodes, cvm_spec, vm_id_dict)
             return flask.jsonify(ApiResponse(
                 data = vm_instances,
                 message = ""
@@ -421,10 +423,7 @@ def create_app():
             # 直接是列表格式：["compute01-1", "compute02-1"]
             vm_id_list = undeploy_data
         elif isinstance(undeploy_data, dict) and "vm_ids" in undeploy_data:
-            # 包含一个列表的对象格式：{["compute01-1", "compute02-1"]}
-            first_key = next(iter(undeploy_data))
-            if isinstance(undeploy_data[first_key], list):
-                vm_id_list = undeploy_data[first_key]
+            vm_id_list = undeploy_data["vm_ids"]
         else:
             return flask.jsonify(ApiResponse(
                 message = "Invalid request format, expected a list of VM IDs").to_dict()), HTTPStatus.BAD_REQUEST
@@ -461,10 +460,16 @@ def create_app():
         """
         try:
             # 获取请求数据
-            request_data = flask.request.get_json()
-            
-            # 参数检查
-            if not request_data or not isinstance(request_data, dict):
+            try:
+                request_data = flask.request.get_json()
+                
+                # 参数检查
+                if not request_data or not isinstance(request_data, dict):
+                    return flask.jsonify(ApiResponse(
+                        message="Invalid request format, expected JSON object"
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
+            except flask.BadRequest:
+                # 处理JSON解析错误
                 return flask.jsonify(ApiResponse(
                     message="Invalid request format, expected JSON object"
                 ).to_dict()), HTTPStatus.BAD_REQUEST
@@ -537,144 +542,269 @@ def create_app():
 
     @app.route(constants.ROUTE_VM_LOG_COLLECT, methods=[constants.GET])
     def get_cvm_log():
-        host_ip = flask.request.args.get('host_ip')
+        host_name = flask.request.args.get('host_name')
         vm_id = flask.request.args.get('vm_id')
-        if not host_ip or not vm_id:
+
+        if not host_name or not vm_id:
             return flask.jsonify(ApiResponse(
+                data=None,
                 message="Missing required parameters: host_name and vm_id").to_dict()), HTTPStatus.BAD_REQUEST
-        target_node = node_service.NodeService.get_node_by_ip(host_ip)
+
+        target_node = node_service.NodeService.get_node_by_name(host_name)
         if not target_node:
             return flask.jsonify(ApiResponse(
-                        status = OperationCodes.FAILED,
-                        message = "No such compute node"
-                    ).to_dict()), HTTPStatusCodes.NOT_FOUND
+                        data=None,
+                        message="No such compute node"
+                    ).to_dict()), HTTPStatus.NOT_FOUND
 
         try:
             compute_link = network_service.NetworkService(
                 target_node.nodename, constants.COMPUTE_PORT, True, server_config.ssl_cert
             )
             response = compute_link.collect_cvm_log(vm_id)
+            
             if not response:
                 return flask.jsonify(ApiResponse(
-                            status = OperationCodes.FAILED,
-                            message = "Failed to collect CVM log",
-                            ).to_dict())
-            if response.status_code != HTTPStatusCodes.OK:
+                            data=None,
+                            message="Virtual machine not found"
+                            ).to_dict()), HTTPStatus.NOT_FOUND
+            
+            if response.status_code != HTTPStatus.OK:
                 return flask.jsonify(ApiResponse(
-                            status = OperationCodes.FAILED,
-                            ).to_dict())
-            os.makedirs(constants.CVM_COLLECT_LOG_PATH, exist_ok=True)
-            log_file_name = f"{host_ip}-{vm_id}.log"
-            log_file_path = os.path.join(constants.CVM_COLLECT_LOG_PATH, log_file_name)
-            g_logger.info("log_file_path: %s", log_file_path)
-            try:
-                with open(log_file_path, 'wb') as f:
-                    g_logger.info("open the file: %s", log_file_name)
-                    for chunk in response.iter_content(chunk_size=1024):
-                        if chunk:
-                            f.write(chunk)
-                g_logger.info("Log file saved successfully: %s", log_file_path)
-            except Exception as e:
-                err_msg = f"Failed to collect CVM log, error reason 1: {e}"
-                g_logger.error(err_msg)
-                return flask.jsonify(ApiResponse(
-                              message = err_msg
-                              ).to_dict())
-            return flask.jsonify(ApiResponse().to_dict())
+                            data=None,
+                            message="Failed to collect virtual machine log"
+                            ).to_dict()), HTTPStatus.INTERNAL_SERVER_ERROR
+            
+            log_file_name = f"{host_name}-{vm_id}.log"
+            headers = {
+                'Content-Type': 'text/plain; charset=utf-8',
+                'Content-Disposition': f'attachment; filename="{log_file_name}"',
+                'Content-Length': response.headers.get('Content-Length', '0')
+            }
+            
+            g_logger.info("Successfully collected log for VM %s on node %s", vm_id, host_name)
+            
+            return flask.Response(
+                response.iter_content(chunk_size=1024),
+                status=HTTPStatus.OK,
+                headers=headers
+            )
 
         except Exception as e:
-            err_msg = f"Failed to collect CVM log, error reason 2: {e}"
+            err_msg = f"Failed to collect virtual machine log: {e}"
             g_logger.error(err_msg)
             return flask.jsonify(ApiResponse(
-                            status = OperationCodes.FAILED,
-                            message = err_msg,
-                        ).to_dict())
+                            data=None,
+                            message=err_msg
+                        ).to_dict()), HTTPStatus.INTERNAL_SERVER_ERROR
 
-    def _execute_upload(deploy_nodes: List[ComputeNode], upload_file) -> Tuple[Dict, int]:
-        deployment_results = {}
-        success_nodes = 0
-
-        g_logger.info(f"_execute_upload deploy_nodes = {deploy_nodes}, upload_file = {upload_file}")
-        for node in deploy_nodes:
-            try:
-                compute_link = network_service.NetworkService(
-                    node.nodename, constants.COMPUTE_PORT, True, server_config.ssl_cert
-                )
-                result = compute_link.upload_cvm_software(upload_file)
-                if not result:
-                    deployment_results[node.ip] = {
-                        "message": "VM upload software failed",
-                    }
-                    continue
-                if result.get("status") != OperationCodes.SUCCESS.value:
-                    deployment_results[node.ip] = {
-                        "message": result.get('message', 'Unknown error'),
-                    }
-                    continue
-                else:
-                    deployment_results[node.ip] = {"message": "Successfully upload software"}
-                    success_nodes += 1
-
-            except Exception as e:
-                err_msg = "Failed to unload CVM software at {}, error reason: {}".format(node.ip, e)
-                g_logger.error(err_msg)
-                deployment_results[node.ip] = {
-                    "message": err_msg,
-                }
-
-        return deployment_results, success_nodes
+    import hashlib
+    import re
 
     @app.route(constants.ROUTE_VM_SOFTWARE, methods=[constants.POST])
     def upload_cvm_software():
+        # 检查请求格式
         if 'file' not in flask.request.files:
             return flask.jsonify(ApiResponse(
-                    status = OperationCodes.FAILED, 
                     message = "No file part in request",
-                    ).to_dict()), HTTPStatusCodes.BAD_REQUEST
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
         
+        # 获取表单字段
         upload_file = flask.request.files['file']
+        file_name = flask.request.form.get('file_name')
+        file_hash = flask.request.form.get('file_hash')
+        file_size_str = flask.request.form.get('file_size')
+        signature = flask.request.form.get('signature')
+        
+        # 验证必填字段
+        if not file_name or not file_hash or not file_size_str:
+            return flask.jsonify(ApiResponse(
+                    message = "Missing required fields: file_name, file_hash, file_size",
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
+        
+        # 验证文件名格式
+        if not re.match(r'^[a-zA-Z0-9._\-:]{1,128}$', file_name):
+            return flask.jsonify(ApiResponse(
+                    message = "Invalid file_name: must be 1-128 characters, only letters, numbers, and ._-: allowed",
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
+        
+        # 验证文件
         if upload_file.filename == '':
             return flask.jsonify(ApiResponse(
-                    status = OperationCodes.FAILED, 
                     message = "No selected file",
-                    ).to_dict()), HTTPStatusCodes.BAD_REQUEST
-                    
-        # 防止路径穿越攻击，只保留文件名部分
-        filename = os.path.basename(upload_file.filename)
-        g_logger.info("receive upload software: %s", filename)
-
-        target_nodes, error_response = node_service.NodeService.get_nodes_by_ip_list()
-        if error_response:
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
+        
+        try:
+            file_size = int(file_size_str)
+        except ValueError:
             return flask.jsonify(ApiResponse(
-                        status = OperationCodes.FAILED,
-                        message = error_response
-                    ).to_dict()), HTTPStatusCodes.BAD_REQUEST
+                    message = "Invalid file_size: must be an integer",
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
+        
+        # 防止路径穿越攻击，只保留文件名部分
+        original_filename = os.path.basename(upload_file.filename)
+        file_type = original_filename.split('.')[-1] if '.' in original_filename else ''
+        
+        g_logger.info("Received upload software request: file_name=%s, file_type=%s, file_size=%sKB", 
+                     file_name, file_type, file_size)
 
-        g_logger.info("upload cvm software to compute nodes, %s", target_nodes)
+        # 创建保存目录
         os.makedirs(constants.CVM_MANAGER_SOFTWARE_PATH, exist_ok=True)
-        filepath = os.path.join(constants.CVM_MANAGER_SOFTWARE_PATH, filename)
+        filepath = os.path.join(constants.CVM_MANAGER_SOFTWARE_PATH, file_name)
 
+        # 保存文件并计算哈希值
         try:
             upload_file.save(filepath)
+            
+            # 计算文件SHA-256哈希值
+            sha256_hash = hashlib.sha256()
+            with open(filepath, "rb") as f:
+                # 分块读取文件进行哈希计算
+                for byte_block in iter(lambda: f.read(4096), b""):
+                    sha256_hash.update(byte_block)
+            computed_hash = "sha256:" + sha256_hash.hexdigest()
+            
+            # 验证哈希值
+            if computed_hash != file_hash:
+                os.remove(filepath)  # 删除文件
+                return flask.jsonify(ApiResponse(
+                        message = "File hash mismatch: computed_hash={}, expected_hash={}".format(computed_hash, file_hash)
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
+                    
         except Exception as e:
-            g_logger.error("Error saving file: %s", e)
+            g_logger.error("Error saving or hashing file: %s", e)
+            if os.path.exists(filepath):
+                os.remove(filepath)
             return flask.jsonify(ApiResponse(
-                        status = OperationCodes.FAILED,
-                        message = "Error saving file"
-                    ).to_dict()), HTTPStatusCodes.BAD_REQUEST
+                        message = "Error processing file: {}".format(str(e))
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
 
-        upload_results, success_nodes = _execute_upload(target_nodes, filepath)
-        if success_nodes == len(target_nodes):
+        try:
+            # 检查是否已存在相同文件名的软件
+            existing_software = manager_db.db.session.query(db_service.VmSoftware).filter_by(file_name=file_name).first()
+            if existing_software:
+                # 更新现有记录
+                existing_software.file_hash = file_hash
+                existing_software.file_size = file_size
+                existing_software.file_type = file_type
+                existing_software.signature = signature
+            else:
+                # 创建新记录
+                new_software = db_service.VmSoftware(
+                    file_name=file_name,
+                    file_hash=file_hash,
+                    file_size=file_size,
+                    file_type=file_type,
+                    signature=signature
+                )
+                manager_db.db.session.add(new_software)
+            manager_db.db.session.commit()
+            
             return flask.jsonify(ApiResponse(
-                message = "Successfully unload CVM software to all nodes",
-                data = upload_results
-            ).to_dict())
-        else:
+                message = "",
+                data = None
+            ).to_dict()), HTTPStatus.OK
+        except Exception as e:
+            g_logger.error("Error saving software to database: %s", e)
+            manager_db.db.session.rollback()
+            # 删除已上传的文件
+            os.remove(filepath)
+            # 从计算节点删除文件（这里简化处理，实际可能需要更复杂的清理）
             return flask.jsonify(ApiResponse(
-                status = OperationCodes.COMPUTE_NODE_FAILED,
-                message = "Some nodes failed to unload CVM software",
-                data = upload_results
-            ).to_dict())
+                message = "Error saving to database: {}".format(str(e))
+            ).to_dict()), HTTPStatus.INTERNAL_SERVER_ERROR
+
+    @app.route(constants.ROUTE_VM_SOFTWARE, methods=[constants.GET])
+    def get_vm_software():
+        """
+        查询当前已上传的软件包
+        """
+        try:
+            # 从数据库获取所有软件包信息
+            software_list = manager_db.db.session.query(db_service.VmSoftware).all()
+            
+            # 构建响应数据
+            data = {}
+            for software in software_list:
+                data[software.file_name] = {
+                    "file_size": software.file_size,
+                    "file_type": software.file_type
+                }
+            
+            return flask.jsonify(ApiResponse(
+                message = "",
+                data = data
+            ).to_dict()), HTTPStatus.OK
+        except Exception as e:
+            g_logger.error("Error querying software packages: %s", e)
+            return flask.jsonify(ApiResponse(
+                message = "Error querying software packages: {}".format(str(e))
+            ).to_dict()), HTTPStatus.INTERNAL_SERVER_ERROR
+
+    @app.route(constants.ROUTE_VM_SOFTWARE, methods=[constants.DELETE])
+    def delete_vm_software():
+        """
+        删除当前已上传的软件包
+        """
+        try:
+            # 获取请求体中的file_names列表
+            request_data = flask.request.get_json()
+            if not request_data or "file_names" not in request_data:
+                return flask.jsonify(ApiResponse(
+                    message = "Missing required field: file_names"
+                ).to_dict()), HTTPStatus.BAD_REQUEST
+            
+            file_names = request_data["file_names"]
+            if not isinstance(file_names, list) or not file_names:
+                return flask.jsonify(ApiResponse(
+                    message = "Invalid file_names: must be a non-empty list"
+                ).to_dict()), HTTPStatus.BAD_REQUEST
+            
+            # 从数据库和本地存储删除文件
+            deleted_files = []
+            not_found_files = []
+            
+            for fname in file_names:
+                # 检查文件是否存在
+                software = manager_db.db.session.query(db_service.VmSoftware).filter_by(file_name=fname).first()
+                if software:
+                    # 删除本地文件
+                    filepath = os.path.join(constants.CVM_MANAGER_SOFTWARE_PATH, fname)
+                    if os.path.exists(filepath):
+                        try:
+                            os.remove(filepath)
+                        except Exception as e:
+                            g_logger.error("Error deleting local file %s: %s", fname, e)
+                    
+                    # 从数据库删除
+                    try:
+                        manager_db.db.session.delete(software)
+                        deleted_files.append(fname)
+                    except Exception as e:
+                        g_logger.error("Error deleting software %s from database: %s", fname, e)
+                        not_found_files.append(fname)
+                else:
+                    not_found_files.append(fname)
+            
+            manager_db.db.session.commit()
+            
+            # 构建响应
+            if not_found_files:
+                return flask.jsonify(ApiResponse(
+                    message = "No such software {} found".format(", ".join(not_found_files))
+                ).to_dict()), HTTPStatus.NOT_FOUND
+            
+            return flask.jsonify(ApiResponse(
+                message = "",
+                data = None
+            ).to_dict()), HTTPStatus.OK
+            
+        except Exception as e:
+            g_logger.error("Error deleting software packages: %s", e)
+            manager_db.db.session.rollback()
+            return flask.jsonify(ApiResponse(
+                message = "Error deleting software packages: {}".format(str(e))
+            ).to_dict()), HTTPStatus.INTERNAL_SERVER_ERROR
 
     @app.route(constants.ROUTE_VM_TASKS, methods=[constants.GET])
     def get_vm_tasks():
@@ -722,12 +852,12 @@ def main():
 
     class ManagerApp(BaseApplication):
         def load_config(self):
-            self.cfg.set("bind", "0.0.0.0:5001")
-            self.cfg.set("workers", 1)
+            self.cfg.set("bind", constants.NetworkConfig.MANAGER_BIND)
+            self.cfg.set("workers", constants.ServerConfig.WORKERS)
             self.cfg.set("worker_class", "gevent")
-            self.cfg.set("timeout", 300)
-            self.cfg.set("certfile", "/etc/virtcca_deploy/cert/manager.crt")
-            self.cfg.set("keyfile", "/etc/virtcca_deploy/cert/manager.key")
+            self.cfg.set("timeout", constants.ServerConfig.TIMEOUT)
+            self.cfg.set("certfile", f"{constants.PathConfig.CERT_DIR}/manager.crt")
+            self.cfg.set("keyfile", f"{constants.PathConfig.CERT_DIR}/manager.key")
 
         def load(self):
             return app

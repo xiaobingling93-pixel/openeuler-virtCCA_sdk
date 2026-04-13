@@ -20,8 +20,6 @@ import virtcca_deploy.common.hardware as hardware
 import virtcca_deploy.services.util_service as util_service
 
 g_logger = config.g_logger
-OUTPUT_XML_PATH = "/etc/virtcca_deploy/xml/"
-NET_TEMPLATE = "/etc/virtcca_deploy/ifcfg-template"
 NET_CONFIG_PATH = "/etc/sysconfig/network-scripts"
 
 def handle_vm_id(root, value):
@@ -198,10 +196,11 @@ def config_disk(cvm_name: str, file_path: str, ip_list: List[str], server_config
     return new_qcow2_path
 
 def config_net(ip_list: List[str], perfix: str):
-    if not os.path.exists(NET_TEMPLATE):
-        raise FileNotFoundError(f"Template file not found: {NET_TEMPLATE}")
+    net_template = constants.PathConfig.IFCTL_TEMPLATE
+    if not os.path.exists(net_template):
+        raise FileNotFoundError(f"Template file not found: {net_template}")
 
-    with open(NET_TEMPLATE, 'r') as template_file:
+    with open(net_template, 'r') as template_file:
         template_content = template_file.read()
 
     for i, ip in enumerate(ip_list):
@@ -537,8 +536,9 @@ class libvirtDriver:
         """
         Ensuring the connection is closed when done.
         """
+        conn = None
         try:
-            conn = libvirt.open('qemu:///system')
+            conn = libvirt.open(constants.NetworkConfig.LIBVIRT_URI)
             if conn is None:
                 raise ConnectionError('Unable to connect to the libvirt')
             yield conn
