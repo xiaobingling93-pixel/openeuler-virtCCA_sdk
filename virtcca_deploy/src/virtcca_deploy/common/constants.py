@@ -46,6 +46,7 @@ ROUTE_VM_TASKS = "/api/v1/vm/tasks/"
 # restful methods
 POST = "POST"
 GET = "GET"
+DELETE = "DELETE"
 
 # Cvm spec limitations
 MAX_CVM_NUM_PER_NODE = 8

@@ -461,10 +461,16 @@ def create_app():
         """
         try:
             # 获取请求数据
-            request_data = flask.request.get_json()
-            
-            # 参数检查
-            if not request_data or not isinstance(request_data, dict):
+            try:
+                request_data = flask.request.get_json()
+                
+                # 参数检查
+                if not request_data or not isinstance(request_data, dict):
+                    return flask.jsonify(ApiResponse(
+                        message="Invalid request format, expected JSON object"
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
+            except flask.BadRequest:
+                # 处理JSON解析错误
                 return flask.jsonify(ApiResponse(
                     message="Invalid request format, expected JSON object"
                 ).to_dict()), HTTPStatus.BAD_REQUEST
@@ -624,57 +630,214 @@ def create_app():
 
         return deployment_results, success_nodes
 
+    import hashlib
+    import re
+
     @app.route(constants.ROUTE_VM_SOFTWARE, methods=[constants.POST])
     def upload_cvm_software():
+        # 检查请求格式
         if 'file' not in flask.request.files:
             return flask.jsonify(ApiResponse(
-                    status = OperationCodes.FAILED, 
                     message = "No file part in request",
-                    ).to_dict()), HTTPStatusCodes.BAD_REQUEST
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
         
+        # 获取表单字段
         upload_file = flask.request.files['file']
+        file_name = flask.request.form.get('file_name')
+        file_hash = flask.request.form.get('file_hash')
+        file_size_str = flask.request.form.get('file_size')
+        signature = flask.request.form.get('signature')
+        
+        # 验证必填字段
+        if not file_name or not file_hash or not file_size_str:
+            return flask.jsonify(ApiResponse(
+                    message = "Missing required fields: file_name, file_hash, file_size",
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
+        
+        # 验证文件名格式
+        if not re.match(r'^[a-zA-Z0-9._\-:]{1,128}$', file_name):
+            return flask.jsonify(ApiResponse(
+                    message = "Invalid file_name: must be 1-128 characters, only letters, numbers, and ._-: allowed",
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
+        
+        # 验证文件
         if upload_file.filename == '':
             return flask.jsonify(ApiResponse(
-                    status = OperationCodes.FAILED, 
                     message = "No selected file",
-                    ).to_dict()), HTTPStatusCodes.BAD_REQUEST
-                    
-        # 防止路径穿越攻击，只保留文件名部分
-        filename = os.path.basename(upload_file.filename)
-        g_logger.info("receive upload software: %s", filename)
-
-        target_nodes, error_response = node_service.NodeService.get_nodes_by_ip_list()
-        if error_response:
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
+        
+        try:
+            file_size = int(file_size_str)
+        except ValueError:
             return flask.jsonify(ApiResponse(
-                        status = OperationCodes.FAILED,
-                        message = error_response
-                    ).to_dict()), HTTPStatusCodes.BAD_REQUEST
+                    message = "Invalid file_size: must be an integer",
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
+        
+        # 防止路径穿越攻击，只保留文件名部分
+        original_filename = os.path.basename(upload_file.filename)
+        file_type = original_filename.split('.')[-1] if '.' in original_filename else ''
+        
+        g_logger.info("Received upload software request: file_name=%s, file_type=%s, file_size=%sKB", 
+                     file_name, file_type, file_size)
 
-        g_logger.info("upload cvm software to compute nodes, %s", target_nodes)
+        # 创建保存目录
         os.makedirs(constants.CVM_MANAGER_SOFTWARE_PATH, exist_ok=True)
-        filepath = os.path.join(constants.CVM_MANAGER_SOFTWARE_PATH, filename)
+        filepath = os.path.join(constants.CVM_MANAGER_SOFTWARE_PATH, file_name)
 
+        # 保存文件并计算哈希值
         try:
             upload_file.save(filepath)
+            
+            # 计算文件SHA-256哈希值
+            sha256_hash = hashlib.sha256()
+            with open(filepath, "rb") as f:
+                # 分块读取文件进行哈希计算
+                for byte_block in iter(lambda: f.read(4096), b""):
+                    sha256_hash.update(byte_block)
+            computed_hash = "sha256:" + sha256_hash.hexdigest()
+            
+            # 验证哈希值
+            if computed_hash != file_hash:
+                os.remove(filepath)  # 删除文件
+                return flask.jsonify(ApiResponse(
+                        message = "File hash mismatch: computed_hash={}, expected_hash={}".format(computed_hash, file_hash)
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
+                    
         except Exception as e:
-            g_logger.error("Error saving file: %s", e)
+            g_logger.error("Error saving or hashing file: %s", e)
+            if os.path.exists(filepath):
+                os.remove(filepath)
             return flask.jsonify(ApiResponse(
-                        status = OperationCodes.FAILED,
-                        message = "Error saving file"
-                    ).to_dict()), HTTPStatusCodes.BAD_REQUEST
+                        message = "Error processing file: {}".format(str(e))
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
 
-        upload_results, success_nodes = _execute_upload(target_nodes, filepath)
-        if success_nodes == len(target_nodes):
+        try:
+            # 检查是否已存在相同文件名的软件
+            existing_software = db_service.db.session.query(db_service.VmSoftware).filter_by(file_name=file_name).first()
+            if existing_software:
+                # 更新现有记录
+                existing_software.file_hash = file_hash
+                existing_software.file_size = file_size
+                existing_software.file_type = file_type
+                existing_software.signature = signature
+            else:
+                # 创建新记录
+                new_software = db_service.VmSoftware(
+                    file_name=file_name,
+                    file_hash=file_hash,
+                    file_size=file_size,
+                    file_type=file_type,
+                    signature=signature
+                )
+                db_service.db.session.add(new_software)
+            db_service.db.session.commit()
+            
             return flask.jsonify(ApiResponse(
-                message = "Successfully unload CVM software to all nodes",
-                data = upload_results
-            ).to_dict())
-        else:
+                message = "",
+                data = None
+            ).to_dict()), HTTPStatus.OK
+        except Exception as e:
+            g_logger.error("Error saving software to database: %s", e)
+            db_service.db.session.rollback()
+            # 删除已上传的文件
+            os.remove(filepath)
+            # 从计算节点删除文件（这里简化处理，实际可能需要更复杂的清理）
             return flask.jsonify(ApiResponse(
-                status = OperationCodes.COMPUTE_NODE_FAILED,
-                message = "Some nodes failed to unload CVM software",
-                data = upload_results
-            ).to_dict())
+                message = "Error saving to database: {}".format(str(e))
+            ).to_dict()), HTTPStatus.INTERNAL_SERVER_ERROR
+
+    @app.route(constants.ROUTE_VM_SOFTWARE, methods=[constants.GET])
+    def get_vm_software():
+        """
+        查询当前已上传的软件包
+        """
+        try:
+            # 从数据库获取所有软件包信息
+            software_list = db_service.db.session.query(db_service.VmSoftware).all()
+            
+            # 构建响应数据
+            data = {}
+            for software in software_list:
+                data[software.file_name] = {
+                    "file_size": software.file_size,
+                    "file_type": software.file_type
+                }
+            
+            return flask.jsonify(ApiResponse(
+                message = "",
+                data = data
+            ).to_dict()), HTTPStatus.OK
+        except Exception as e:
+            g_logger.error("Error querying software packages: %s", e)
+            return flask.jsonify(ApiResponse(
+                message = "Error querying software packages: {}".format(str(e))
+            ).to_dict()), HTTPStatus.INTERNAL_SERVER_ERROR
+
+    @app.route(constants.ROUTE_VM_SOFTWARE, methods=[constants.DELETE])
+    def delete_vm_software():
+        """
+        删除当前已上传的软件包
+        """
+        try:
+            # 获取请求体中的file_names列表
+            request_data = flask.request.get_json()
+            if not request_data or "file_names" not in request_data:
+                return flask.jsonify(ApiResponse(
+                    message = "Missing required field: file_names"
+                ).to_dict()), HTTPStatus.BAD_REQUEST
+            
+            file_names = request_data["file_names"]
+            if not isinstance(file_names, list) or not file_names:
+                return flask.jsonify(ApiResponse(
+                    message = "Invalid file_names: must be a non-empty list"
+                ).to_dict()), HTTPStatus.BAD_REQUEST
+            
+            # 从数据库和本地存储删除文件
+            deleted_files = []
+            not_found_files = []
+            
+            for fname in file_names:
+                # 检查文件是否存在
+                software = db_service.db.session.query(db_service.VmSoftware).filter_by(file_name=fname).first()
+                if software:
+                    # 删除本地文件
+                    filepath = os.path.join(constants.CVM_MANAGER_SOFTWARE_PATH, fname)
+                    if os.path.exists(filepath):
+                        try:
+                            os.remove(filepath)
+                        except Exception as e:
+                            g_logger.error("Error deleting local file %s: %s", fname, e)
+                            # 继续处理其他文件
+                    
+                    # 从数据库删除
+                    try:
+                        db_service.db.session.delete(software)
+                        deleted_files.append(fname)
+                    except Exception as e:
+                        g_logger.error("Error deleting software %s from database: %s", fname, e)
+                        not_found_files.append(fname)
+                else:
+                    not_found_files.append(fname)
+            
+            db_service.db.session.commit()
+            
+            # 构建响应
+            if not_found_files:
+                return flask.jsonify(ApiResponse(
+                    message = "No such software {} found".format(", ".join(not_found_files))
+                ).to_dict()), HTTPStatus.NOT_FOUND
+            
+            return flask.jsonify(ApiResponse(
+                message = "",
+                data = None
+            ).to_dict()), HTTPStatus.OK
+            
+        except Exception as e:
+            g_logger.error("Error deleting software packages: %s", e)
+            db_service.db.session.rollback()
+            return flask.jsonify(ApiResponse(
+                message = "Error deleting software packages: {}".format(str(e))
+            ).to_dict()), HTTPStatus.INTERNAL_SERVER_ERROR
 
     @app.route(constants.ROUTE_VM_TASKS, methods=[constants.GET])
     def get_vm_tasks():
