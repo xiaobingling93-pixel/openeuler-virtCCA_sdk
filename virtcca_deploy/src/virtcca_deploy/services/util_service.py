@@ -4,8 +4,9 @@
 
 import os
 import subprocess
-import signal
 from typing import Dict, Any, Tuple
+
+from gevent import Timeout
 
 import virtcca_deploy.common.hardware as hardware
 import virtcca_deploy.common.config as config
@@ -17,16 +18,9 @@ MAX_PAGE_SIZE = 100
 
 def timeout(seconds: int):
     def decorator(func):
-        def _handle_timeout(signum, frame):
-            raise Exception("Function call timed out")
-        
         def wrapper(*args, **kwargs):
-            signal.signal(signal.SIGALRM, _handle_timeout)
-            signal.alarm(seconds)
-            try:
+            with Timeout(seconds, exception=Exception(f"Function call timed out after {seconds}s")):
                 return func(*args, **kwargs)
-            finally:
-                signal.alarm(0)
         return wrapper
     return decorator
 

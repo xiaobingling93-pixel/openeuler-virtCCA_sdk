@@ -241,12 +241,12 @@ def main():
 
     class ComputeApp(BaseApplication):
         def load_config(self):
-            self.cfg.set("bind", "0.0.0.0:5000")
-            self.cfg.set("workers", 1)
+            self.cfg.set("bind", constants.NetworkConfig.COMPUTE_BIND)
+            self.cfg.set("workers", constants.ServerConfig.WORKERS)
             self.cfg.set("worker_class", "gevent")
-            self.cfg.set("timeout", 300)
-            self.cfg.set("certfile", "/etc/virtcca_deploy/cert/compute.crt")
-            self.cfg.set("keyfile", "/etc/virtcca_deploy/cert/compute.key")
+            self.cfg.set("timeout", constants.ServerConfig.TIMEOUT)
+            self.cfg.set("certfile", f"{constants.PathConfig.CERT_DIR}/compute.crt")
+            self.cfg.set("keyfile", f"{constants.PathConfig.CERT_DIR}/compute.key")
 
         def load(self):
             return app

@@ -23,7 +23,7 @@ class TestVmTasksEndpoint:
         # 模拟Task对象
         mock_task = MagicMock()
         mock_task.task_id = "task-123"
-        mock_task.task_type = "vm-create"
+        mock_task.task_type = constants.TASK_TYPE_VM_CREATE
         mock_task.status = "running"
         mock_task.get_task_params.return_value = {
             "total_vms": ["compute01-1", "compute01-2"],

@@ -4,7 +4,6 @@
 
 import logging
 from typing import List, Tuple, Dict
-from dataclasses import asdict
 from http import HTTPStatus
 
 from gevent import monkey
@@ -15,7 +14,7 @@ monkey.patch_all()
 
 from flask import current_app
 
-from virtcca_deploy.common.constants import COMPUTE_PORT
+from virtcca_deploy.common.constants import COMPUTE_PORT, TASK_TYPE_VM_CREATE, TASK_TYPE_VM_DELETE
 from virtcca_deploy.common.data_model import VmDeploySpecInternal, VmDeploySpec
 from virtcca_deploy.services.db_service import ComputeNode, VmInstance, VmDeploySpecModel, db
 from virtcca_deploy.services.network_service import NetworkService
@@ -42,7 +41,7 @@ class VmService:
             cvm_spec_internal.vm_id_list = [f"{node.nodename}-{i + 1}" for i in range(cvm_spec_internal.vm_spec.max_vm_num)]
             
             try:
-                instance_task_id = task_service.create_task("vm-create", {"total_vms": cvm_spec_internal.vm_id_list})
+                instance_task_id = task_service.create_task(TASK_TYPE_VM_CREATE, {"total_vms": cvm_spec_internal.vm_id_list})
                 node_task[node.nodename] = instance_task_id
                 
                 for vm_name in cvm_spec_internal.vm_id_list:
@@ -221,7 +220,7 @@ class VmService:
                     self.logger.info(f"No VMs found on node {node.nodename} for undeployment")
                     continue
                 
-                instance_task_id = task_service.create_task("vm-delete", {"total_vms": node_vm_ids})
+                instance_task_id = task_service.create_task(TASK_TYPE_VM_DELETE, {"total_vms": node_vm_ids})
                 node_task[node.nodename] = instance_task_id
                 
                 for vm_name in node_vm_ids:

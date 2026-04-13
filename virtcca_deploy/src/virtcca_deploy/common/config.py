@@ -12,8 +12,10 @@ import gevent
 import gevent.lock
 from typing import List, Dict
 
-LOG_DIR = "/var/log/virtcca_deploy"
-DEVICE_STATUS_FILE = "/var/lib/virtcca_deploy/device_status.json"
+from virtcca_deploy.common import constants
+
+LOG_DIR = constants.PathConfig.LOG_DIR
+DEVICE_STATUS_FILE = constants.PathConfig.DEVICE_STATUS_FILE
 g_logger = logging.getLogger("virtcca_deploy")
 
 
@@ -151,6 +153,7 @@ class DeviceManager:
         self.devices = devices
         self.status_file = status_file
         self.device_status = {}
+        self._lock = gevent.lock.RLock()
         all_devices = devices[0] + devices[1]
 
         if not os.path.exists(self.status_file):
@@ -187,42 +190,45 @@ class DeviceManager:
             json.dump(self.device_status, f, indent=4)
 
     def use_device(self, device_id: str, cvm_id: str):
-        if device_id not in self.device_status:
-            g_logger.error("Device %s is not exist!", device_id)
-            return False
+        with self._lock:
+            if device_id not in self.device_status:
+                g_logger.error("Device %s is not exist!", device_id)
+                return False
 
-        device = self.device_status[device_id]
-        if device["cvm_id"]:
-            g_logger.error("Device %s is in use!", device_id)
-            return False
-        else:
-            device["cvm_id"] = cvm_id
-            self._save_device_status()
-            g_logger.info("Device %s has been successfully used.", device_id)
-            return True
+            device = self.device_status[device_id]
+            if device["cvm_id"]:
+                g_logger.error("Device %s is in use!", device_id)
+                return False
+            else:
+                device["cvm_id"] = cvm_id
+                self._save_device_status()
+                g_logger.info("Device %s has been successfully used.", device_id)
+                return True
 
     def get_available_device(self, device_type: str, numa_node: int = None):
-        if device_type not in ["PF", "VF"]:
-            g_logger.error("Invalid device type. Please specify 'PF' or 'VF'.")
-            return None
+        with self._lock:
+            if device_type not in ["PF", "VF"]:
+                g_logger.error("Invalid device type. Please specify 'PF' or 'VF'.")
+                return None
 
-        available_devices = []
-        for device in self.device_status:
-            status_info = self.device_status[device]
-            if status_info["type"] != device_type or status_info["cvm_id"]:
-                continue
-            if numa_node is not None and status_info["numa_node"] != numa_node:
-                continue
-            available_devices.append(device)
+            available_devices = []
+            for device in self.device_status:
+                status_info = self.device_status[device]
+                if status_info["type"] != device_type or status_info["cvm_id"]:
+                    continue
+                if numa_node is not None and status_info["numa_node"] != numa_node:
+                    continue
+                available_devices.append(device)
 
-        return available_devices
+            return available_devices
 
     def release_device_by_cvm_id(self, cvm_id: str):
-        for device in self.device_status:
-            status_info = self.device_status[device]
-            if status_info["cvm_id"] == cvm_id:
-                status_info["cvm_id"] = None
-        self._save_device_status()
+        with self._lock:
+            for device in self.device_status:
+                status_info = self.device_status[device]
+                if status_info["cvm_id"] == cvm_id:
+                    status_info["cvm_id"] = None
+            self._save_device_status()
 
 
 class IPPoolManager:

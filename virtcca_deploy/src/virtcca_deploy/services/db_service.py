@@ -86,14 +86,15 @@ class Task(db.Model):
 
     def set_task_params(self, params):
         if isinstance(params, dict):
-            if "success_vms" not in params:
-                params["success_vms"] = []
-            if "fail_vms" not in params:
-                params["fail_vms"] = []
-            if "total_vms" not in params:
-                params["total_vms"] = []
-            
-            self.task_params = json.dumps(params)
+            params_copy = params.copy()
+            if "success_vms" not in params_copy:
+                params_copy["success_vms"] = []
+            if "fail_vms" not in params_copy:
+                params_copy["fail_vms"] = []
+            if "total_vms" not in params_copy:
+                params_copy["total_vms"] = []
+
+            self.task_params = json.dumps(params_copy)
         else:
             self.task_params = json.dumps({
                 "success_vms": [],

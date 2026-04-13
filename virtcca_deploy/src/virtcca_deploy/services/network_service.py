@@ -37,7 +37,7 @@ class NetworkService:
 
             return response
         except requests.RequestException as e:
-            raise Exception("Error during request: {}".format(e))
+            raise Exception("Error during request: {}".format(e)) from e
 
     def node_register(self, node_info):
         register_url = f"{self.base_url}/{constants.ROUTE_NODE_REGISTRY_INTERNAL}"

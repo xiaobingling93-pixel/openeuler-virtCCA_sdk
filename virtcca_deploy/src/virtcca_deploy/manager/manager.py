@@ -1,4 +1,4 @@
-#!/usr/bin
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
@@ -11,6 +11,7 @@ from dataclasses import asdict
 import os
 
 import flask
+from gevent import lock
 from http import HTTPStatus
 
 import virtcca_deploy.common.config as config
@@ -26,6 +27,7 @@ from virtcca_deploy.services.db_service import VmDeploySpecModel
 
 g_logger = config.g_logger
 g_cvm_deploy_spec = VmDeploySpec()
+g_spec_lock = lock.RLock()
 
 
 def create_app():
@@ -53,17 +55,18 @@ def create_app():
 
         # Load existing spec from database if it exists
         global g_cvm_deploy_spec
-        existing_spec = db_service.db.session.query(VmDeploySpecModel).first()
-        if not existing_spec:
-            default_spec = g_cvm_deploy_spec.to_db_model()
-            default_spec.is_default = True
-            db_service.db.session.add(default_spec)
-            db_service.db.session.commit()
+        with g_spec_lock:
+            existing_spec = manager_db.db.session.query(VmDeploySpecModel).first()
+            if not existing_spec:
+                default_spec = g_cvm_deploy_spec.to_db_model()
+                default_spec.is_default = True
+                manager_db.db.session.add(default_spec)
+                manager_db.db.session.commit()
 
-            g_logger.info("Created default cvm spec with uuid: %s", default_spec.uuid)
-        else:
-            g_cvm_deploy_spec = VmDeploySpec.from_db_model(existing_spec)
-            g_logger.info("Loaded existing cvm spec from database with uuid: %s", existing_spec.uuid)
+                g_logger.info("Created default cvm spec with uuid: %s", default_spec.uuid)
+            else:
+                g_cvm_deploy_spec = VmDeploySpec.from_db_model(existing_spec)
+                g_logger.info("Loaded existing cvm spec from database with uuid: %s", existing_spec.uuid)
 
         from virtcca_deploy.manager.auth import init_auth
         init_auth(app, server_config)
@@ -227,21 +230,23 @@ def create_app():
                     message = "Invalid cvm config value").to_dict())
         try:
             # Delete all existing specs to ensure only one is stored
-            db_service.db.session.query(VmDeploySpecModel).delete()
-            
+            manager_db.db.session.query(VmDeploySpecModel).delete()
+
             # Create new spec
             new_spec_model = cvm_spec.to_db_model()
             new_spec_model.is_default = True
-            db_service.db.session.add(new_spec_model)
-            db_service.db.session.commit()
-            g_logger.info("Saved cvm spec to database with uuid: %s, all existing specs deleted", g_cvm_deploy_spec.uuid)
+            manager_db.db.session.add(new_spec_model)
+            manager_db.db.session.commit()
+            with g_spec_lock:
+                g_logger.info("Saved cvm spec to database with uuid: %s, all existing specs deleted", g_cvm_deploy_spec.uuid)
         except Exception as e:
-            db_service.db.session.rollback()
+            manager_db.db.session.rollback()
             g_logger.error("Failed to save cvm spec to database: %s", str(e))
             return flask.jsonify(ApiResponse(
                     message="Failed to save config to database").to_dict())
-        
-        g_cvm_deploy_spec = cvm_spec
+
+        with g_spec_lock:
+            g_cvm_deploy_spec = cvm_spec
         g_logger.info("set cvm spec success: %s", g_cvm_deploy_spec)
         return flask.jsonify(ApiResponse(data = g_cvm_deploy_spec.uuid).to_dict())
 
@@ -252,9 +257,9 @@ def create_app():
             deploy_id = flask.request.args.get('deploy_config_id')
             
             if deploy_id:
-                deploy_config = db_service.db.session.query(VmDeploySpecModel).filter_by(uuid=deploy_id).first()
+                deploy_config = manager_db.db.session.query(VmDeploySpecModel).filter_by(uuid=deploy_id).first()
             else:
-                deploy_config = db_service.db.session.query(VmDeploySpecModel).filter_by(is_default=True).first()
+                deploy_config = manager_db.db.session.query(VmDeploySpecModel).filter_by(is_default=True).first()
             
             if not deploy_config:
                  return flask.jsonify(ApiResponse(
@@ -276,12 +281,11 @@ def create_app():
 
     @app.route(constants.ROUTE_VM_DEPLOY, methods=[constants.POST])
     def deploy_cvm():
-        global g_cvm_deploy_spec
         g_logger.info("Received VM deploy request")
 
         def validate_deploy_params(deploy_data):
             """验证部署参数"""
-            if not deploy_data or "deploy_config_id" not in deploy_data or "vm_id" not in deploy_data:
+            if not deploy_data or "deploy_config_id" not in deploy_data:
                 return False, None, "Invalid request format"
             return True, deploy_data, ""
 
@@ -290,7 +294,7 @@ def create_app():
             # 如果deploy_config_id为空，使用默认配置
             if not deploy_config_id:
                 try:
-                    default_config = db_service.db.session.query(db_service.VmDeploySpecModel).filter_by(is_default=True).first()
+                    default_config = manager_db.db.session.query(db_service.VmDeploySpecModel).filter_by(is_default=True).first()
                     if not default_config:
                         return False, None, "No default deployment config found"
                     return True, default_config, ""
@@ -300,7 +304,7 @@ def create_app():
             
             # 使用指定的配置ID
             try:
-                requested_config = db_service.db.session.query(db_service.VmDeploySpecModel).filter_by(uuid=deploy_config_id).first()
+                requested_config = manager_db.db.session.query(db_service.VmDeploySpecModel).filter_by(uuid=deploy_config_id).first()
                 if not requested_config:
                     return False, None, "Invalid deploy_config_id"
                 return True, requested_config, ""
@@ -311,7 +315,7 @@ def create_app():
         def check_config_conflict(deploy_config_id):
             """检查是否有VM使用不同的配置"""
             try:
-                active_vms = db_service.db.session.query(db_service.VmInstance).filter(
+                active_vms = manager_db.db.session.query(db_service.VmInstance).filter(
                     db_service.VmInstance.vm_spec_uuid != deploy_config_id
                 ).all()
                 if active_vms:
@@ -394,7 +398,8 @@ def create_app():
         # Step 7: Execute deployment
         vm_service_instance = vm_service.get_vm_service()
         try:
-            vm_instances = vm_service_instance.execute_deployment(target_nodes, requested_config, vm_id_dict)
+            cvm_spec = VmDeploySpec.from_db_model(requested_config)
+            vm_instances = vm_service_instance.execute_deployment(target_nodes, cvm_spec, vm_id_dict)
             return flask.jsonify(ApiResponse(
                 data = vm_instances,
                 message = ""
@@ -418,10 +423,7 @@ def create_app():
             # 直接是列表格式：["compute01-1", "compute02-1"]
             vm_id_list = undeploy_data
         elif isinstance(undeploy_data, dict) and "vm_ids" in undeploy_data:
-            # 包含一个列表的对象格式：{["compute01-1", "compute02-1"]}
-            first_key = next(iter(undeploy_data))
-            if isinstance(undeploy_data[first_key], list):
-                vm_id_list = undeploy_data[first_key]
+            vm_id_list = undeploy_data["vm_ids"]
         else:
             return flask.jsonify(ApiResponse(
                 message = "Invalid request format, expected a list of VM IDs").to_dict()), HTTPStatus.BAD_REQUEST
@@ -679,7 +681,7 @@ def create_app():
 
         try:
             # 检查是否已存在相同文件名的软件
-            existing_software = db_service.db.session.query(db_service.VmSoftware).filter_by(file_name=file_name).first()
+            existing_software = manager_db.db.session.query(db_service.VmSoftware).filter_by(file_name=file_name).first()
             if existing_software:
                 # 更新现有记录
                 existing_software.file_hash = file_hash
@@ -695,8 +697,8 @@ def create_app():
                     file_type=file_type,
                     signature=signature
                 )
-                db_service.db.session.add(new_software)
-            db_service.db.session.commit()
+                manager_db.db.session.add(new_software)
+            manager_db.db.session.commit()
             
             return flask.jsonify(ApiResponse(
                 message = "",
@@ -704,7 +706,7 @@ def create_app():
             ).to_dict()), HTTPStatus.OK
         except Exception as e:
             g_logger.error("Error saving software to database: %s", e)
-            db_service.db.session.rollback()
+            manager_db.db.session.rollback()
             # 删除已上传的文件
             os.remove(filepath)
             # 从计算节点删除文件（这里简化处理，实际可能需要更复杂的清理）
@@ -719,7 +721,7 @@ def create_app():
         """
         try:
             # 从数据库获取所有软件包信息
-            software_list = db_service.db.session.query(db_service.VmSoftware).all()
+            software_list = manager_db.db.session.query(db_service.VmSoftware).all()
             
             # 构建响应数据
             data = {}
@@ -764,7 +766,7 @@ def create_app():
             
             for fname in file_names:
                 # 检查文件是否存在
-                software = db_service.db.session.query(db_service.VmSoftware).filter_by(file_name=fname).first()
+                software = manager_db.db.session.query(db_service.VmSoftware).filter_by(file_name=fname).first()
                 if software:
                     # 删除本地文件
                     filepath = os.path.join(constants.CVM_MANAGER_SOFTWARE_PATH, fname)
@@ -773,11 +775,10 @@ def create_app():
                             os.remove(filepath)
                         except Exception as e:
                             g_logger.error("Error deleting local file %s: %s", fname, e)
-                            # 继续处理其他文件
                     
                     # 从数据库删除
                     try:
-                        db_service.db.session.delete(software)
+                        manager_db.db.session.delete(software)
                         deleted_files.append(fname)
                     except Exception as e:
                         g_logger.error("Error deleting software %s from database: %s", fname, e)
@@ -785,7 +786,7 @@ def create_app():
                 else:
                     not_found_files.append(fname)
             
-            db_service.db.session.commit()
+            manager_db.db.session.commit()
             
             # 构建响应
             if not_found_files:
@@ -800,7 +801,7 @@ def create_app():
             
         except Exception as e:
             g_logger.error("Error deleting software packages: %s", e)
-            db_service.db.session.rollback()
+            manager_db.db.session.rollback()
             return flask.jsonify(ApiResponse(
                 message = "Error deleting software packages: {}".format(str(e))
             ).to_dict()), HTTPStatus.INTERNAL_SERVER_ERROR
@@ -851,12 +852,12 @@ def main():
 
     class ManagerApp(BaseApplication):
         def load_config(self):
-            self.cfg.set("bind", "0.0.0.0:5001")
-            self.cfg.set("workers", 1)
+            self.cfg.set("bind", constants.NetworkConfig.MANAGER_BIND)
+            self.cfg.set("workers", constants.ServerConfig.WORKERS)
             self.cfg.set("worker_class", "gevent")
-            self.cfg.set("timeout", 300)
-            self.cfg.set("certfile", "/etc/virtcca_deploy/cert/manager.crt")
-            self.cfg.set("keyfile", "/etc/virtcca_deploy/cert/manager.key")
+            self.cfg.set("timeout", constants.ServerConfig.TIMEOUT)
+            self.cfg.set("certfile", f"{constants.PathConfig.CERT_DIR}/manager.crt")
+            self.cfg.set("keyfile", f"{constants.PathConfig.CERT_DIR}/manager.key")
 
         def load(self):
             return app
