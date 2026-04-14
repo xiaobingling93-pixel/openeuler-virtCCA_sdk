@@ -167,3 +167,24 @@ class NetReleaseResp:
     released_vms: List[str] = field(default_factory=list)
     failed_vms: Dict[str, str] = field(default_factory=dict)
     message: Optional[str] = None
+
+
+@dataclass
+class DeviceAllocReq:
+    vm_id: str
+    pf_num: int
+    vf_num: int
+    numa_node: Optional[int] = None
+
+@dataclass
+class DeviceAllocResp:
+    success: bool
+    device_list: List[str]
+
+@dataclass
+class DeviceReleaseReq:
+    vm_id: str
+
+@dataclass
+class DeviceReleaseResp:
+    success: bool

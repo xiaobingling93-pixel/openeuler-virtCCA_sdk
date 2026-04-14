@@ -141,6 +141,23 @@ JWT_SECRET_KEY_FILE = "/etc/virtcca_deploy/jwt_secret.key"
 TASK_TYPE_VM_CREATE = "vm-create"
 TASK_TYPE_VM_DELETE = "vm-delete"
 
+class DeviceTypeConfig:
+    """PCI 设备类型配置"""
+    HUAWEI_VENDOR_ID = 0x19e5
+    HI1822_PF_DEVICE_ID = 0x0222
+    HI1822_VF_DEVICE_ID = 0x375f
+    HI1822_DEVICE_IDS = {HI1822_PF_DEVICE_ID, HI1822_VF_DEVICE_ID}
+
+    DEVICE_TYPE_NET_PF = "NET_PF"
+    DEVICE_TYPE_NET_VF = "NET_VF"
+    DEVICE_TYPE_PCI= "PCI"
+
+    PCI_VENDOR_ID_MAX = 0xFFFF
+    PCI_DEVICE_ID_MAX = 0xFFFF
+
+    SYSFS_PCI_DEVICES = "/sys/bus/pci/devices"
+
+
 class PathConfig:
     """路径配置"""
     CONF_DIR = "/etc/virtcca_deploy"
@@ -163,6 +180,7 @@ class PathConfig:
     MOUNT_PATH = f"{QCOW2_DIR}/mnt"
     DEVICE_STATUS_FILE = f"{DATA_DIR}/device_status.json"
     MANAGER_DB = f"sqlite:///{DATA_DIR}/virtcca_deploy_manager.db"
+    COMPUTE_DB = f"sqlite:///{DATA_DIR}/virtcca_deploy_compute.db"
 
     LIBVIRT_QEMU_LOG = "/var/log/libvirt/qemu"
     CVM_COLLECT_LOG = f"{LOG_DIR}/compute"

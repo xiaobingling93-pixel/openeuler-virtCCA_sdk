@@ -143,3 +143,45 @@ class VmSoftware(db.Model):
             self.file_size,
             self.file_type
         )
+
+
+class DeviceAllocation(db.Model):
+    __tablename__ = 'device_allocation'
+
+    id = db.Column(db.Integer, primary_key=True)
+    bdf = db.Column(db.String(20), unique=True, nullable=False)
+    vendor_id = db.Column(db.Integer, nullable=False)
+    device_id = db.Column(db.Integer, nullable=False)
+    numa_node = db.Column(db.Integer, nullable=True)
+    device_type = db.Column(db.String(10), nullable=False)
+    status = db.Column(db.String(20), nullable=False, default="available")
+    allocated_vm_id = db.Column(db.String(80), nullable=True)
+    allocated_at = db.Column(db.DateTime, nullable=True)
+    released_at = db.Column(db.DateTime, nullable=True)
+    created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
+    updated_at = db.Column(db.DateTime, default=db.func.current_timestamp(), onupdate=db.func.current_timestamp())
+
+    DEVICE_STATUS_AVAILABLE = "available"
+    DEVICE_STATUS_ALLOCATED = "allocated"
+
+    def to_dict(self):
+        return {
+            "bdf": self.bdf,
+            "vendor_id": self.vendor_id,
+            "device_id": self.device_id,
+            "numa_node": self.numa_node,
+            "device_type": self.device_type,
+            "status": self.status,
+            "allocated_vm_id": self.allocated_vm_id,
+            "allocated_at": self.allocated_at.isoformat() if self.allocated_at else None,
+            "released_at": self.released_at.isoformat() if self.released_at else None,
+        }
+
+    def __repr__(self):
+        return (
+            "<DeviceAllocation(bdf: {}, vendor_id: 0x{:04x}, device_id: 0x{:04x}, "
+            "type: {}, status: {}, vm: {})>"
+        ).format(
+            self.bdf, self.vendor_id, self.device_id,
+            self.device_type, self.status, self.allocated_vm_id
+        )
