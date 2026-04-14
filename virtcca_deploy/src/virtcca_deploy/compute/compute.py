@@ -26,7 +26,7 @@ def create_app():
     app = flask.Flask(__name__)
 
     server_config = config.Config(constants.DEFAULT_CONFIG_PATH)
-    server_config.configure_log(constants.COMPUTE_LOG_NEME)
+    server_config.configure_log(constants.COMPUTE_LOG_NAME)
     server_config.configure_ssl()
     server_config.configure_device()
 

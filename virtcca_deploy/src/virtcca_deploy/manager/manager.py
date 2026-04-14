@@ -24,6 +24,7 @@ import virtcca_deploy.services.vm_service as vm_service
 import virtcca_deploy.services.task_service as task_service
 from virtcca_deploy.common.data_model import VmDeploySpec, ApiResponse
 from virtcca_deploy.services.db_service import VmDeploySpecModel
+from virtcca_deploy.services.resource_allocator import SimpleIpAllocator
 
 g_logger = config.g_logger
 g_cvm_deploy_spec = VmDeploySpec()
@@ -32,9 +33,8 @@ g_spec_lock = lock.RLock()
 
 def create_app():
     server_config = config.Config(constants.DEFAULT_CONFIG_PATH)
-    server_config.configure_log(constants.MANAGER_LOG_NEME)
+    server_config.configure_log(constants.MANAGER_LOG_NAME)
     server_config.configure_ssl()
-    server_config.configure_vlan_pool()
     server_config.configure_auth()
     root_logger = logging.getLogger()
 
@@ -71,7 +71,11 @@ def create_app():
         from virtcca_deploy.manager.auth import init_auth
         init_auth(app, server_config)
 
-        vm_service.init_vm_service(server_config.ssl_cert, server_config.vlan_pool_manager)
+        # 初始化 IP 分配器
+        ip_allocator = SimpleIpAllocator(
+            base_ip=constants.NetResourceConfig.BASE_IP,
+            ip_count=constants.NetResourceConfig.IP_COUNT)
+        vm_service.init_vm_service(server_config.ssl_cert, ip_allocator)
         task_service.init_task_service()
 
     g_logger.info("Virtcca Deploy Manager node start!")

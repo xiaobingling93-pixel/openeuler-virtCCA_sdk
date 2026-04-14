@@ -58,8 +58,8 @@ COMPUTE_PORT = 5000
 MANAGER_PORT = 5001
 MANAGER_DB_PATH = "/var/lib/virtcca_deploy/"
 MANAGER_DB = "sqlite:////var/lib/virtcca_deploy/virtcca_deploy_manager.db"
-MANAGER_LOG_NEME = "virtcca_deploy_manager.log"
-COMPUTE_LOG_NEME = "virtcca_deploy_compute.log"
+MANAGER_LOG_NAME = "virtcca_deploy_manager.log"
+COMPUTE_LOG_NAME = "virtcca_deploy_compute.log"
 BASE_QCOW2 = "/etc/virtcca_deploy/base.qcow2"
 LIBVIRT_QEMU_LOG_PATH = "/var/log/libvirt/qemu/"
 CVM_COLLECT_LOG_PATH = "/var/log/virtcca_deploy/compute"
@@ -197,6 +197,12 @@ class ServerConfig:
     TIMEOUT = 300
     MANAGER_LOG = "virtcca_deploy_manager.log"
     COMPUTE_LOG = "virtcca_deploy_compute.log"
+
+
+class NetResourceConfig:
+    """网络资源配置"""
+    BASE_IP = "192.168.1.0"
+    IP_COUNT = 254
 
 
 class VmStateParser:

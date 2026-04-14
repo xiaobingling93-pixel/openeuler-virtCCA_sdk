@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-from dataclasses import dataclass, field, asdict, is_dataclass
-from typing import Any, List, Dict
+from dataclasses import dataclass, field, asdict
+from typing import Any, List, Dict, Optional
 import uuid
 import json
 import virtcca_deploy.common.constants as constants
@@ -100,7 +100,7 @@ class VmDeploySpec:
 class VmDeploySpecInternal:
     vm_id_list: List[str] = field(default_factory=list)
     vm_spec: VmDeploySpec = field(default_factory=VmDeploySpec)
-    vm_ip_dict : dict = field(default_factory=dict)
+    vm_ip_dict: dict = field(default_factory=dict)
 
     def is_valid(self) -> bool:
         if not self.vm_spec.is_valid():
@@ -115,20 +115,6 @@ class VmDeploySpecInternal:
 
         return True
 
-    def allocate_ip(self, vlan_pool_manager: config.VlanPoolManager, node_ip: str):
-        if self.vm_spec.net_vf_num != 0:
-            net_interface_num = self.vm_spec.net_vf_num
-        else:
-            net_interface_num = self.vm_spec.net_pf_num
-
-        vm_ip_dict = {}
-        for vm_id in self.vm_id_list:
-            ip_list = []
-            for j in range(net_interface_num):
-                ip = vlan_pool_manager.allocate_vlan_ips(self.vm_spec.vlan_id + j, node_ip, vm_id)
-                ip_list.append(ip)
-            vm_ip_dict[vm_id] = ip_list
-        self.vm_ip_dict = vm_ip_dict
 
     @classmethod
     def from_db_model(cls, model):
@@ -152,3 +138,32 @@ class ApiResponse:
             'message': self.message,
             'data': self.data
         }
+
+@dataclass
+class NetAllocReq:
+    vm_id_list: List[str]
+    vlan_id: int
+    pf_num: int
+    vf_num: int
+    node_ip: str
+
+@dataclass
+class NetReleaseReq:
+    vm_id_list: List[str]
+
+    vlan_id: Optional[int] = None
+    node_ip: Optional[str] = None
+
+@dataclass
+class NetAllocResp:
+    success: bool
+    vm_ip_map: Dict[str, List[str]] = field(default_factory=dict)
+    failed_vms: Dict[str, str] = field(default_factory=dict)
+    message: Optional[str] = None
+
+@dataclass
+class NetReleaseResp:
+    success: bool
+    released_vms: List[str] = field(default_factory=list)
+    failed_vms: Dict[str, str] = field(default_factory=dict)
+    message: Optional[str] = None

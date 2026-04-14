@@ -7,7 +7,6 @@ import configparser
 import logging
 import json
 import ast
-import ipaddress
 import gevent
 import gevent.lock
 from typing import List, Dict
@@ -29,7 +28,6 @@ class Config:
         self.logger = None
         self.ssl_cert = None    # ca cert
         self.device_manager = None
-        self.vlan_pool_manager = None
 
     def configure_log(self, log_name):
         if self.logger is not None:
@@ -144,9 +142,6 @@ class Config:
 
         return
 
-    def configure_vlan_pool(self):
-        self.vlan_pool_manager = VlanPoolManager()
-
 
 class DeviceManager:
     def __init__(self, devices, status_file=DEVICE_STATUS_FILE):
@@ -229,90 +224,3 @@ class DeviceManager:
                 if status_info["cvm_id"] == cvm_id:
                     status_info["cvm_id"] = None
             self._save_device_status()
-
-
-class IPPoolManager:
-    def __init__(self, prefix: str):
-        self.prefix = prefix
-        self.network = ipaddress.IPv4Network(prefix, strict=False)
-        self.ip_pool = list(self.network.hosts())
-        self.vm_ip_mapping = {}
-        self._lock = gevent.lock.RLock()
-
-    def allocate_ips(self, node_ip: str, vm_name: str) -> str:
-        """
-        Assigns a specified number of IP addresses to a specified VM.
-        :param vm_name: VM name
-        :param num_ips: Number of IP addresses to be assigned
-        :return: List of IP addresses assigned to the VM
-        """
-        with self._lock:
-            ip = self.ip_pool.pop(0)
-            ip_key = f"{node_ip}-{vm_name}"
-            self.vm_ip_mapping[ip_key] = self.vm_ip_mapping.get(ip_key, []) + [str(ip)]
-
-            return str(ip)
-
-    def release_ips(self, node_ip: str, vm_name: str) -> None:
-        """
-        Release all IP addresses of a VM.
-        :param vm_name: VM name
-        """
-        with self._lock:
-            ip_key = f"{node_ip}-{vm_name}"
-            if ip_key not in self.vm_ip_mapping:
-                g_logger.info("VM %s on node %s not found in mapping, skip it.", vm_name, node_ip)
-                return
-            for ip in self.vm_ip_mapping[ip_key]:
-                self.ip_pool.append(ipaddress.IPv4Address(ip))
-
-            del self.vm_ip_mapping[ip_key]
-
-
-class VlanPoolManager:
-    """
-    manager IP pool based on VLAN ID
-    """
-    def __init__(self):
-        self.vlan_ip_pool_map: Dict[int, IPPoolManager] = {}
-
-    def add_vlan_pool(self, vlan_id: int, base_ip: str, prefix: int):
-        """
-        Creates and initializes an IP address pool for a VLAN ID.
-        :param vlan_id: VLAN ID
-        :param prefix: IP address prefix, for example, "192.168.1.0/24".
-        :param initial_ips: (Optional) List of initial IP addresses.
-        """
-        if vlan_id in self.vlan_ip_pool_map:
-            return
-
-        ip_int = int(ipaddress.IPv4Address(base_ip))
-        ip_bin = format(ip_int, '032b')
-        vlan_bits = format(vlan_id % 256, '08b')
-        ip_bin = ip_bin[:16] + vlan_bits + ip_bin[24:]
-        vlan_ip = ipaddress.IPv4Address(int(ip_bin, 2))
-
-        self.vlan_ip_pool_map[vlan_id] = IPPoolManager(f"{vlan_ip}/{prefix}")
-
-    def allocate_vlan_ips(self, vlan_id: int, node_ip: str, vm_name: str) -> str:
-        """
-        Assigns IP addresses to VMs in a specified VLAN.
-        :param vlan_id: VLAN ID
-        :param vm_name: VM name
-        :param num_ips: Number of IP addresses to be assigned
-        :return: List of IP addresses assigned to the VMs
-        """
-        if vlan_id not in self.vlan_ip_pool_map:
-            raise ValueError(f"VLAN {vlan_id} IP")
-
-        ip_pool_manager = self.vlan_ip_pool_map[vlan_id]
-        return ip_pool_manager.allocate_ips(node_ip, vm_name)
-
-    def release_ips_for_vm(self, node_ip: str, vm_id: str) -> None:
-        """
-        Releases all IP addresses of a specified VM in all VLANs.
-        :param vm_id: VM ID
-        """
-        for _, ip_pool_manager in self.vlan_ip_pool_map.items():
-            ip_pool_manager.release_ips(node_ip, vm_id)
-            g_logger.info("release IPs for CVM %s on %s", vm_id, node_ip)
