@@ -15,16 +15,18 @@ monkey.patch_all()
 from flask import current_app
 
 from virtcca_deploy.common.constants import COMPUTE_PORT, TASK_TYPE_VM_CREATE, TASK_TYPE_VM_DELETE
-from virtcca_deploy.common.data_model import VmDeploySpecInternal, VmDeploySpec
+from virtcca_deploy.common.data_model import (
+    NetAllocReq, NetReleaseReq, VmDeploySpecInternal
+)
 from virtcca_deploy.services.db_service import ComputeNode, VmInstance, VmDeploySpecModel, db
 from virtcca_deploy.services.network_service import NetworkService
 from virtcca_deploy.services.task_service import get_task_service
 
 
 class VmService:
-    def __init__(self, ssl_cert, vlan_pool_manager):
+    def __init__(self, ssl_cert, ip_allocator=None):
         self.ssl_cert = ssl_cert
-        self.vlan_pool_manager = vlan_pool_manager
+        self.ip_allocator = ip_allocator
         self.logger = logging.getLogger(__name__)
 
     def execute_deployment(self, deploy_nodes: List[ComputeNode],
@@ -35,11 +37,29 @@ class VmService:
         task_service = get_task_service()
         
         # Create individual tasks for each node
+        node_to_spec = {}
         for node in deploy_nodes:
             # Generate all VM names for this node
             cvm_spec_internal = VmDeploySpecInternal.from_db_model(deploy_config)
             cvm_spec_internal.vm_id_list = [f"{node.nodename}-{i + 1}" for i in range(cvm_spec_internal.vm_spec.max_vm_num)]
-            
+
+            if self.ip_allocator:
+                try:
+                    allocReq = NetAllocReq(cvm_spec_internal.vm_id_list,
+                        cvm_spec_internal.vm_spec.vlan_id,
+                        cvm_spec_internal.vm_spec.net_pf_num,
+                        cvm_spec_internal.vm_spec.net_vf_num,
+                        node.ip
+                    )
+                    allocResp = self.ip_allocator.allocate(request=allocReq)
+                    if allocResp.success:
+                        cvm_spec_internal.vm_ip_dict = allocResp.vm_ip_map
+                    self.logger.info(f"Allocated IPs for node {node.nodename}: {cvm_spec_internal.vm_ip_dict}")
+                except Exception as e:
+                    self.logger.error(f"Failed to allocate IPs for node {node.nodename}: {e}")
+
+            node_to_spec[node.nodename] = cvm_spec_internal
+
             try:
                 instance_task_id = task_service.create_task(TASK_TYPE_VM_CREATE, {"total_vms": cvm_spec_internal.vm_id_list})
                 node_task[node.nodename] = instance_task_id
@@ -52,13 +72,13 @@ class VmService:
                     }
             except Exception as e:
                 self.logger.error(f"Failed to create instance task for node {node.nodename}: {e}")
+                self.ip_allocator.release(request=NetReleaseReq(cvm_spec_internal.vm_id_list))
                 continue
         
         def deploy_node_async(node: ComputeNode, node_task_id: str, cvm_spec_internal: VmDeploySpecInternal, app):
             with app.app_context():
+                fail_vms = []
                 try:
-                    # Allocate IP for this node specifically
-
                     task_service.update_task_status(node_task_id, "running")
                     
                     # Perform actual deployment
@@ -118,9 +138,6 @@ class VmService:
                             except Exception as e:
                                 self.logger.error(f"Failed to record VM instance {vm_name} to database: {e}")
                                 db.session.rollback()
-                        
-                        for vm_name in fail_vms:
-                            self.vlan_pool_manager.release_ips_for_vm(node.ip, vm_name)
                     else:
                         fail_vms = all_vms
                         task_params = {
@@ -131,12 +148,9 @@ class VmService:
                         task_service.update_task_params(node_task_id, task_params)
                         task_service.update_task_status(node_task_id, "failed")
 
-                        for vm_name in all_vms:
-                            self.vlan_pool_manager.release_ips_for_vm(node.ip, vm_name)
                 except Exception as e:
                     err_msg = f"Failed to deploy CVM at {node.ip}, error reason: {e}"
                     self.logger.error(err_msg)
-                    
                     all_vms = cvm_spec_internal.vm_id_list
                     fail_vms = all_vms
                     
@@ -148,9 +162,8 @@ class VmService:
                     task_service.update_task_params(node_task_id, task_params)
                     task_service.update_task_status(node_task_id, "failed")
                     
-                    for vm_name in all_vms:
-                        self.vlan_pool_manager.release_ips_for_vm(node.ip, vm_name)
-        
+                if fail_vms:
+                    self.ip_allocator.release(request=NetReleaseReq(fail_vms))
         node_to_spec = {}
         for node in deploy_nodes:
             if node.nodename in node_task:
@@ -235,6 +248,8 @@ class VmService:
         
         def undeploy_node_async(node, node_task_id: str, node_vm_ids: List[str], app):
             with app.app_context():
+                success_vms = []
+                failed_vms = []
                 try:
                     task_service.update_task_status(node_task_id, "running")
                     
@@ -244,43 +259,39 @@ class VmService:
                     )
                     result = compute_link.vm_undeploy(node_vm_ids)
                     self.logger.info(f"Undeployment result for node {node.nodename}: {result}")
-                    
-                    success_vm_ids = []
-                    failed_vm_ids = []
-                    
                     if result.status_code == HTTPStatus.OK:
                         try:
                             response_data = result.json()
                             # 检查是否有部分卸载失败的情况
                             if response_data.get("data") and "failed_undeploy_cvm" in response_data["data"]:
-                                failed_vm_ids = response_data["data"]["failed_undeploy_cvm"]
-                                if not isinstance(failed_vm_ids, list):
-                                    failed_vm_ids = []
+                                failed_vms = response_data["data"]["failed_undeploy_cvm"]
+                                if not isinstance(failed_vms, list):
+                                    failed_vms = []
                                 
                                 # 成功卸载的虚机是总列表减去失败列表
-                                success_vm_ids = [vm_id for vm_id in node_vm_ids if vm_id not in failed_vm_ids]
+                                success_vms = [vm_id for vm_id in node_vm_ids if vm_id not in failed_vms]
                                 
                                 # 更新任务参数，包含成功和失败的虚机信息
                                 task_params = {
-                                    "success_vms": success_vm_ids,
-                                    "fail_vms": failed_vm_ids,
+                                    "success_vms": success_vms,
+                                    "fail_vms": failed_vms,
                                     "total_vms": node_vm_ids
                                 }
                                 
                                 # 如果有失败的虚机，任务状态设为失败
-                                if failed_vm_ids:
+                                if failed_vms:
                                     task_service.update_task_status(node_task_id, "failed")
                                     self.logger.warning(f"Partial undeployment failed on node {node.nodename}: "
-                                                    f"successful={success_vm_ids}, failed={failed_vm_ids}")
+                                                    f"successful={success_vms}, failed={failed_vms}")
                                 else:
                                     task_service.update_task_status(node_task_id, "success")
                                     self.logger.info(f"All VMs undeployed successfully on node {node.nodename}")
                             
                             else:
                                 # 如果没有failed_undeploy_cvm字段，则认为全部成功
-                                success_vm_ids = node_vm_ids
+                                success_vms = node_vm_ids
                                 task_params = {
-                                    "success_vms": success_vm_ids,
+                                    "success_vms": success_vms,
                                     "fail_vms": [],
                                     "total_vms": node_vm_ids
                                 }
@@ -293,20 +304,20 @@ class VmService:
                         except Exception as e:
                             self.logger.error(f"Failed to parse undeployment result: {e}")
                             # 如果解析失败，保守处理：认为全部失败
-                            failed_vm_ids = node_vm_ids
+                            failed_vms = node_vm_ids
                             task_params = {
                                 "success_vms": [],
-                                "fail_vms": failed_vm_ids,
+                                "fail_vms": failed_vms,
                                 "total_vms": node_vm_ids
                             }
                             task_service.update_task_params(node_task_id, task_params)
                             task_service.update_task_status(node_task_id, "failed")
                     else:
                         # HTTP请求失败，认为全部卸载失败
-                        failed_vm_ids = node_vm_ids
+                        failed_vms = node_vm_ids
                         task_params = {
                             "success_vms": [],
-                            "fail_vms": failed_vm_ids,
+                            "fail_vms": failed_vms,
                             "total_vms": node_vm_ids
                         }
                         task_service.update_task_params(node_task_id, task_params)
@@ -314,13 +325,10 @@ class VmService:
                         self.logger.error(f"Undeployment request failed for node {node.nodename}: {result.status_code}")
                     
                     # Process successful undeployments (only for successfully undeployed VMs)
-                    if success_vm_ids:
-                        self.logger.info(f"Releasing IPs for successfully undeployed VMs on {node.ip}: {success_vm_ids}")
-                        for vm_id in success_vm_ids:
+                    if success_vms:
+                        self.logger.info(f"Releasing IPs for successfully undeployed VMs on {node.ip}: {success_vms}")
+                        for vm_id in success_vms:
                             try:
-                                # Release IPs
-                                self.vlan_pool_manager.release_ips_for_vm(node.ip, vm_id)
-                                
                                 # Delete VM from database
                                 db_vm_instances = VmInstance.query.filter_by(
                                     vm_id=vm_id,
@@ -337,8 +345,8 @@ class VmService:
                                 db.session.rollback()
                     
                     # 对于卸载失败的虚机，记录日志但不进行清理操作
-                    if failed_vm_ids:
-                        self.logger.warning(f"The following VMs failed to undeploy on node {node.ip}: {failed_vm_ids}. "
+                    if failed_vms:
+                        self.logger.warning(f"The following VMs failed to undeploy on node {node.ip}: {failed_vms}. "
                                         f"IP addresses and database records are preserved.")
                         
                 except Exception as e:
@@ -353,7 +361,9 @@ class VmService:
                     }
                     task_service.update_task_params(node_task_id, task_params)
                     task_service.update_task_status(node_task_id, "failed")
-        
+
+                if success_vms:
+                    self.ip_allocator.release(request=NetReleaseReq(success_vms))
         # Start undeployment asynchronously for all nodes
         jobs = []
         for node in deploy_nodes:
@@ -573,8 +583,8 @@ def get_vm_service():
     global _vm_service_instance
     return _vm_service_instance
 
-def init_vm_service(ssl_cert, vlan_pool_manager):
+def init_vm_service(ssl_cert, ip_allocator=None):
     """初始化VM服务实例"""
     global _vm_service_instance
-    _vm_service_instance = VmService(ssl_cert, vlan_pool_manager)
+    _vm_service_instance = VmService(ssl_cert, ip_allocator)
     return _vm_service_instance

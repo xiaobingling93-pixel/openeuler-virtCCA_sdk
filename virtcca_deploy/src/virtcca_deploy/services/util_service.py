@@ -53,7 +53,45 @@ class UtilService:
         hardware_info["secure_memory_free"] = secure_memory_free
         hardware_info["secure_numa_topology"] = secure_numa_topology
 
+        pf_num_total, pf_num_free = UtilService._get_hi1822_device_stats()
+        hardware_info["pf_num_total"] = pf_num_total
+        hardware_info["pf_num_free"] = pf_num_free
+
         return hardware_info
+
+    @staticmethod
+    def _get_hi1822_device_stats():
+        """
+        统计 Hi1822 PF 设备总数和可用数
+
+        优先从数据库查询已持久化的设备分配状态；
+        若数据库不可用，则回退到 lspci 实时发现。
+
+        :return: (pf_num_total, pf_num_free) 元组
+        """
+        try:
+            from virtcca_deploy.services.db_service import DeviceAllocation
+            total = DeviceAllocation.query.filter_by(
+                device_type=constants.DeviceTypeConfig.DEVICE_TYPE_NET_PF
+            ).count()
+            free = DeviceAllocation.query.filter_by(
+                device_type=constants.DeviceTypeConfig.DEVICE_TYPE_NET_PF,
+                status=DeviceAllocation.DEVICE_STATUS_AVAILABLE
+            ).count()
+            return total, free
+        except Exception:
+            g_logger.debug("Database unavailable, falling back to lspci for device stats")
+
+        try:
+            from virtcca_deploy.services.resource_allocator import DeviceManagerAllocator
+            allocator = DeviceManagerAllocator()
+            discovered = allocator.discover_hi1822_devices()
+            total = len(discovered)
+            free = total
+            return total, free
+        except Exception as e:
+            g_logger.warning("Failed to get Hi1822 device stats: %s", e)
+            return 0, 0
 
 
 def validate_and_extract_pagination(data: Dict[str, Any], 

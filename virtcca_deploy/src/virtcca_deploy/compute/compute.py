@@ -17,6 +17,7 @@ import virtcca_deploy.common.constants as constants
 import virtcca_deploy.services.virt_service as virt_service
 import virtcca_deploy.services.network_service as network_service
 import virtcca_deploy.services.util_service as util_service
+import virtcca_deploy.services.db_service as db_service
 from virtcca_deploy.common.data_model import VmDeploySpec, ApiResponse, VmDeploySpecInternal
 
 g_logger = config.g_logger
@@ -26,7 +27,7 @@ def create_app():
     app = flask.Flask(__name__)
 
     server_config = config.Config(constants.DEFAULT_CONFIG_PATH)
-    server_config.configure_log(constants.COMPUTE_LOG_NEME)
+    server_config.configure_log(constants.COMPUTE_LOG_NAME)
     server_config.configure_ssl()
     server_config.configure_device()
 
@@ -34,6 +35,17 @@ def create_app():
     app.logger.setLevel(logging.INFO)
     for handler in root_logger.handlers:
         app.logger.addHandler(handler)
+
+    if not os.path.exists(constants.PathConfig.DATA_DIR):
+        os.makedirs(constants.PathConfig.DATA_DIR, exist_ok=True)
+
+    app.config['SQLALCHEMY_DATABASE_URI'] = constants.PathConfig.COMPUTE_DB
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    compute_db = db_service.DbService(app)
+    compute_db.db.init_app(app)
+    with app.app_context():
+        compute_db.db.create_all()
+        g_logger.info("Compute database initialized at %s", constants.PathConfig.COMPUTE_DB)
 
     manager_domain_name = server_config.config.get("DEFAULT", "manager").strip().strip('"').strip("'")
     try:

@@ -102,10 +102,6 @@ class TestConfig:
         """配置SSL"""
         pass
         
-    def configure_vlan_pool(self):
-        """配置VLAN池"""
-        pass
-        
     def configure_auth(self):
         """配置认证 - 使用临时文件和固定密钥"""
         # 创建临时JWT密钥文件
@@ -219,7 +215,7 @@ def compute_app():
     # 模拟配置文件路径和网络服务
     with mock.patch.multiple('virtcca_deploy.common.constants',
         DEFAULT_CONFIG_PATH=main_temp_dir,
-        COMPUTE_LOG_NEME="compute_test.log",
+        COMPUTE_LOG_NAME="compute_test.log",
         MANAGER_PORT=5001):
         
         # 使用测试专用的配置对象

@@ -58,8 +58,8 @@ COMPUTE_PORT = 5000
 MANAGER_PORT = 5001
 MANAGER_DB_PATH = "/var/lib/virtcca_deploy/"
 MANAGER_DB = "sqlite:////var/lib/virtcca_deploy/virtcca_deploy_manager.db"
-MANAGER_LOG_NEME = "virtcca_deploy_manager.log"
-COMPUTE_LOG_NEME = "virtcca_deploy_compute.log"
+MANAGER_LOG_NAME = "virtcca_deploy_manager.log"
+COMPUTE_LOG_NAME = "virtcca_deploy_compute.log"
 BASE_QCOW2 = "/etc/virtcca_deploy/base.qcow2"
 LIBVIRT_QEMU_LOG_PATH = "/var/log/libvirt/qemu/"
 CVM_COLLECT_LOG_PATH = "/var/log/virtcca_deploy/compute"
@@ -141,6 +141,23 @@ JWT_SECRET_KEY_FILE = "/etc/virtcca_deploy/jwt_secret.key"
 TASK_TYPE_VM_CREATE = "vm-create"
 TASK_TYPE_VM_DELETE = "vm-delete"
 
+class DeviceTypeConfig:
+    """PCI 设备类型配置"""
+    HUAWEI_VENDOR_ID = 0x19e5
+    HI1822_PF_DEVICE_ID = 0x0222
+    HI1822_VF_DEVICE_ID = 0x375f
+    HI1822_DEVICE_IDS = {HI1822_PF_DEVICE_ID, HI1822_VF_DEVICE_ID}
+
+    DEVICE_TYPE_NET_PF = "NET_PF"
+    DEVICE_TYPE_NET_VF = "NET_VF"
+    DEVICE_TYPE_PCI= "PCI"
+
+    PCI_VENDOR_ID_MAX = 0xFFFF
+    PCI_DEVICE_ID_MAX = 0xFFFF
+
+    SYSFS_PCI_DEVICES = "/sys/bus/pci/devices"
+
+
 class PathConfig:
     """路径配置"""
     CONF_DIR = "/etc/virtcca_deploy"
@@ -163,6 +180,7 @@ class PathConfig:
     MOUNT_PATH = f"{QCOW2_DIR}/mnt"
     DEVICE_STATUS_FILE = f"{DATA_DIR}/device_status.json"
     MANAGER_DB = f"sqlite:///{DATA_DIR}/virtcca_deploy_manager.db"
+    COMPUTE_DB = f"sqlite:///{DATA_DIR}/virtcca_deploy_compute.db"
 
     LIBVIRT_QEMU_LOG = "/var/log/libvirt/qemu"
     CVM_COLLECT_LOG = f"{LOG_DIR}/compute"
@@ -197,6 +215,12 @@ class ServerConfig:
     TIMEOUT = 300
     MANAGER_LOG = "virtcca_deploy_manager.log"
     COMPUTE_LOG = "virtcca_deploy_compute.log"
+
+
+class NetResourceConfig:
+    """网络资源配置"""
+    BASE_IP = "192.168.1.0"
+    IP_COUNT = 254
 
 
 class VmStateParser:

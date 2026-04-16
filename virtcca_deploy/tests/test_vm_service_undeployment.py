@@ -24,8 +24,8 @@ class TestVmServiceUndeployment:
         with app.app_context():
             init_task_service()
 
-            mock_vlan_pool_manager = MagicMock()
-            vm_service = VmService(None, mock_vlan_pool_manager)
+            SimpleIpAllocator = MagicMock()
+            vm_service = VmService(None, SimpleIpAllocator)
 
             node = ComputeNode(
                 nodename="compute01",
@@ -93,7 +93,7 @@ class TestVmServiceUndeployment:
                 mock_network_instance.vm_undeploy.assert_called_once()
 
                 # 验证IP释放
-                assert mock_vlan_pool_manager.release_ips_for_vm.call_count == 2
+                assert SimpleIpAllocator.release.call_count == 1
 
                 # 验证数据库中虚拟机已被删除
                 vm_list = VmInstance.query.all()
@@ -103,8 +103,8 @@ class TestVmServiceUndeployment:
         with app.app_context():
             init_task_service()
 
-            mock_vlan_pool_manager = MagicMock()
-            vm_service = VmService(None, mock_vlan_pool_manager)
+            SimpleIpAllocator = MagicMock()
+            vm_service = VmService(None, SimpleIpAllocator)
 
             node = ComputeNode(
                 nodename="compute01",
@@ -166,7 +166,7 @@ class TestVmServiceUndeployment:
                 mock_network_instance.vm_undeploy.assert_called_once()
 
                 # 验证IP未释放（因为卸载失败）
-                mock_vlan_pool_manager.release_ips_for_vm.assert_not_called()
+                SimpleIpAllocator.release.assert_not_called()
 
                 # 验证数据库中虚拟机仍存在
                 vm_list = VmInstance.query.all()
@@ -176,8 +176,8 @@ class TestVmServiceUndeployment:
         with app.app_context():
             init_task_service()
 
-            mock_vlan_pool_manager = MagicMock()
-            vm_service = VmService(None, mock_vlan_pool_manager)
+            SimpleIpAllocator = MagicMock()
+            vm_service = VmService(None, SimpleIpAllocator)
 
             node = ComputeNode(
                 nodename="compute01",
@@ -226,8 +226,8 @@ class TestVmServiceUndeployment:
         with app.app_context():
             init_task_service()
 
-            mock_vlan_pool_manager = MagicMock()
-            vm_service = VmService(None, mock_vlan_pool_manager)
+            SimpleIpAllocator = MagicMock()
+            vm_service = VmService(None, SimpleIpAllocator)
 
             node1 = ComputeNode(
                 nodename="compute01",
@@ -311,7 +311,7 @@ class TestVmServiceUndeployment:
                 assert mock_task.create_task.call_count == 2
 
                 # 验证IP释放
-                assert mock_vlan_pool_manager.release_ips_for_vm.call_count == 2
+                assert SimpleIpAllocator.release.call_count == 2
 
                 # 数据库验证（关键）
                 vm_list = VmInstance.query.all()
@@ -321,8 +321,8 @@ class TestVmServiceUndeployment:
         with app.app_context():
             init_task_service()
 
-            mock_vlan_pool_manager = MagicMock()
-            vm_service = VmService(None, mock_vlan_pool_manager)
+            SimpleIpAllocator = MagicMock()
+            vm_service = VmService(None, SimpleIpAllocator)
 
             node1 = ComputeNode(
                 nodename="compute01",
@@ -404,7 +404,7 @@ class TestVmServiceUndeployment:
                 assert mock_task.create_task.call_count == 2
 
                 # 验证IP释放
-                assert mock_vlan_pool_manager.release_ips_for_vm.call_count == 2
+                assert SimpleIpAllocator.release.call_count == 2
 
                 # 数据库验证（关键）
                 vm_list = VmInstance.query.all()

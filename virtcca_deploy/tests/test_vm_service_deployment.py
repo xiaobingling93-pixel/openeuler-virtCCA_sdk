@@ -18,18 +18,16 @@ from unittest.mock import patch, MagicMock
 from virtcca_deploy.services.db_service import db, ComputeNode, VmInstance
 from virtcca_deploy.services.vm_service import VmService, init_vm_service
 from virtcca_deploy.services.task_service import init_task_service
-from virtcca_deploy.common.data_model import VmDeploySpec
+from virtcca_deploy.common.data_model import VmDeploySpec, NetAllocResp, NetReleaseReq
 import virtcca_deploy.common.constants as constants
+from virtcca_deploy.services.resource_allocator import SimpleIpAllocator
 
 class TestVmServiceDeployment:
     def test_execute_deployment_success(self, app):
         with app.app_context():
             init_task_service()
-
-            mock_vlan_pool_manager = MagicMock()
-            mock_vlan_pool_manager.allocate_vlan_ips.return_value = "192.168.1.10"
-
-            vm_service = VmService(None, mock_vlan_pool_manager)
+            ip_allocator = SimpleIpAllocator(base_ip="192.168.1.0", ip_count=254)
+            vm_service = VmService(None, ip_allocator)
 
             node = ComputeNode(
                 nodename="compute01",
@@ -115,10 +113,8 @@ class TestVmServiceDeployment:
             init_task_service()
 
             # ===== Mock VLAN =====
-            mock_vlan_pool_manager = MagicMock()
-            mock_vlan_pool_manager.allocate_vlan_ips.return_value = "192.168.1.10"
-
-            vm_service = VmService(None, mock_vlan_pool_manager)
+            ip_allocator = MagicMock()
+            vm_service = VmService(None, ip_allocator)
 
             # ===== 创建节点 =====
             node = ComputeNode(
@@ -186,10 +182,7 @@ class TestVmServiceDeployment:
                 assert task_params["fail_vms"] == ["compute01-1"]  # 所有VM都失败
                 assert set(task_params["total_vms"]) == {"compute01-1"}  # 总VM列表
 
-                # ===== ⭐ 断言：IP释放 =====
-                mock_vlan_pool_manager.release_ips_for_vm.assert_called()
-
-                # ===== ⭐ 断言：数据库没有写入 =====
+                ip_allocator.release.assert_called()
                 vm_list = VmInstance.query.all()
                 assert len(vm_list) == 0
                 
@@ -197,8 +190,8 @@ class TestVmServiceDeployment:
         with app.app_context():
             init_task_service()
 
-            mock_vlan_pool_manager = MagicMock()
-            vm_service = VmService(None, mock_vlan_pool_manager)
+            ip_allocator = MagicMock()
+            vm_service = VmService(None, ip_allocator)
 
             node = ComputeNode(
                 nodename="compute01",
@@ -242,10 +235,8 @@ class TestVmServiceDeployment:
         with app.app_context():
             init_task_service()
 
-            mock_vlan_pool_manager = MagicMock()
-            mock_vlan_pool_manager.allocate_vlan_ips.return_value = "192.168.1.10"
-
-            vm_service = VmService(None, mock_vlan_pool_manager)
+            ip_allocator = MagicMock()
+            vm_service = VmService(None, ip_allocator)
 
             node1 = ComputeNode(
                 nodename="compute01",
@@ -376,10 +367,9 @@ class TestVmServiceDeployment:
             init_task_service()
 
             # ===== Mock VLAN =====
-            mock_vlan_pool_manager = MagicMock()
-            mock_vlan_pool_manager.allocate_vlan_ips.return_value = "192.168.1.10"
+            ip_allocator = MagicMock()
 
-            vm_service = VmService(None, mock_vlan_pool_manager)
+            vm_service = VmService(None, ip_allocator)
 
             # ===== 创建节点 =====
             node = ComputeNode(
@@ -451,7 +441,7 @@ class TestVmServiceDeployment:
                 assert set(task_params["total_vms"]) == {"compute01-1", "compute01-2"}
 
                 # ===== 断言：IP释放 =====
-                mock_vlan_pool_manager.release_ips_for_vm.assert_called_once_with("192.168.1.100", "compute01-2")
+                ip_allocator.release.assert_called_once_with(request=NetReleaseReq(vm_id_list=['compute01-2'], vlan_id=None, node_ip=None))
 
                 # ===== 断言：只有成功的VM写入数据库 =====
                 vm_list = VmInstance.query.all()
@@ -464,10 +454,10 @@ class TestVmServiceDeployment:
             init_task_service()
 
             # ===== Mock VLAN =====
-            mock_vlan_pool_manager = MagicMock()
-            mock_vlan_pool_manager.allocate_vlan_ips.return_value = "192.168.1.10"
+            ip_allocator = MagicMock()
+            ip_allocator.allocate.return_value = NetAllocResp(success=True, vm_ip_map={})
 
-            vm_service = VmService(None, mock_vlan_pool_manager)
+            vm_service = VmService(None, ip_allocator)
 
             # ===== 创建节点 =====
             node = ComputeNode(
@@ -539,7 +529,7 @@ class TestVmServiceDeployment:
                 assert set(task_params["total_vms"]) == {"compute01-1", "compute01-2"}
 
                 # ===== 断言：没有IP被释放 =====
-                mock_vlan_pool_manager.release_ips_for_vm.assert_not_called()
+                ip_allocator.release_ips_for_vm.assert_not_called()
 
                 # ===== 断言：所有成功的VM写入数据库 =====
                 vm_list = VmInstance.query.all()
@@ -553,10 +543,13 @@ class TestVmServiceDeployment:
             init_task_service()
 
             # ===== Mock VLAN =====
-            mock_vlan_pool_manager = MagicMock()
-            mock_vlan_pool_manager.allocate_vlan_ips.return_value = "192.168.1.10"
+            ip_allocator = MagicMock()
+            ip_allocator.allocate.return_value = NetAllocResp(success=True, vm_ip_map={
+                    "compute01-1": ["192.168.1.10"],
+                    "compute01-2": ["192.168.1.11"]
+                })
 
-            vm_service = VmService(None, mock_vlan_pool_manager)
+            vm_service = VmService(None, ip_allocator)
 
             # ===== 创建节点 =====
             node = ComputeNode(
@@ -629,7 +622,7 @@ class TestVmServiceDeployment:
                 assert set(task_params["total_vms"]) == {"compute01-1", "compute01-2"}
 
                 # ===== 断言：所有VM的IP都被释放 =====
-                assert mock_vlan_pool_manager.release_ips_for_vm.call_count == 2
+                assert ip_allocator.release.call_count == 1
 
                 # ===== 断言：没有VM写入数据库 =====
                 vm_list = VmInstance.query.all()
@@ -640,10 +633,13 @@ class TestVmServiceDeployment:
         with app.app_context():
             init_task_service()
 
-            mock_vlan_pool_manager = MagicMock()
-            mock_vlan_pool_manager.allocate_vlan_ips.return_value = "192.168.1.10"
+            ip_allocator = MagicMock()
+            ip_allocator.allocate.return_value = NetAllocResp(success=True, vm_ip_map={
+                    "compute01-1": ["192.168.1.10"],
+                    "compute01-2": ["192.168.1.11"]
+                })
 
-            vm_service = VmService(None, mock_vlan_pool_manager)
+            vm_service = VmService(None, ip_allocator)
 
             node = ComputeNode(
                 nodename="compute01",
@@ -700,7 +696,7 @@ class TestVmServiceDeployment:
                 mock_task.update_task_status.assert_any_call("task-123", "running")
                 mock_task.update_task_status.assert_any_call("task-123", "failed")  # 没有成功的VM，任务状态应为failed
                 mock_task.update_task_params.assert_called_once()
-                
+
                 # 验证任务参数是否正确
                 call_args = mock_task.update_task_params.call_args
                 assert call_args[0][0] == "task-123"
@@ -710,7 +706,7 @@ class TestVmServiceDeployment:
                 assert set(task_params["total_vms"]) == {"compute01-1", "compute01-2"}
 
                 # ===== 断言：所有VM的IP都被释放 =====
-                assert mock_vlan_pool_manager.release_ips_for_vm.call_count == 2
+                assert ip_allocator.release.call_count == 1
 
                 # ===== 断言：没有VM写入数据库 =====
                 vm_list = VmInstance.query.all()
