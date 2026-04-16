@@ -41,7 +41,7 @@ class VmDeploySpecModel(db.Model):
     memory = db.Column(db.Integer, nullable=False)
     core_num = db.Column(db.Integer, nullable=False)
     vlan_id = db.Column(db.Integer, nullable=False)
-    gateway_ip = db.Column(db.String, nullable=False)
+    gateway_ip = db.Column(db.Text, nullable=False)
     net_pf_num = db.Column(db.Integer, nullable=False)
     net_vf_num = db.Column(db.Integer, nullable=False)
     disk_size = db.Column(db.Integer, nullable=False)

@@ -516,8 +516,10 @@ class TestDeviceAllocationCRUD:
 
 class TestSyncDiscoveredToDb:
 
-    @patch('virtcca_deploy.services.resource_allocator.db')
-    def test_sync_inserts_new_devices(self, mock_db, allocator):
+    @patch.object(DeviceManagerAllocator, '_insert_device_record')
+    @patch.object(DeviceManagerAllocator, '_update_device_record')
+    @patch('virtcca_deploy.services.resource_allocator.db.session')
+    def test_sync_inserts_new_devices(self, mock_session, mock_update, mock_insert, allocator):
         mock_query = MagicMock()
         mock_query.with_entities.return_value = mock_query
         mock_query.all.return_value = []
@@ -530,8 +532,8 @@ class TestSyncDiscoveredToDb:
 
         allocator.sync_discovered_to_db(discovered)
 
-        assert mock_db.session.add.call_count == 2
-        mock_db.session.commit.assert_called_once()
+        assert mock_insert.call_count == 2
+        mock_session.commit.assert_called_once()
 
     @patch('virtcca_deploy.services.resource_allocator.db')
     def test_sync_updates_existing_devices(self, mock_db, allocator):

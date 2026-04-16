@@ -17,7 +17,7 @@ DEFAULT_VM_NUM = 1
 DEFAULT_MEMORY = 8192
 DEFAULT_CORE_NUM = 4
 DEFAULT_VLAN_ID = 0
-DEFAULT_GATEWAY_IP = "192.168.122.1"
+DEFAULT_GATEWAY_IP = ["192.168.122.1"]
 DEFAULT_NET_PF_NUM = 0
 DEFAULT_NET_VF_NUM = 0
 DEFAULT_DISK_SIZE = 0
@@ -28,7 +28,7 @@ class VmDeploySpec:
     memory: int = DEFAULT_MEMORY
     core_num: int = DEFAULT_CORE_NUM
     vlan_id: int = DEFAULT_VLAN_ID
-    gateway_ip: str = DEFAULT_GATEWAY_IP
+    gateway_ip: List[str] = field(default_factory=lambda: list(DEFAULT_GATEWAY_IP))
     net_pf_num: int = DEFAULT_NET_PF_NUM
     net_vf_num: int = DEFAULT_NET_VF_NUM
     disk_size: int = DEFAULT_DISK_SIZE
@@ -61,6 +61,20 @@ class VmDeploySpec:
         # vf and pf cannot be used at the same time.
         if self.net_pf_num != 0 and self.net_vf_num != 0:
             return False
+        if not (0 <= self.net_pf_num <= constants.MAX_NET_PF_NUM):
+            return False
+        if not (0 <= self.net_vf_num <= constants.MAX_NET_VF_NUM):
+            return False
+        if not isinstance(self.gateway_ip, list):
+            g_logger.error("gateway_ip must be a list")
+            return False
+        if len(self.gateway_ip) == 0:
+            g_logger.error("gateway_ip must not be empty")
+            return False
+        for ip in self.gateway_ip:
+            if not isinstance(ip, str):
+                g_logger.error("gateway_ip elements must be strings")
+                return False
         return True
 
     def to_db_model(self):
@@ -72,12 +86,20 @@ class VmDeploySpec:
             vlan_id=self.vlan_id,
             net_pf_num=self.net_pf_num,
             net_vf_num=self.net_vf_num,
-            gateway_ip=self.gateway_ip,
+            gateway_ip=json.dumps(self.gateway_ip),
             disk_size=self.disk_size
         )
 
     @classmethod
     def from_db_model(cls, model):
+        gateway_ip = model.gateway_ip
+        if isinstance(gateway_ip, str):
+            try:
+                gateway_ip = json.loads(gateway_ip)
+            except (json.JSONDecodeError, TypeError):
+                gateway_ip = [gateway_ip]
+        if not isinstance(gateway_ip, list):
+            gateway_ip = [gateway_ip]
         return cls(
             uuid=model.uuid,
             max_vm_num=model.max_vm_num,
@@ -86,7 +108,7 @@ class VmDeploySpec:
             vlan_id=model.vlan_id,
             net_pf_num=model.net_pf_num,
             net_vf_num=model.net_vf_num,
-            gateway_ip=model.gateway_ip,
+            gateway_ip=gateway_ip,
             disk_size=model.disk_size
         )
 

@@ -184,17 +184,6 @@ def config_disk(cvm_name: str, file_path: str, ip_list: List[str], server_config
         g_logger.error("Error while copying QCOW2 file: {}".format(e))
         return ""
 
-    try:
-        util_service.qcow2_mount(new_qcow2_path)
-        net_perfix = server_config.config.get("NET", "prefix")
-        config_net(ip_list, net_perfix)
-        config_startup_script()
-    except Exception as e:
-        g_logger.error("Error while config QCOW2 file: {}".format(e))
-        return ""
-    finally:
-        util_service.qcow2_unmount()
-
     return new_qcow2_path
 
 def config_net(ip_list: List[str], perfix: str):
@@ -564,14 +553,6 @@ def deploy_cvm(cvm_deploy_spec_internal: VmDeploySpecInternal, server_config: co
             cvm_resource_reclaim(cvm_name, server_config)
             return successfully_deployed_vms, err_msg
 
-        vm_ips = cvm_deploy_spec_internal.vm_ip_dict.get(cvm_name, [])
-        if vm_ips:
-            unreachable_ips = cvm_net_check(vm_ips)
-            if unreachable_ips:
-                err_msg = f"Test network for {cvm_name} failed, unreachable_ips: {unreachable_ips}"
-                g_logger.error(err_msg)
-                cvm_resource_reclaim(cvm_name, server_config)
-                return successfully_deployed_vms, err_msg
         successfully_deployed_vms.append(cvm_name)
 
     return successfully_deployed_vms, None

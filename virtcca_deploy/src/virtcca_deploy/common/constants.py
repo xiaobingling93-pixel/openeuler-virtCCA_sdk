@@ -102,26 +102,8 @@ MIN_CVM_MEM = 1024
 MAX_CVM_MEM = 1024 * 512
 MAX_CVM_CORE = 32
 MAX_CVM_ID_LENGTH = 60
-
-
-# HTTP status codes
-class HTTPStatusCodes:
-    OK = 200
-    BAD_REQUEST = 400
-    UNAUTHORIZED = 401
-    FORBIDDEN = 403
-    NOT_FOUND = 404
-    TOO_MANY_REQUESTS = 429
-    INTERNAL_SERVER_ERROR = 500
-
-
-# operation codes
-class OperationCodes(Enum):
-    SUCCESS = 0
-    FAILED = 1
-    COMPUTE_NODE_FAILED = 2
-    IP_FORBIDDEN = 3
-    INTERNAL_EXCEPTION = 3
+MAX_NET_PF_NUM = 8
+MAX_NET_VF_NUM = 8
 
 
 # Auth routes
