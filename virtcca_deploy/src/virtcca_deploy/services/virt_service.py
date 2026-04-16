@@ -567,6 +567,14 @@ def undeploy_cvm(vm_id: str, server_config: config) -> bool:
         g_logger.error("Failed to destroy VM %s.", vm_id)
         return False
 
+def stop_cvm(vm_id: str) -> Tuple[bool, str]:
+    driver = libvirtDriver()
+    return driver.destroy_vm(vm_id)
+
+def start_cvm(vm_id: str) -> Tuple[bool, str]:
+    driver = libvirtDriver()
+    return driver.start_vm(vm_id)
+
 def check_launch_security(xml_desc):
     root = ET.fromstring(xml_desc)
     launch_security = root.find(".//launchSecurity")
@@ -577,11 +585,19 @@ def check_launch_security(xml_desc):
 
 class libvirtDriver:
     def start_vm_by_xml(self, xml: str) -> bool:
+        """
+        从 XML 定义并启动虚拟机
+
+        :param xml: 虚拟机 XML 配置字符串
+        :return: 成功返回 True，失败返回 False
+        """
         with self._get_connection() as conn:
             try:
-                conn.createXML(xml, 0)
+                domain = conn.defineXML(xml)
+                domain.create()
+                g_logger.info("VM defined and started from XML successfully")
             except libvirt.libvirtError as e:
-                g_logger.error("Error starting CVM, %s", e)
+                g_logger.error("Error defining/starting CVM from XML, %s", e)
                 return False
         return True
 
@@ -640,15 +656,67 @@ class libvirtDriver:
             return False
 
     def destroy_cvm_by_name(self, vm_name) -> bool:
+        """
+        销毁虚拟机并移除其 XML 定义
+
+        :param vm_name: 虚拟机名称
+        :return: 成功返回 True，失败返回 False
+        """
         with self._get_connection() as conn:
             try:
                 domain = conn.lookupByName(vm_name)
                 domain.destroy()
-                g_logger.info("cvm '%s' has been destroy", vm_name)
+                g_logger.info("cvm '%s' has been destroyed", vm_name)
+                domain.undefine()
+                g_logger.info("cvm '%s' XML definition has been removed", vm_name)
                 return True
             except libvirt.libvirtError as e:
-                g_logger.error("unable to destroy cvm '%s': %s", vm_name, e)
+                g_logger.error("unable to destroy/undefine cvm '%s': %s", vm_name, e)
                 return False
+
+    def start_vm(self, vm_name: str) -> Tuple[bool, str]:
+        """
+        启动已有持久化定义的虚拟机（停止/启动接口专用）
+
+        :param vm_name: 虚拟机名称
+        :return: (成功标志, 错误信息) 元组，成功时错误信息为空字符串
+        """
+        with self._get_connection() as conn:
+            try:
+                domain = conn.lookupByName(vm_name)
+                state, _ = domain.state()
+                if state == libvirt.VIR_DOMAIN_RUNNING:
+                    g_logger.info("VM '%s' is already running", vm_name)
+                    return True, f"VM '{vm_name}' is already running"
+                domain.create()
+                g_logger.info("VM '%s' started successfully", vm_name)
+                return True, ""
+            except libvirt.libvirtError as e:
+                err_msg = f"Failed to start VM '{vm_name}': {e}"
+                g_logger.error(err_msg)
+                return False, err_msg
+
+    def destroy_vm(self, vm_name: str) -> Tuple[bool, str]:
+        """
+        强制关闭虚拟机但保留其 XML 定义
+
+        :param vm_name: 虚拟机名称
+        :return: (成功标志, 错误信息) 元组，成功时错误信息为空字符串
+        """
+        with self._get_connection() as conn:
+            try:
+                domain = conn.lookupByName(vm_name)
+                state, _ = domain.state()
+                if state == libvirt.VIR_DOMAIN_SHUTOFF:
+                    g_logger.info("VM '%s' is already stopped", vm_name)
+                    return True, f"VM '{vm_name}' is already stopped"
+                domain.destroy()
+                g_logger.info("VM '%s' destroyed successfully", vm_name)
+                return True, ""
+            except libvirt.libvirtError as e:
+                err_msg = f"Failed to destroy VM '{vm_name}': {e}"
+                g_logger.error(err_msg)
+                return False, err_msg
 
     @contextmanager
     def _get_connection(self):

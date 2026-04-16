@@ -372,11 +372,11 @@ class TestUpdateDiscoveredCache:
 class TestInferDeviceType:
 
     def test_net_pf_device_id(self):
-        dev_info = {"vendor_id": 0x19e5, "device_id": 0x1822}
+        dev_info = {"vendor_id": 0x19e5, "device_id": 0x0222}
         assert DeviceManagerAllocator._infer_device_type(dev_info) == DeviceTypeConfig.DEVICE_TYPE_NET_PF
 
     def test_net_vf_device_id(self):
-        dev_info = {"vendor_id": 0x19e5, "device_id": 0x375e}
+        dev_info = {"vendor_id": 0x19e5, "device_id": 0x375f}
         assert DeviceManagerAllocator._infer_device_type(dev_info) == DeviceTypeConfig.DEVICE_TYPE_NET_VF
 
     def test_unknown_device_id(self):

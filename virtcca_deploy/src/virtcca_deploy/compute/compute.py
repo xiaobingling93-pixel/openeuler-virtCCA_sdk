@@ -204,6 +204,50 @@ def create_app():
                     ).to_dict())
         return flask.jsonify(ApiResponse().to_dict())
 
+    @app.route(constants.ROUTE_VM_STOP_INTERNAL, methods=[constants.POST])
+    def stop_cvm_internal():
+        cvm_id_json = flask.request.get_json()
+        if not cvm_id_json or not isinstance(cvm_id_json, list):
+            g_logger.error("Invalid param: request body must be a list of VM IDs")
+            return flask.jsonify(ApiResponse(
+                        message = "Request body must be a non-empty list of VM IDs"
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
+        g_logger.info("get cvm stop request: %s", cvm_id_json)
+        failed_cvm = []
+        for vm_id in cvm_id_json:
+            success, err_msg = virt_service.stop_cvm(vm_id)
+            if not success:
+                failed_cvm.append({"vm_id": vm_id, "reason": err_msg})
+                g_logger.error("Failed to stop VM %s: %s", vm_id, err_msg)
+        if failed_cvm:
+            return flask.jsonify(ApiResponse(
+                    message = "some cvm stop failed",
+                    data = {"failed_vms": failed_cvm}
+                    ).to_dict())
+        return flask.jsonify(ApiResponse().to_dict())
+
+    @app.route(constants.ROUTE_VM_START_INTERNAL, methods=[constants.POST])
+    def start_cvm_internal():
+        cvm_id_json = flask.request.get_json()
+        if not cvm_id_json or not isinstance(cvm_id_json, list):
+            g_logger.error("Invalid param: request body must be a list of VM IDs")
+            return flask.jsonify(ApiResponse(
+                        message = "Request body must be a non-empty list of VM IDs"
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
+        g_logger.info("get cvm start request: %s", cvm_id_json)
+        failed_cvm = []
+        for vm_id in cvm_id_json:
+            success, err_msg = virt_service.start_cvm(vm_id)
+            if not success:
+                failed_cvm.append({"vm_id": vm_id, "reason": err_msg})
+                g_logger.error("Failed to start VM %s: %s", vm_id, err_msg)
+        if failed_cvm:
+            return flask.jsonify(ApiResponse(
+                    message = "some cvm start failed",
+                    data = {"failed_vms": failed_cvm}
+                    ).to_dict())
+        return flask.jsonify(ApiResponse().to_dict())
+
     @app.route(constants.ROUTE_VM_LOG_COLLECT_INTERNAL, methods=[constants.GET])
     def get_cvm_log_internal(vm_id: str):
         cvm_log_file_path = os.path.join(constants.LIBVIRT_QEMU_LOG_PATH, f"{vm_id}.log")

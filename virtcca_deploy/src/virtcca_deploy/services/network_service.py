@@ -84,6 +84,22 @@ class NetworkService:
             g_logger.error(f"Error occurred while undeploy vm: {e}")
             return None
 
+    def vm_stop(self, vm_id_list: List[str]):
+        vm_stop_url = f"{self.base_url}/{constants.ROUTE_VM_STOP_INTERNAL}"
+        try:
+            return self.make_request(vm_stop_url, method=constants.POST, json_data=vm_id_list)
+        except Exception as e:
+            g_logger.error(f"Error occurred while stopping vm: {e}")
+            return None
+
+    def vm_start(self, vm_id_list: List[str]):
+        vm_start_url = f"{self.base_url}/{constants.ROUTE_VM_START_INTERNAL}"
+        try:
+            return self.make_request(vm_start_url, method=constants.POST, json_data=vm_id_list)
+        except Exception as e:
+            g_logger.error(f"Error occurred while starting vm: {e}")
+            return None
+
     def query_cvm_state(self):
         query_cvm_url = f"{self.base_url}/{constants.ROUTE_VM_STATE_INTERNAL}"
         try:

@@ -78,6 +78,8 @@ ROUTE_VM_UNDEPLOY_INTERNAL = "/api/v1/internal/vm/undeploy"
 ROUTE_VM_STATE_INTERNAL = "/api/v1/internal/vm/state"
 ROUTE_VM_LOG_COLLECT_INTERNAL = "/api/v1/internal/vm/logs/<vm_id>"
 ROUTE_VM_SOFTWARE_INTERNAL = "/api/v1/internal/vm/software"
+ROUTE_VM_STOP_INTERNAL = "/api/v1/internal/vm/stop"
+ROUTE_VM_START_INTERNAL = "/api/v1/internal/vm/start"
 
 # External interface route
 ROUTE_HELLO = "/"
@@ -89,6 +91,8 @@ ROUTE_VM_UNDEPLOY = "/api/v1/vm/undeploy"
 ROUTE_VM_STATE = "/api/v1/vm/state"
 ROUTE_VM_LOG_COLLECT = "/api/v1/vm/logs/"
 ROUTE_VM_SOFTWARE = "/api/v1/vm/software"
+ROUTE_VM_STOP = "/api/v1/vm/stop"
+ROUTE_VM_START = "/api/v1/vm/start"
 ROUTE_VM_TASKS = "/api/v1/vm/tasks/"
 
 # restful methods
@@ -122,6 +126,8 @@ JWT_SECRET_KEY_FILE = "/etc/virtcca_deploy/jwt_secret.key"
 #Task types
 TASK_TYPE_VM_CREATE = "vm-create"
 TASK_TYPE_VM_DELETE = "vm-delete"
+TASK_TYPE_VM_STOP = "vm-stop"
+TASK_TYPE_VM_START = "vm-start"
 
 class DeviceTypeConfig:
     """PCI 设备类型配置"""
