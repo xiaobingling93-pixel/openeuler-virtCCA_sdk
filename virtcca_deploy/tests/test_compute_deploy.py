@@ -16,8 +16,6 @@ import pytest
 from unittest.mock import patch, MagicMock
 from flask import Flask
 import virtcca_deploy.common.constants as constants
-from virtcca_deploy.common.constants import HTTPStatusCodes, OperationCodes
-from virtcca_deploy.common.data_model import ApiResponse
 from virtcca_deploy.services.virt_service import deploy_cvm
 
 

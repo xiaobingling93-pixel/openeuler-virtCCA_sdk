@@ -123,34 +123,25 @@ class TestConfig:
             pass
 
     def configure_device(self):
-        """模拟配置设备管理器"""
-        # 创建一个简单的模拟设备管理器
-        class MockDeviceManager:
+        class MockDeviceAllocator:
             def __init__(self):
-                self.devices = [[], []]  # 空的PF和VF列表
-                self.device_status = {}
-            
-            def get_device_by_numa(self, numa_node, device_type, count=1):
-                """模拟获取指定NUMA节点的设备"""
-                return []  # 返回空列表，表示没有可用设备
-            
-            def allocate_device(self, device_name):
-                """模拟分配设备"""
-                return True
-            
-            def release_device(self, device_name):
-                """模拟释放设备"""
-                return True
-            
-            def get_device_status(self, device_name):
-                """模拟获取设备状态"""
-                return "available"
-            
-            def get_all_devices(self):
-                """模拟获取所有设备"""
+                self._devices = []
+
+            def allocate(self, request):
+                from virtcca_deploy.common.data_model import DeviceAllocResp
+                return DeviceAllocResp(success=True, device_list=[])
+
+            def release(self, request):
+                from virtcca_deploy.common.data_model import DeviceReleaseResp
+                return DeviceReleaseResp(success=True)
+
+            def discover_hi1822_devices(self):
                 return []
-        
-        self.device_manager = MockDeviceManager()
+
+            def sync_discovered_to_db(self):
+                pass
+
+        self.device_allocator = MockDeviceAllocator()
 
 @pytest.fixture(scope='function')
 def app():
@@ -222,29 +213,33 @@ def compute_app():
         test_config = TestConfig()
 
         with mock.patch('virtcca_deploy.common.config.Config', return_value=test_config):
-            # 模拟NetworkService类
             with mock.patch('virtcca_deploy.services.network_service.NetworkService') as mock_network_service:
-                # 模拟NetworkService实例
                 mock_manager_link = mock.MagicMock()
                 mock_manager_link.node_register.return_value = None
                 mock_network_service.return_value = mock_manager_link
 
-                from virtcca_deploy.compute import compute
-                app = compute.create_app()
-                
-                app.config.update({
-                    'TESTING': True,
-                })
+                with mock.patch('virtcca_deploy.compute.compute.resource_allocator.DeviceManagerAllocator') as MockAllocator:
+                    mock_allocator_instance = mock.MagicMock()
+                    mock_allocator_instance.discover_hi1822_devices.return_value = []
+                    mock_allocator_instance.sync_discovered_to_db.return_value = None
+                    MockAllocator.return_value = mock_allocator_instance
 
-                yield app
-                
-                # 测试结束后清理主临时目录
-                try:
-                    import shutil
-                    if os.path.exists(main_temp_dir):
-                        shutil.rmtree(main_temp_dir)
-                except:
-                    pass
+                    from virtcca_deploy.compute import compute
+                    app = compute.create_app()
+                    
+                    app.config.update({
+                        'TESTING': True,
+                    })
+
+                    yield app
+                    
+                    # 测试结束后清理主临时目录
+                    try:
+                        import shutil
+                        if os.path.exists(main_temp_dir):
+                            shutil.rmtree(main_temp_dir)
+                    except:
+                        pass
 
 
 
