@@ -18,6 +18,7 @@ import virtcca_deploy.services.virt_service as virt_service
 import virtcca_deploy.services.network_service as network_service
 import virtcca_deploy.services.util_service as util_service
 import virtcca_deploy.services.db_service as db_service
+import virtcca_deploy.services.resource_allocator as resource_allocator
 from virtcca_deploy.common.data_model import VmDeploySpec, ApiResponse, VmDeploySpecInternal
 
 g_logger = config.g_logger
@@ -29,7 +30,6 @@ def create_app():
     server_config = config.Config(constants.DEFAULT_CONFIG_PATH)
     server_config.configure_log(constants.COMPUTE_LOG_NAME)
     server_config.configure_ssl()
-    server_config.configure_device()
 
     root_logger = logging.getLogger()
     app.logger.setLevel(logging.INFO)
@@ -46,6 +46,12 @@ def create_app():
     with app.app_context():
         compute_db.db.create_all()
         g_logger.info("Compute database initialized at %s", constants.PathConfig.COMPUTE_DB)
+
+        device_allocator = resource_allocator.DeviceManagerAllocator()
+        device_allocator.discover_hi1822_devices()
+        device_allocator.sync_discovered_to_db()
+        server_config.device_allocator = device_allocator
+        g_logger.info("Device allocator initialized and devices synced to database")
 
     manager_domain_name = server_config.config.get("DEFAULT", "manager").strip().strip('"').strip("'")
     try:
@@ -195,6 +201,50 @@ def create_app():
             return flask.jsonify(ApiResponse(
                     message = "some cvm destroy failed",
                     data = failed_cvm
+                    ).to_dict())
+        return flask.jsonify(ApiResponse().to_dict())
+
+    @app.route(constants.ROUTE_VM_STOP_INTERNAL, methods=[constants.POST])
+    def stop_cvm_internal():
+        cvm_id_json = flask.request.get_json()
+        if not cvm_id_json or not isinstance(cvm_id_json, list):
+            g_logger.error("Invalid param: request body must be a list of VM IDs")
+            return flask.jsonify(ApiResponse(
+                        message = "Request body must be a non-empty list of VM IDs"
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
+        g_logger.info("get cvm stop request: %s", cvm_id_json)
+        failed_cvm = []
+        for vm_id in cvm_id_json:
+            success, err_msg = virt_service.stop_cvm(vm_id)
+            if not success:
+                failed_cvm.append({"vm_id": vm_id, "reason": err_msg})
+                g_logger.error("Failed to stop VM %s: %s", vm_id, err_msg)
+        if failed_cvm:
+            return flask.jsonify(ApiResponse(
+                    message = "some cvm stop failed",
+                    data = {"failed_vms": failed_cvm}
+                    ).to_dict())
+        return flask.jsonify(ApiResponse().to_dict())
+
+    @app.route(constants.ROUTE_VM_START_INTERNAL, methods=[constants.POST])
+    def start_cvm_internal():
+        cvm_id_json = flask.request.get_json()
+        if not cvm_id_json or not isinstance(cvm_id_json, list):
+            g_logger.error("Invalid param: request body must be a list of VM IDs")
+            return flask.jsonify(ApiResponse(
+                        message = "Request body must be a non-empty list of VM IDs"
+                    ).to_dict()), HTTPStatus.BAD_REQUEST
+        g_logger.info("get cvm start request: %s", cvm_id_json)
+        failed_cvm = []
+        for vm_id in cvm_id_json:
+            success, err_msg = virt_service.start_cvm(vm_id)
+            if not success:
+                failed_cvm.append({"vm_id": vm_id, "reason": err_msg})
+                g_logger.error("Failed to start VM %s: %s", vm_id, err_msg)
+        if failed_cvm:
+            return flask.jsonify(ApiResponse(
+                    message = "some cvm start failed",
+                    data = {"failed_vms": failed_cvm}
                     ).to_dict())
         return flask.jsonify(ApiResponse().to_dict())
 

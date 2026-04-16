@@ -14,7 +14,7 @@ monkey.patch_all()
 
 from flask import current_app
 
-from virtcca_deploy.common.constants import COMPUTE_PORT, TASK_TYPE_VM_CREATE, TASK_TYPE_VM_DELETE
+from virtcca_deploy.common.constants import COMPUTE_PORT, TASK_TYPE_VM_CREATE, TASK_TYPE_VM_DELETE, TASK_TYPE_VM_STOP, TASK_TYPE_VM_START
 from virtcca_deploy.common.data_model import (
     NetAllocReq, NetReleaseReq, VmDeploySpecInternal
 )
@@ -386,6 +386,288 @@ class VmService:
         # Return immediate response with task information, same format as deployment
         return vm_instances
         
+    def execute_stop(self, vm_id_list: List[str]) -> Dict:
+        vm_instances = {}
+        node_task = {}
+
+        task_service = get_task_service()
+
+        try:
+            vm_instances_db = VmInstance.query.filter(VmInstance.vm_id.in_(vm_id_list)).all()
+            if not vm_instances_db:
+                self.logger.warning(f"No VM instances found for IDs: {vm_id_list}")
+                return vm_instances
+
+            node_vm_map = {}
+            for vm in vm_instances_db:
+                if vm.host_ip not in node_vm_map:
+                    node_vm_map[vm.host_ip] = []
+                node_vm_map[vm.host_ip].append(vm.vm_id)
+
+            deploy_nodes = []
+            for host_ip in node_vm_map.keys():
+                node = ComputeNode.query.filter_by(ip=host_ip).first()
+                if node:
+                    deploy_nodes.append(node)
+                else:
+                    self.logger.warning(f"Node not found for IP: {host_ip}")
+        except Exception as e:
+            self.logger.error(f"Failed to find nodes for VM IDs: {e}")
+            return vm_instances
+
+        for node in deploy_nodes:
+            try:
+                node_vm_ids = node_vm_map.get(node.ip, [])
+                if not node_vm_ids:
+                    continue
+
+                instance_task_id = task_service.create_task(TASK_TYPE_VM_STOP, {"total_vms": node_vm_ids})
+                node_task[node.nodename] = instance_task_id
+
+                for vm_name in node_vm_ids:
+                    vm_instances[vm_name] = {
+                        "task_id": instance_task_id,
+                        "host_ip": node.ip
+                    }
+            except Exception as e:
+                self.logger.error(f"Failed to create stop task for node {node.nodename}: {e}")
+                continue
+
+        def stop_node_async(node, node_task_id: str, node_vm_ids: List[str], app):
+            with app.app_context():
+                success_vms = []
+                failed_vms = []
+                try:
+                    task_service.update_task_status(node_task_id, "running")
+
+                    compute_link = NetworkService(
+                        node.nodename, COMPUTE_PORT, True, self.ssl_cert
+                    )
+                    result = compute_link.vm_stop(node_vm_ids)
+                    self.logger.info(f"Stop result for node {node.nodename}: {result}")
+
+                    if result is None:
+                        failed_vms = node_vm_ids
+                        task_params = {
+                            "success_vms": [],
+                            "fail_vms": failed_vms,
+                            "total_vms": node_vm_ids
+                        }
+                        task_service.update_task_params(node_task_id, task_params)
+                        task_service.update_task_status(node_task_id, "failed")
+                        self.logger.error(f"Stop request failed for node {node.nodename}: no response")
+                        return
+
+                    if result.status_code == HTTPStatus.OK:
+                        try:
+                            response_data = result.json()
+                            failed_vm_list = response_data.get("data", {}).get("failed_vms", []) if response_data.get("data") else []
+                            if failed_vm_list:
+                                failed_vm_ids = [item["vm_id"] for item in failed_vm_list if isinstance(item, dict) and "vm_id" in item]
+                                success_vms = [vm_id for vm_id in node_vm_ids if vm_id not in failed_vm_ids]
+                            else:
+                                success_vms = node_vm_ids
+
+                            task_params = {
+                                "success_vms": success_vms,
+                                "fail_vms": failed_vm_ids if failed_vm_list else [],
+                                "total_vms": node_vm_ids
+                            }
+                            task_service.update_task_params(node_task_id, task_params)
+
+                            if failed_vm_list:
+                                task_service.update_task_status(node_task_id, "failed")
+                            else:
+                                task_service.update_task_status(node_task_id, "success")
+
+                        except Exception as e:
+                            self.logger.error(f"Failed to parse stop result: {e}")
+                            failed_vms = node_vm_ids
+                            task_params = {
+                                "success_vms": [],
+                                "fail_vms": failed_vms,
+                                "total_vms": node_vm_ids
+                            }
+                            task_service.update_task_params(node_task_id, task_params)
+                            task_service.update_task_status(node_task_id, "failed")
+                    else:
+                        failed_vms = node_vm_ids
+                        task_params = {
+                            "success_vms": [],
+                            "fail_vms": failed_vms,
+                            "total_vms": node_vm_ids
+                        }
+                        task_service.update_task_params(node_task_id, task_params)
+                        task_service.update_task_status(node_task_id, "failed")
+                        self.logger.error(f"Stop request failed for node {node.nodename}: {result.status_code}")
+
+                except Exception as e:
+                    err_msg = f"Failed to stop VMs at {node.ip}, error reason: {e}"
+                    self.logger.error(err_msg)
+                    task_params = {
+                        "success_vms": [],
+                        "fail_vms": node_vm_ids,
+                        "total_vms": node_vm_ids
+                    }
+                    task_service.update_task_params(node_task_id, task_params)
+                    task_service.update_task_status(node_task_id, "failed")
+
+        jobs = []
+        for node in deploy_nodes:
+            if node.nodename in node_task:
+                node_vm_ids = node_vm_map.get(node.ip, [])
+                if node_vm_ids:
+                    jobs.append(gevent.spawn(
+                        stop_node_async,
+                        node,
+                        node_task[node.nodename],
+                        node_vm_ids,
+                        current_app._get_current_object()
+                    ))
+
+        return vm_instances
+
+    def execute_start(self, vm_id_list: List[str]) -> Dict:
+        vm_instances = {}
+        node_task = {}
+
+        task_service = get_task_service()
+
+        try:
+            vm_instances_db = VmInstance.query.filter(VmInstance.vm_id.in_(vm_id_list)).all()
+            if not vm_instances_db:
+                self.logger.warning(f"No VM instances found for IDs: {vm_id_list}")
+                return vm_instances
+
+            node_vm_map = {}
+            for vm in vm_instances_db:
+                if vm.host_ip not in node_vm_map:
+                    node_vm_map[vm.host_ip] = []
+                node_vm_map[vm.host_ip].append(vm.vm_id)
+
+            deploy_nodes = []
+            for host_ip in node_vm_map.keys():
+                node = ComputeNode.query.filter_by(ip=host_ip).first()
+                if node:
+                    deploy_nodes.append(node)
+                else:
+                    self.logger.warning(f"Node not found for IP: {host_ip}")
+        except Exception as e:
+            self.logger.error(f"Failed to find nodes for VM IDs: {e}")
+            return vm_instances
+
+        for node in deploy_nodes:
+            try:
+                node_vm_ids = node_vm_map.get(node.ip, [])
+                if not node_vm_ids:
+                    continue
+
+                instance_task_id = task_service.create_task(TASK_TYPE_VM_START, {"total_vms": node_vm_ids})
+                node_task[node.nodename] = instance_task_id
+
+                for vm_name in node_vm_ids:
+                    vm_instances[vm_name] = {
+                        "task_id": instance_task_id,
+                        "host_ip": node.ip
+                    }
+            except Exception as e:
+                self.logger.error(f"Failed to create start task for node {node.nodename}: {e}")
+                continue
+
+        def start_node_async(node, node_task_id: str, node_vm_ids: List[str], app):
+            with app.app_context():
+                success_vms = []
+                failed_vms = []
+                try:
+                    task_service.update_task_status(node_task_id, "running")
+
+                    compute_link = NetworkService(
+                        node.nodename, COMPUTE_PORT, True, self.ssl_cert
+                    )
+                    result = compute_link.vm_start(node_vm_ids)
+                    self.logger.info(f"Start result for node {node.nodename}: {result}")
+
+                    if result is None:
+                        failed_vms = node_vm_ids
+                        task_params = {
+                            "success_vms": [],
+                            "fail_vms": failed_vms,
+                            "total_vms": node_vm_ids
+                        }
+                        task_service.update_task_params(node_task_id, task_params)
+                        task_service.update_task_status(node_task_id, "failed")
+                        self.logger.error(f"Start request failed for node {node.nodename}: no response")
+                        return
+
+                    if result.status_code == HTTPStatus.OK:
+                        try:
+                            response_data = result.json()
+                            failed_vm_list = response_data.get("data", {}).get("failed_vms", []) if response_data.get("data") else []
+                            if failed_vm_list:
+                                failed_vm_ids = [item["vm_id"] for item in failed_vm_list if isinstance(item, dict) and "vm_id" in item]
+                                success_vms = [vm_id for vm_id in node_vm_ids if vm_id not in failed_vm_ids]
+                            else:
+                                success_vms = node_vm_ids
+
+                            task_params = {
+                                "success_vms": success_vms,
+                                "fail_vms": failed_vm_ids if failed_vm_list else [],
+                                "total_vms": node_vm_ids
+                            }
+                            task_service.update_task_params(node_task_id, task_params)
+
+                            if failed_vm_list:
+                                task_service.update_task_status(node_task_id, "failed")
+                            else:
+                                task_service.update_task_status(node_task_id, "success")
+
+                        except Exception as e:
+                            self.logger.error(f"Failed to parse start result: {e}")
+                            failed_vms = node_vm_ids
+                            task_params = {
+                                "success_vms": [],
+                                "fail_vms": failed_vms,
+                                "total_vms": node_vm_ids
+                            }
+                            task_service.update_task_params(node_task_id, task_params)
+                            task_service.update_task_status(node_task_id, "failed")
+                    else:
+                        failed_vms = node_vm_ids
+                        task_params = {
+                            "success_vms": [],
+                            "fail_vms": failed_vms,
+                            "total_vms": node_vm_ids
+                        }
+                        task_service.update_task_params(node_task_id, task_params)
+                        task_service.update_task_status(node_task_id, "failed")
+                        self.logger.error(f"Start request failed for node {node.nodename}: {result.status_code}")
+
+                except Exception as e:
+                    err_msg = f"Failed to start VMs at {node.ip}, error reason: {e}"
+                    self.logger.error(err_msg)
+                    task_params = {
+                        "success_vms": [],
+                        "fail_vms": node_vm_ids,
+                        "total_vms": node_vm_ids
+                    }
+                    task_service.update_task_params(node_task_id, task_params)
+                    task_service.update_task_status(node_task_id, "failed")
+
+        jobs = []
+        for node in deploy_nodes:
+            if node.nodename in node_task:
+                node_vm_ids = node_vm_map.get(node.ip, [])
+                if node_vm_ids:
+                    jobs.append(gevent.spawn(
+                        start_node_async,
+                        node,
+                        node_task[node.nodename],
+                        node_vm_ids,
+                        current_app._get_current_object()
+                    ))
+
+        return vm_instances
+
     def query_vm_states(self, nodes: List[str] = None, vm_ids: List[str] = None, 
                        page: int = 1, page_size: int = 10) -> Tuple[Dict, str]:
         """

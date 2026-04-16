@@ -15,7 +15,8 @@ from typing import List, Dict, Optional
 from virtcca_deploy.common.constants import ValidationError, DeviceTypeConfig
 from virtcca_deploy.common.data_model import (
     NetAllocReq, NetAllocResp, NetReleaseReq, NetReleaseResp,
-    DeviceAllocReq, DeviceAllocResp, DeviceReleaseReq, DeviceReleaseResp
+    DeviceAllocReq, DeviceAllocResp, DeviceReleaseReq, DeviceReleaseResp,
+    SriovVfSetupResp
 )
 from virtcca_deploy.services.db_service import db, DeviceAllocation
 
@@ -111,6 +112,9 @@ class DeviceManagerAllocator(DeviceAllocator):
     PCI_DEVICE_ID_MAX = DeviceTypeConfig.PCI_DEVICE_ID_MAX
 
     SYSFS_PCI_DEVICES = DeviceTypeConfig.SYSFS_PCI_DEVICES
+    SYSFS_NET_CLASS = "/sys/class/net"
+    SRIOV_NUMVFS_SUFFIX = "device/sriov_numvfs"
+    SRIOV_TOTALVFS_SUFFIX = "device/sriov_totalvfs"
 
     def __init__(self):
         self._discovered_devices: List[Dict] = []
@@ -243,6 +247,8 @@ class DeviceManagerAllocator(DeviceAllocator):
         释放 VM 占用的所有 PCI 设备
 
         在事务中将指定 VM 的所有已分配设备标记为可用。
+        释放 VF 后，检查对应 PF 下是否还有已分配的 VF，
+        若全部释放则自动销毁 VF 并恢复 PF 为 available 状态。
 
         :param request: 设备释放请求，包含 vm_id
         :return: 释放结果
@@ -257,7 +263,10 @@ class DeviceManagerAllocator(DeviceAllocator):
                 self.logger.info(f"No allocated devices found for VM {request.vm_id}")
                 return DeviceReleaseResp(success=True)
 
+            released_vf_bdfs = []
             for device in devices:
+                if device.device_type == DeviceTypeConfig.DEVICE_TYPE_NET_VF:
+                    released_vf_bdfs.append(device.bdf)
                 device.status = DeviceAllocation.DEVICE_STATUS_AVAILABLE
                 device.allocated_vm_id = None
                 device.released_at = datetime.now()
@@ -267,6 +276,10 @@ class DeviceManagerAllocator(DeviceAllocator):
             self.logger.info(
                 f"Released {len(devices)} device(s) for VM {request.vm_id}: {bdf_list}"
             )
+
+            if released_vf_bdfs:
+                self._try_reclaim_sriov_pf(released_vf_bdfs)
+
             return DeviceReleaseResp(success=True)
 
         except Exception as e:
@@ -407,13 +420,22 @@ class DeviceManagerAllocator(DeviceAllocator):
         :param dev_info: 设备信息字典
         """
         device_type = self._infer_device_type(dev_info)
+        initial_status = DeviceAllocation.DEVICE_STATUS_AVAILABLE
+        if device_type == DeviceTypeConfig.DEVICE_TYPE_NET_PF:
+            if self._has_vf_under_pf(dev_info['bdf']):
+                initial_status = DeviceAllocation.DEVICE_STATUS_SRIOV_USED
+                self.logger.info(
+                    f"PF {dev_info['bdf']} has VF(s) in database, "
+                    f"setting initial status to sriov_used"
+                )
         record = DeviceAllocation(
             bdf=dev_info['bdf'],
             vendor_id=dev_info['vendor_id'],
             device_id=dev_info['device_id'],
             numa_node=dev_info.get('numa_node', -1),
             device_type=device_type,
-            status=DeviceAllocation.DEVICE_STATUS_AVAILABLE,
+            device_name=dev_info.get('device_name'),
+            status=initial_status,
         )
         db.session.add(record)
 
@@ -422,6 +444,7 @@ class DeviceManagerAllocator(DeviceAllocator):
         更新数据库中已有设备的动态属性
 
         仅更新可能变化的字段（numa_node），不覆盖分配状态。
+        但对于 PF 设备，若其下已有 VF 记录，需确保状态为 sriov_used。
 
         :param dev_info: 设备信息字典
         """
@@ -432,6 +455,16 @@ class DeviceManagerAllocator(DeviceAllocator):
         record.numa_node = dev_info.get('numa_node', -1)
         record.vendor_id = dev_info['vendor_id']
         record.device_id = dev_info['device_id']
+        record.device_name = dev_info.get('device_name')
+
+        if (record.device_type == DeviceTypeConfig.DEVICE_TYPE_NET_PF
+                and record.status == DeviceAllocation.DEVICE_STATUS_AVAILABLE):
+            if self._has_vf_under_pf(record.bdf):
+                record.status = DeviceAllocation.DEVICE_STATUS_SRIOV_USED
+                self.logger.info(
+                    f"PF {record.bdf} has VF(s) in database, "
+                    f"correcting status from available to sriov_used"
+                )
 
     @staticmethod
     def _infer_device_type(dev_info: Dict) -> str:
@@ -551,6 +584,7 @@ class DeviceManagerAllocator(DeviceAllocator):
                 "vendor_id": int(match.group(2), 16),
                 "device_id": device_id,
                 "numa_node": self._read_numa_node(bdf),
+                "device_name": self._read_device_name(bdf),
             })
 
         self.logger.info(f"Enumerated {len(devices)} PCI device(s) via lspci")
@@ -626,6 +660,415 @@ class DeviceManagerAllocator(DeviceAllocator):
         except OSError as e:
             self.logger.warning(f"Failed to read numa_node for {bdf}: {e}")
         return -1
+
+    def _read_device_name(self, bdf: str) -> Optional[str]:
+        """
+        从 sysfs 读取 PCI 设备的接口名称
+
+        对于网络设备，/sys/bus/pci/devices/{BDF}/net/ 目录下包含
+        网络接口名称（如 enp59s0）。对于非网络设备，该目录不存在。
+
+        :param bdf: PCI 设备的 BDF 地址（如 "0000:3b:00.0"）
+        :return: 设备接口名称；非网络设备或读取失败返回 None
+        """
+        net_dir = os.path.join(self.SYSFS_PCI_DEVICES, bdf, "net")
+        try:
+            if os.path.isdir(net_dir):
+                entries = os.listdir(net_dir)
+                if entries:
+                    return entries[0]
+        except OSError as e:
+            self.logger.warning(f"Failed to read device name for {bdf}: {e}")
+        return None
+
+    # ========== SR-IOV VF 设置 ==========
+
+    def setup_sriov_vf(self, net_device_name: str, vf_num: int) -> SriovVfSetupResp:
+        """
+        为 PF 网络设备设置 SR-IOV 虚拟功能数量
+
+        通过写入 /sys/class/net/${net_device_name}/device/sriov_numvfs
+        将 PF 设备使能指定数量的 VF。设置成功后，该 PF 设备在数据库中
+        会被标记为 sriov_used 状态，不再作为 PF 设备分配。
+
+        :param net_device_name: 网络接口名称（如 "enp59s0"）
+        :param vf_num: 要创建的 VF 数量（非负整数）
+        :return: SriovVfSetupResp 包含操作结果
+        """
+        self.logger.info(f"Setting up SR-IOV VF: net_device={net_device_name}, vf_num={vf_num}")
+
+        validation_error = self._validate_sriov_prerequisites(net_device_name, vf_num)
+        if validation_error is not None:
+            return validation_error
+
+        sriov_numvfs_path = os.path.join(
+            self.SYSFS_NET_CLASS, net_device_name, self.SRIOV_NUMVFS_SUFFIX
+        )
+
+        try:
+            with open(sriov_numvfs_path, 'w') as f:
+                f.write(str(vf_num))
+            self.logger.info(
+                f"Wrote vf_num={vf_num} to {sriov_numvfs_path}"
+            )
+        except PermissionError:
+            msg = f"Permission denied writing to {sriov_numvfs_path}"
+            self.logger.error(msg)
+            return SriovVfSetupResp(
+                success=False, device_name=net_device_name, vf_num=vf_num, message=msg
+            )
+        except OSError as e:
+            msg = f"Failed to write sriov_numvfs for {net_device_name}: {e}"
+            self.logger.error(msg)
+            return SriovVfSetupResp(
+                success=False, device_name=net_device_name, vf_num=vf_num, message=msg
+            )
+
+        verify_result = self._verify_sriov_numvfs(net_device_name, vf_num)
+        if not verify_result:
+            msg = (
+                f"SR-IOV VF count verification failed for {net_device_name}: "
+                f"expected {vf_num}"
+            )
+            self.logger.error(msg)
+            return SriovVfSetupResp(
+                success=False, device_name=net_device_name, vf_num=vf_num, message=msg
+            )
+
+        self._update_pf_status_after_sriov(net_device_name)
+
+        self.logger.info(
+            f"SR-IOV VF setup succeeded: {net_device_name} now has {vf_num} VF(s)"
+        )
+        return SriovVfSetupResp(
+            success=True, device_name=net_device_name, vf_num=vf_num
+        )
+
+    def _validate_sriov_prerequisites(self, net_device_name: str,
+                                       vf_num: int) -> Optional[SriovVfSetupResp]:
+        """
+        验证 SR-IOV VF 设置的前置条件
+
+        :param net_device_name: 网络接口名称
+        :param vf_num: 要创建的 VF 数量
+        :return: 验证失败时返回 SriovVfSetupResp，成功返回 None
+        """
+        if not isinstance(vf_num, int) or vf_num < 0:
+            msg = f"Invalid vf_num: {vf_num}, must be a non-negative integer"
+            self.logger.error(msg)
+            return SriovVfSetupResp(
+                success=False, device_name=net_device_name, vf_num=vf_num, message=msg
+            )
+
+        net_device_path = os.path.join(self.SYSFS_NET_CLASS, net_device_name)
+        if not os.path.isdir(net_device_path):
+            msg = f"Network device {net_device_name} does not exist at {net_device_path}"
+            self.logger.error(msg)
+            return SriovVfSetupResp(
+                success=False, device_name=net_device_name, vf_num=vf_num, message=msg
+            )
+
+        sriov_numvfs_path = os.path.join(
+            self.SYSFS_NET_CLASS, net_device_name, self.SRIOV_NUMVFS_SUFFIX
+        )
+        if not os.path.exists(sriov_numvfs_path):
+            msg = f"Device {net_device_name} does not support SR-IOV (sriov_numvfs not found)"
+            self.logger.error(msg)
+            return SriovVfSetupResp(
+                success=False, device_name=net_device_name, vf_num=vf_num, message=msg
+            )
+
+        pf_record = self._find_pf_record_by_net_device(net_device_name)
+        if pf_record is None:
+            msg = (
+                f"Device {net_device_name} is not registered as a PF device in database, "
+                f"or has already been used for SR-IOV"
+            )
+            self.logger.error(msg)
+            return SriovVfSetupResp(
+                success=False, device_name=net_device_name, vf_num=vf_num, message=msg
+            )
+
+        if pf_record.status == DeviceAllocation.DEVICE_STATUS_ALLOCATED:
+            msg = (
+                f"PF device {net_device_name} (BDF={pf_record.bdf}) is currently "
+                f"allocated to VM {pf_record.allocated_vm_id}, cannot create new VFs"
+            )
+            self.logger.error(msg)
+            return SriovVfSetupResp(
+                success=False, device_name=net_device_name, vf_num=vf_num, message=msg
+            )
+
+        allocated_vf = self._find_allocated_vf_under_pf(pf_record.bdf)
+        if allocated_vf is not None:
+            msg = (
+                f"PF device {net_device_name} (BDF={pf_record.bdf}) has allocated VF "
+                f"(BDF={allocated_vf.bdf}, VM={allocated_vf.allocated_vm_id}), "
+                f"cannot modify sriov_numvfs as it would affect in-use VFs"
+            )
+            self.logger.error(msg)
+            return SriovVfSetupResp(
+                success=False, device_name=net_device_name, vf_num=vf_num, message=msg
+            )
+
+        sriov_totalvfs_path = os.path.join(
+            self.SYSFS_NET_CLASS, net_device_name, self.SRIOV_TOTALVFS_SUFFIX
+        )
+        if os.path.exists(sriov_totalvfs_path):
+            try:
+                with open(sriov_totalvfs_path, 'r') as f:
+                    max_vfs = int(f.read().strip())
+                if vf_num > max_vfs:
+                    msg = (
+                        f"Requested vf_num={vf_num} exceeds maximum supported "
+                        f"VF count {max_vfs} for {net_device_name}"
+                    )
+                    self.logger.error(msg)
+                    return SriovVfSetupResp(
+                        success=False, device_name=net_device_name,
+                        vf_num=vf_num, message=msg
+                    )
+            except (ValueError, OSError) as e:
+                self.logger.warning(
+                    f"Failed to read sriov_totalvfs for {net_device_name}: {e}, "
+                    f"skipping max VF check"
+                )
+
+        return None
+
+    def _verify_sriov_numvfs(self, net_device_name: str, expected_vf_num: int) -> bool:
+        """
+        验证 sriov_numvfs 文件的实际值是否与预期一致
+
+        :param net_device_name: 网络接口名称
+        :param expected_vf_num: 预期的 VF 数量
+        :return: 验证是否通过
+        """
+        sriov_numvfs_path = os.path.join(
+            self.SYSFS_NET_CLASS, net_device_name, self.SRIOV_NUMVFS_SUFFIX
+        )
+        try:
+            with open(sriov_numvfs_path, 'r') as f:
+                actual_vf_num = int(f.read().strip())
+            if actual_vf_num != expected_vf_num:
+                self.logger.error(
+                    f"SR-IOV VF count mismatch for {net_device_name}: "
+                    f"expected={expected_vf_num}, actual={actual_vf_num}"
+                )
+                return False
+            self.logger.info(
+                f"SR-IOV VF count verified for {net_device_name}: {actual_vf_num}"
+            )
+            return True
+        except (ValueError, OSError) as e:
+            self.logger.error(
+                f"Failed to read sriov_numvfs for verification on {net_device_name}: {e}"
+            )
+            return False
+
+    def _find_pf_record_by_net_device(self, net_device_name: str) -> Optional[DeviceAllocation]:
+        """
+        根据网络接口名称在数据库中查找对应的 PF 设备记录
+
+        通过 device_name 字段直接查询数据库，匹配 device_type=NET_PF
+        且 status 为 available 或 allocated 的记录。
+
+        :param net_device_name: 网络接口名称
+        :return: DeviceAllocation 记录；未找到返回 None
+        """
+        record = DeviceAllocation.query.filter(
+            DeviceAllocation.device_name == net_device_name,
+            DeviceAllocation.device_type == DeviceTypeConfig.DEVICE_TYPE_NET_PF,
+            DeviceAllocation.status.in_([
+                DeviceAllocation.DEVICE_STATUS_AVAILABLE,
+                DeviceAllocation.DEVICE_STATUS_ALLOCATED,
+            ]),
+        ).first()
+
+        return record
+
+    def _find_allocated_vf_under_pf(self, pf_bdf: str) -> Optional[DeviceAllocation]:
+        """
+        查找指定 PF 设备下已被 VM 占用的 VF 设备
+
+        VF 的 BDF 与 PF 的 BDF 共享相同的域和总线前缀，
+        例如 PF=0000:3b:00.0 的 VF 为 0000:3b:00.{1,2,...} 或
+        0000:3b:0x.{0,...}（取决于 SR-IOV 实现）。
+        通过匹配 BDF 前缀（域:总线:）来查找同 PF 下的 VF。
+
+        :param pf_bdf: PF 设备的 BDF 地址（如 "0000:3b:00.0"）
+        :return: 已分配的 VF DeviceAllocation 记录；无则返回 None
+        """
+        bdf_prefix = pf_bdf.rsplit(":", 1)[0] + ":"
+        allocated_vfs = DeviceAllocation.query.filter(
+            DeviceAllocation.device_type == DeviceTypeConfig.DEVICE_TYPE_NET_VF,
+            DeviceAllocation.status == DeviceAllocation.DEVICE_STATUS_ALLOCATED,
+            DeviceAllocation.bdf.startswith(bdf_prefix),
+        ).all()
+
+        return allocated_vfs[0] if allocated_vfs else None
+
+    def _has_vf_under_pf(self, pf_bdf: str) -> bool:
+        """
+        检查指定 PF 设备下是否存在 VF 记录
+
+        通过匹配 BDF 前缀（域:总线:）来查找同 PF 下的 VF，
+        不区分 VF 的分配状态（available/allocated/sriov_used 均计入）。
+
+        :param pf_bdf: PF 设备的 BDF 地址（如 "0000:3b:00.0"）
+        :return: 存在 VF 记录返回 True，否则返回 False
+        """
+        bdf_prefix = pf_bdf.rsplit(":", 1)[0] + ":"
+        vf_count = DeviceAllocation.query.filter(
+            DeviceAllocation.device_type == DeviceTypeConfig.DEVICE_TYPE_NET_VF,
+            DeviceAllocation.bdf.startswith(bdf_prefix),
+        ).count()
+        return vf_count > 0
+
+    def _try_reclaim_sriov_pf(self, released_vf_bdfs: List[str]):
+        """
+        释放 VF 后尝试回收 SR-IOV PF 资源
+
+        对每个被释放的 VF，根据其 BDF 前缀找到对应的 sriov_used PF，
+        检查该 PF 下是否还有已分配的 VF。若全部释放，则：
+        1. echo 0 到 sriov_numvfs 销毁所有 VF
+        2. 将 PF 状态从 sriov_used 恢复为 available
+        3. 从数据库中删除已销毁的 VF 记录
+
+        :param released_vf_bdfs: 本次释放的 VF 的 BDF 列表
+        """
+        checked_pf_bdfs = set()
+        for vf_bdf in released_vf_bdfs:
+            bdf_prefix = vf_bdf.rsplit(":", 1)[0] + ":"
+
+            pf_record = DeviceAllocation.query.filter(
+                DeviceAllocation.device_type == DeviceTypeConfig.DEVICE_TYPE_NET_PF,
+                DeviceAllocation.status == DeviceAllocation.DEVICE_STATUS_SRIOV_USED,
+                DeviceAllocation.bdf.startswith(bdf_prefix),
+            ).first()
+
+            if pf_record is None or pf_record.bdf in checked_pf_bdfs:
+                continue
+            checked_pf_bdfs.add(pf_record.bdf)
+
+            remaining_allocated = self._find_allocated_vf_under_pf(pf_record.bdf)
+            if remaining_allocated is not None:
+                self.logger.info(
+                    f"PF {pf_record.bdf} still has allocated VF(s), "
+                    f"skipping VF destroy"
+                )
+                continue
+
+            self.logger.info(
+                f"All VFs under PF {pf_record.bdf} are free, "
+                f"destroying VFs and restoring PF"
+            )
+            self._destroy_vfs_and_restore_pf(pf_record)
+
+    def _destroy_vfs_and_restore_pf(self, pf_record: DeviceAllocation):
+        """
+        销毁 PF 下的所有 VF 并恢复 PF 为 available 状态
+
+        :param pf_record: PF 设备的数据库记录（status=sriov_used）
+        """
+        net_device_name = pf_record.device_name
+        if not net_device_name:
+            self.logger.warning(
+                f"PF {pf_record.bdf} has no device_name, cannot destroy VFs"
+            )
+            return
+
+        sriov_numvfs_path = os.path.join(
+            self.SYSFS_NET_CLASS, net_device_name, self.SRIOV_NUMVFS_SUFFIX
+        )
+
+        try:
+            with open(sriov_numvfs_path, 'w') as f:
+                f.write("0")
+            self.logger.info(
+                f"Wrote vf_num=0 to {sriov_numvfs_path} to destroy VFs"
+            )
+        except PermissionError:
+            self.logger.error(
+                f"Permission denied writing to {sriov_numvfs_path}, "
+                f"cannot destroy VFs for PF {pf_record.bdf}"
+            )
+            return
+        except OSError as e:
+            self.logger.error(
+                f"Failed to write sriov_numvfs for {net_device_name}: {e}, "
+                f"cannot destroy VFs for PF {pf_record.bdf}"
+            )
+            return
+
+        if not self._verify_sriov_numvfs(net_device_name, 0):
+            self.logger.error(
+                f"VF destroy verification failed for {net_device_name}, "
+                f"PF {pf_record.bdf} will not be restored"
+            )
+            return
+
+        self._restore_pf_after_vf_destroy(pf_record)
+
+    def _restore_pf_after_vf_destroy(self, pf_record: DeviceAllocation):
+        """
+        VF 销毁后恢复 PF 状态为 available，并清理数据库中的 VF 记录
+
+        :param pf_record: PF 设备的数据库记录
+        """
+        bdf_prefix = pf_record.bdf.rsplit(":", 1)[0] + ":"
+
+        try:
+            vf_records = DeviceAllocation.query.filter(
+                DeviceAllocation.device_type == DeviceTypeConfig.DEVICE_TYPE_NET_VF,
+                DeviceAllocation.bdf.startswith(bdf_prefix),
+            ).all()
+
+            for vf in vf_records:
+                db.session.delete(vf)
+
+            pf_record.status = DeviceAllocation.DEVICE_STATUS_AVAILABLE
+            db.session.commit()
+
+            self.logger.info(
+                f"Restored PF {pf_record.bdf} to available, "
+                f"deleted {len(vf_records)} VF record(s)"
+            )
+        except Exception as e:
+            db.session.rollback()
+            self.logger.error(
+                f"Failed to restore PF {pf_record.bdf} after VF destroy: {e}"
+            )
+
+    def _update_pf_status_after_sriov(self, net_device_name: str):
+        """
+        SR-IOV VF 设置成功后，更新数据库中 PF 设备的状态
+
+        将 PF 设备状态标记为 sriov_used，并记录其网络接口名称，
+        确保该设备不再作为 PF 设备分配。
+
+        :param net_device_name: 网络接口名称
+        """
+        record = self._find_pf_record_by_net_device(net_device_name)
+        if record is None:
+            self.logger.warning(
+                f"PF record for {net_device_name} not found during status update"
+            )
+            return
+
+        record.status = DeviceAllocation.DEVICE_STATUS_SRIOV_USED
+        record.device_name = net_device_name
+        try:
+            db.session.commit()
+            self.logger.info(
+                f"Updated PF device {record.bdf} status to sriov_used "
+                f"(net_device={net_device_name})"
+            )
+        except Exception as e:
+            db.session.rollback()
+            self.logger.error(
+                f"Failed to update PF status for {net_device_name}: {e}"
+            )
 
     def get_discovered_devices(self) -> List[Dict]:
         """获取最近一次发现的设备列表"""

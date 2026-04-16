@@ -10,7 +10,7 @@ from unittest import mock
 from unittest.mock import mock_open, patch, MagicMock
 
 from virtcca_deploy.common.constants import ValidationError, DeviceTypeConfig
-from virtcca_deploy.common.data_model import DeviceAllocReq, DeviceReleaseReq
+from virtcca_deploy.common.data_model import DeviceAllocReq, DeviceReleaseReq, SriovVfSetupResp
 from virtcca_deploy.services.resource_allocator import DeviceManagerAllocator
 from virtcca_deploy.services.db_service import db, DeviceAllocation
 
@@ -372,11 +372,11 @@ class TestUpdateDiscoveredCache:
 class TestInferDeviceType:
 
     def test_net_pf_device_id(self):
-        dev_info = {"vendor_id": 0x19e5, "device_id": 0x1822}
+        dev_info = {"vendor_id": 0x19e5, "device_id": 0x0222}
         assert DeviceManagerAllocator._infer_device_type(dev_info) == DeviceTypeConfig.DEVICE_TYPE_NET_PF
 
     def test_net_vf_device_id(self):
-        dev_info = {"vendor_id": 0x19e5, "device_id": 0x375e}
+        dev_info = {"vendor_id": 0x19e5, "device_id": 0x375f}
         assert DeviceManagerAllocator._infer_device_type(dev_info) == DeviceTypeConfig.DEVICE_TYPE_NET_VF
 
     def test_unknown_device_id(self):
@@ -516,8 +516,10 @@ class TestDeviceAllocationCRUD:
 
 class TestSyncDiscoveredToDb:
 
-    @patch('virtcca_deploy.services.resource_allocator.db')
-    def test_sync_inserts_new_devices(self, mock_db, allocator):
+    @patch.object(DeviceManagerAllocator, '_insert_device_record')
+    @patch.object(DeviceManagerAllocator, '_update_device_record')
+    @patch('virtcca_deploy.services.resource_allocator.db.session')
+    def test_sync_inserts_new_devices(self, mock_session, mock_update, mock_insert, allocator):
         mock_query = MagicMock()
         mock_query.with_entities.return_value = mock_query
         mock_query.all.return_value = []
@@ -530,8 +532,8 @@ class TestSyncDiscoveredToDb:
 
         allocator.sync_discovered_to_db(discovered)
 
-        assert mock_db.session.add.call_count == 2
-        mock_db.session.commit.assert_called_once()
+        assert mock_insert.call_count == 2
+        mock_session.commit.assert_called_once()
 
     @patch('virtcca_deploy.services.resource_allocator.db')
     def test_sync_updates_existing_devices(self, mock_db, allocator):
@@ -570,3 +572,733 @@ class TestSyncDiscoveredToDb:
         allocator.sync_discovered_to_db([{"bdf": "x", "vendor_id": 1, "device_id": 2}])
 
         mock_db.session.rollback.assert_called_once()
+
+
+# ========== SR-IOV VF 设置测试 ==========
+
+class TestSetupSriovVfValidation:
+
+    def test_invalid_vf_num_negative(self, allocator):
+        result = allocator.setup_sriov_vf("enp59s0", -1)
+        assert result.success is False
+        assert "Invalid vf_num" in result.message
+
+    def test_invalid_vf_num_string(self, allocator):
+        result = allocator.setup_sriov_vf("enp59s0", "abc")
+        assert result.success is False
+        assert "Invalid vf_num" in result.message
+
+    def test_invalid_vf_num_float(self, allocator):
+        result = allocator.setup_sriov_vf("enp59s0", 2.5)
+        assert result.success is False
+        assert "Invalid vf_num" in result.message
+
+    @patch('os.path.isdir')
+    def test_net_device_not_exist(self, mock_isdir, allocator):
+        mock_isdir.return_value = False
+        result = allocator.setup_sriov_vf("nonexistent0", 4)
+        assert result.success is False
+        assert "does not exist" in result.message
+
+    @patch('os.path.exists')
+    @patch('os.path.isdir')
+    def test_device_no_sriov_support(self, mock_isdir, mock_exists, allocator):
+        mock_isdir.return_value = True
+        mock_exists.return_value = False
+        result = allocator.setup_sriov_vf("enp59s0", 4)
+        assert result.success is False
+        assert "does not support SR-IOV" in result.message
+
+
+class TestSetupSriovVfMaxVfs:
+
+    @patch.object(DeviceManagerAllocator, '_find_allocated_vf_under_pf', return_value=None)
+    @patch.object(DeviceManagerAllocator, '_find_pf_record_by_net_device')
+    @patch('os.path.exists')
+    @patch('os.path.isdir')
+    def test_vf_num_exceeds_max(self, mock_isdir, mock_exists, mock_find_pf, mock_find_vf, allocator):
+        mock_isdir.return_value = True
+
+        def exists_side_effect(path):
+            if path.endswith("sriov_numvfs"):
+                return True
+            if path.endswith("sriov_totalvfs"):
+                return True
+            return False
+
+        mock_exists.side_effect = exists_side_effect
+
+        mock_pf_record = MagicMock()
+        mock_pf_record.bdf = "0000:3b:00.0"
+        mock_pf_record.status = DeviceAllocation.DEVICE_STATUS_AVAILABLE
+        mock_find_pf.return_value = mock_pf_record
+
+        with patch('builtins.open', mock_open(read_data="8")):
+            result = allocator.setup_sriov_vf("enp59s0", 16)
+
+        assert result.success is False
+        assert "exceeds maximum" in result.message
+
+    @patch.object(DeviceManagerAllocator, '_find_allocated_vf_under_pf', return_value=None)
+    @patch.object(DeviceManagerAllocator, '_find_pf_record_by_net_device')
+    @patch('os.path.exists')
+    @patch('os.path.isdir')
+    def test_vf_num_within_max(self, mock_isdir, mock_exists, mock_find_pf, mock_find_vf, allocator):
+        mock_isdir.return_value = True
+
+        def exists_side_effect(path):
+            if path.endswith("sriov_numvfs"):
+                return True
+            if path.endswith("sriov_totalvfs"):
+                return True
+            return False
+
+        mock_exists.side_effect = exists_side_effect
+
+        mock_pf_record = MagicMock()
+        mock_pf_record.bdf = "0000:3b:00.0"
+        mock_pf_record.status = DeviceAllocation.DEVICE_STATUS_AVAILABLE
+        mock_find_pf.return_value = mock_pf_record
+
+        file_contents = {"sriov_totalvfs": "32", "sriov_numvfs": "4"}
+        open_mock = MagicMock()
+
+        def open_side_effect(path, mode='r'):
+            for key, content in file_contents.items():
+                if path.endswith(key):
+                    return mock_open(read_data=content).return_value
+            if mode == 'w':
+                return mock_open().return_value
+            raise FileNotFoundError(path)
+
+        open_mock.side_effect = open_side_effect
+
+        with patch('builtins.open', open_mock):
+            with patch.object(allocator, '_update_pf_status_after_sriov'):
+                result = allocator.setup_sriov_vf("enp59s0", 4)
+
+        assert result.success is True
+
+
+class TestSetupSriovVfWrite:
+
+    @patch.object(DeviceManagerAllocator, '_find_allocated_vf_under_pf', return_value=None)
+    @patch.object(DeviceManagerAllocator, '_find_pf_record_by_net_device')
+    @patch('os.path.exists')
+    @patch('os.path.isdir')
+    def test_write_permission_denied(self, mock_isdir, mock_exists, mock_find_pf, mock_find_vf, allocator):
+        mock_isdir.return_value = True
+
+        def exists_side_effect(path):
+            if path.endswith("sriov_numvfs"):
+                return True
+            if path.endswith("sriov_totalvfs"):
+                return False
+            return False
+
+        mock_exists.side_effect = exists_side_effect
+
+        mock_pf_record = MagicMock()
+        mock_pf_record.bdf = "0000:3b:00.0"
+        mock_pf_record.status = DeviceAllocation.DEVICE_STATUS_AVAILABLE
+        mock_find_pf.return_value = mock_pf_record
+
+        with patch('builtins.open', side_effect=PermissionError("Permission denied")):
+            result = allocator.setup_sriov_vf("enp59s0", 4)
+
+        assert result.success is False
+        assert "Permission denied" in result.message
+
+    @patch.object(DeviceManagerAllocator, '_find_allocated_vf_under_pf', return_value=None)
+    @patch.object(DeviceManagerAllocator, '_find_pf_record_by_net_device')
+    @patch('os.path.exists')
+    @patch('os.path.isdir')
+    def test_write_os_error(self, mock_isdir, mock_exists, mock_find_pf, mock_find_vf, allocator):
+        mock_isdir.return_value = True
+
+        def exists_side_effect(path):
+            if path.endswith("sriov_numvfs"):
+                return True
+            if path.endswith("sriov_totalvfs"):
+                return False
+            return False
+
+        mock_exists.side_effect = exists_side_effect
+
+        mock_pf_record = MagicMock()
+        mock_pf_record.bdf = "0000:3b:00.0"
+        mock_pf_record.status = DeviceAllocation.DEVICE_STATUS_AVAILABLE
+        mock_find_pf.return_value = mock_pf_record
+
+        with patch('builtins.open', side_effect=OSError("I/O error")):
+            result = allocator.setup_sriov_vf("enp59s0", 4)
+
+        assert result.success is False
+        assert "Failed to write sriov_numvfs" in result.message
+
+
+class TestSetupSriovVfVerify:
+
+    @patch.object(DeviceManagerAllocator, '_find_allocated_vf_under_pf', return_value=None)
+    @patch.object(DeviceManagerAllocator, '_find_pf_record_by_net_device')
+    @patch('os.path.exists')
+    @patch('os.path.isdir')
+    def test_verify_count_mismatch(self, mock_isdir, mock_exists, mock_find_pf, mock_find_vf, allocator):
+        mock_isdir.return_value = True
+
+        def exists_side_effect(path):
+            if path.endswith("sriov_numvfs"):
+                return True
+            if path.endswith("sriov_totalvfs"):
+                return False
+            return False
+
+        mock_exists.side_effect = exists_side_effect
+
+        mock_pf_record = MagicMock()
+        mock_pf_record.bdf = "0000:3b:00.0"
+        mock_pf_record.status = DeviceAllocation.DEVICE_STATUS_AVAILABLE
+        mock_find_pf.return_value = mock_pf_record
+
+        open_mock = MagicMock()
+
+        def open_side_effect(path, mode='r'):
+            if mode == 'w':
+                return mock_open().return_value
+            return mock_open(read_data="0").return_value
+
+        open_mock.side_effect = open_side_effect
+
+        with patch('builtins.open', open_mock):
+            result = allocator.setup_sriov_vf("enp59s0", 4)
+
+        assert result.success is False
+        assert "verification failed" in result.message
+
+
+class TestSetupSriovVfSuccess:
+
+    @patch.object(DeviceManagerAllocator, '_find_allocated_vf_under_pf', return_value=None)
+    @patch.object(DeviceManagerAllocator, '_find_pf_record_by_net_device')
+    @patch('os.path.exists')
+    @patch('os.path.isdir')
+    def test_full_success_flow(self, mock_isdir, mock_exists, mock_find_pf, mock_find_vf, allocator):
+        mock_isdir.return_value = True
+
+        def exists_side_effect(path):
+            if path.endswith("sriov_numvfs"):
+                return True
+            if path.endswith("sriov_totalvfs"):
+                return False
+            return False
+
+        mock_exists.side_effect = exists_side_effect
+
+        mock_pf_record = MagicMock()
+        mock_pf_record.bdf = "0000:3b:00.0"
+        mock_pf_record.status = DeviceAllocation.DEVICE_STATUS_AVAILABLE
+        mock_find_pf.return_value = mock_pf_record
+
+        open_mock = MagicMock()
+        write_handle = MagicMock()
+
+        def open_side_effect(path, mode='r'):
+            if mode == 'w':
+                return write_handle
+            return mock_open(read_data="4").return_value
+
+        open_mock.side_effect = open_side_effect
+
+        with patch('builtins.open', open_mock):
+            with patch.object(allocator, '_update_pf_status_after_sriov') as mock_update:
+                result = allocator.setup_sriov_vf("enp59s0", 4)
+
+        assert result.success is True
+        assert result.device_name == "enp59s0"
+        assert result.vf_num == 4
+        mock_update.assert_called_once_with("enp59s0")
+
+
+class TestSetupSriovVfAllocatedPf:
+
+    @patch.object(DeviceManagerAllocator, '_find_pf_record_by_net_device')
+    @patch('os.path.exists')
+    @patch('os.path.isdir')
+    def test_pf_allocated_to_vm(self, mock_isdir, mock_exists, mock_find_pf, allocator):
+        mock_isdir.return_value = True
+
+        def exists_side_effect(path):
+            if path.endswith("sriov_numvfs"):
+                return True
+            return False
+
+        mock_exists.side_effect = exists_side_effect
+
+        mock_pf_record = MagicMock()
+        mock_pf_record.bdf = "0000:3b:00.0"
+        mock_pf_record.status = DeviceAllocation.DEVICE_STATUS_ALLOCATED
+        mock_pf_record.allocated_vm_id = "compute01-1"
+        mock_find_pf.return_value = mock_pf_record
+
+        result = allocator.setup_sriov_vf("enp59s0", 4)
+
+        assert result.success is False
+        assert "allocated to VM" in result.message
+        assert "compute01-1" in result.message
+
+
+class TestSetupSriovVfAllocatedVf:
+
+    @patch.object(DeviceManagerAllocator, '_find_allocated_vf_under_pf')
+    @patch.object(DeviceManagerAllocator, '_find_pf_record_by_net_device')
+    @patch('os.path.exists')
+    @patch('os.path.isdir')
+    def test_vf_allocated_under_pf(self, mock_isdir, mock_exists, mock_find_pf, mock_find_vf, allocator):
+        mock_isdir.return_value = True
+
+        def exists_side_effect(path):
+            if path.endswith("sriov_numvfs"):
+                return True
+            return False
+
+        mock_exists.side_effect = exists_side_effect
+
+        mock_pf_record = MagicMock()
+        mock_pf_record.bdf = "0000:3b:00.0"
+        mock_pf_record.status = DeviceAllocation.DEVICE_STATUS_AVAILABLE
+        mock_find_pf.return_value = mock_pf_record
+
+        mock_vf_record = MagicMock()
+        mock_vf_record.bdf = "0000:3b:00.1"
+        mock_vf_record.allocated_vm_id = "compute01-2"
+        mock_find_vf.return_value = mock_vf_record
+
+        result = allocator.setup_sriov_vf("enp59s0", 4)
+
+        assert result.success is False
+        assert "has allocated VF" in result.message
+        assert "0000:3b:00.1" in result.message
+        assert "compute01-2" in result.message
+
+
+class TestFindAllocatedVfUnderPf:
+
+    @patch('virtcca_deploy.services.resource_allocator.DeviceAllocation')
+    def test_found_allocated_vf(self, mock_allocation, allocator):
+        mock_vf_record = MagicMock()
+        mock_vf_record.bdf = "0000:3b:00.1"
+        mock_query = MagicMock()
+        mock_query.filter.return_value = mock_query
+        mock_query.all.return_value = [mock_vf_record]
+        mock_allocation.query = mock_query
+
+        result = allocator._find_allocated_vf_under_pf("0000:3b:00.0")
+
+        assert result is mock_vf_record
+
+    @patch('virtcca_deploy.services.resource_allocator.DeviceAllocation')
+    def test_no_allocated_vf(self, mock_allocation, allocator):
+        mock_query = MagicMock()
+        mock_query.filter.return_value = mock_query
+        mock_query.all.return_value = []
+        mock_allocation.query = mock_query
+
+        result = allocator._find_allocated_vf_under_pf("0000:3b:00.0")
+
+        assert result is None
+
+
+class TestFindPfRecordByNetDevice:
+
+    @patch('virtcca_deploy.services.resource_allocator.DeviceAllocation')
+    def test_found_pf_record(self, mock_allocation, allocator):
+        mock_pf_record = MagicMock()
+        mock_query = MagicMock()
+        mock_query.filter.return_value = mock_query
+        mock_query.first.return_value = mock_pf_record
+        mock_allocation.query = mock_query
+
+        result = allocator._find_pf_record_by_net_device("enp59s0")
+
+        assert result is mock_pf_record
+
+    @patch('virtcca_deploy.services.resource_allocator.DeviceAllocation')
+    def test_no_matching_pf_in_db(self, mock_allocation, allocator):
+        mock_query = MagicMock()
+        mock_query.filter.return_value = mock_query
+        mock_query.first.return_value = None
+        mock_allocation.query = mock_query
+
+        result = allocator._find_pf_record_by_net_device("enp59s0")
+        assert result is None
+
+
+class TestUpdatePfStatusAfterSriov:
+
+    @patch('virtcca_deploy.services.resource_allocator.db')
+    @patch.object(DeviceManagerAllocator, '_find_pf_record_by_net_device')
+    def test_update_status_to_sriov_used(self, mock_find, mock_db, allocator):
+        mock_record = MagicMock()
+        mock_record.bdf = "0000:3b:00.0"
+        mock_find.return_value = mock_record
+
+        allocator._update_pf_status_after_sriov("enp59s0")
+
+        assert mock_record.status == DeviceAllocation.DEVICE_STATUS_SRIOV_USED
+        assert mock_record.device_name == "enp59s0"
+        mock_db.session.commit.assert_called_once()
+
+    @patch('virtcca_deploy.services.resource_allocator.db')
+    @patch.object(DeviceManagerAllocator, '_find_pf_record_by_net_device')
+    def test_update_no_record_found(self, mock_find, mock_db, allocator):
+        mock_find.return_value = None
+
+        allocator._update_pf_status_after_sriov("enp59s0")
+
+        mock_db.session.commit.assert_not_called()
+
+    @patch('virtcca_deploy.services.resource_allocator.db')
+    @patch.object(DeviceManagerAllocator, '_find_pf_record_by_net_device')
+    def test_update_db_commit_failure(self, mock_find, mock_db, allocator):
+        mock_record = MagicMock()
+        mock_find.return_value = mock_record
+        mock_db.session.commit.side_effect = Exception("db error")
+
+        allocator._update_pf_status_after_sriov("enp59s0")
+
+        mock_db.session.rollback.assert_called_once()
+
+
+class TestVerifySriovNumvfs:
+
+    @patch('builtins.open', mock_open(read_data="4"))
+    def test_verify_match(self, allocator):
+        result = allocator._verify_sriov_numvfs("enp59s0", 4)
+        assert result is True
+
+    @patch('builtins.open', mock_open(read_data="0"))
+    def test_verify_mismatch(self, allocator):
+        result = allocator._verify_sriov_numvfs("enp59s0", 4)
+        assert result is False
+
+    @patch('builtins.open', side_effect=ValueError("bad value"))
+    def test_verify_read_error(self, mock_open_func, allocator):
+        result = allocator._verify_sriov_numvfs("enp59s0", 4)
+        assert result is False
+
+    @patch('builtins.open', side_effect=OSError("read error"))
+    def test_verify_os_error(self, mock_open_func, allocator):
+        result = allocator._verify_sriov_numvfs("enp59s0", 4)
+        assert result is False
+
+
+# ========== VF 自动销毁与 PF 恢复测试 ==========
+
+class TestTryReclaimSriovPf:
+
+    @patch.object(DeviceManagerAllocator, '_destroy_vfs_and_restore_pf')
+    @patch.object(DeviceManagerAllocator, '_find_allocated_vf_under_pf', return_value=None)
+    @patch('virtcca_deploy.services.resource_allocator.DeviceAllocation')
+    def test_all_vfs_released_triggers_destroy(self, mock_allocation, mock_find_vf, mock_destroy, allocator):
+        mock_pf_record = MagicMock()
+        mock_pf_record.bdf = "0000:3b:00.0"
+        mock_pf_record.device_type = DeviceTypeConfig.DEVICE_TYPE_NET_PF
+        mock_pf_record.status = DeviceAllocation.DEVICE_STATUS_SRIOV_USED
+
+        mock_query = MagicMock()
+        mock_query.filter.return_value = mock_query
+        mock_query.first.return_value = mock_pf_record
+        mock_allocation.query = mock_query
+
+        allocator._try_reclaim_sriov_pf(["0000:3b:00.1"])
+
+        mock_destroy.assert_called_once_with(mock_pf_record)
+
+    @patch.object(DeviceManagerAllocator, '_destroy_vfs_and_restore_pf')
+    @patch.object(DeviceManagerAllocator, '_find_allocated_vf_under_pf')
+    @patch('virtcca_deploy.services.resource_allocator.DeviceAllocation')
+    def test_remaining_allocated_vf_skips_destroy(self, mock_allocation, mock_find_vf, mock_destroy, allocator):
+        mock_pf_record = MagicMock()
+        mock_pf_record.bdf = "0000:3b:00.0"
+        mock_pf_record.device_type = DeviceTypeConfig.DEVICE_TYPE_NET_PF
+        mock_pf_record.status = DeviceAllocation.DEVICE_STATUS_SRIOV_USED
+
+        mock_query = MagicMock()
+        mock_query.filter.return_value = mock_query
+        mock_query.first.return_value = mock_pf_record
+        mock_allocation.query = mock_query
+
+        remaining_vf = MagicMock()
+        mock_find_vf.return_value = remaining_vf
+
+        allocator._try_reclaim_sriov_pf(["0000:3b:00.1"])
+
+        mock_destroy.assert_not_called()
+
+    @patch.object(DeviceManagerAllocator, '_destroy_vfs_and_restore_pf')
+    @patch('virtcca_deploy.services.resource_allocator.DeviceAllocation')
+    def test_no_sriov_used_pf_skips(self, mock_allocation, mock_destroy, allocator):
+        mock_query = MagicMock()
+        mock_query.filter.return_value = mock_query
+        mock_query.first.return_value = None
+        mock_allocation.query = mock_query
+
+        allocator._try_reclaim_sriov_pf(["0000:3b:00.1"])
+
+        mock_destroy.assert_not_called()
+
+    @patch.object(DeviceManagerAllocator, '_destroy_vfs_and_restore_pf')
+    @patch.object(DeviceManagerAllocator, '_find_allocated_vf_under_pf', return_value=None)
+    @patch('virtcca_deploy.services.resource_allocator.DeviceAllocation')
+    def test_same_pf_deduplication(self, mock_allocation, mock_find_vf, mock_destroy, allocator):
+        mock_pf_record = MagicMock()
+        mock_pf_record.bdf = "0000:3b:00.0"
+        mock_pf_record.device_type = DeviceTypeConfig.DEVICE_TYPE_NET_PF
+        mock_pf_record.status = DeviceAllocation.DEVICE_STATUS_SRIOV_USED
+
+        mock_query = MagicMock()
+        mock_query.filter.return_value = mock_query
+        mock_query.first.return_value = mock_pf_record
+        mock_allocation.query = mock_query
+
+        allocator._try_reclaim_sriov_pf(["0000:3b:00.1", "0000:3b:00.2"])
+
+        mock_destroy.assert_called_once_with(mock_pf_record)
+
+
+class TestDestroyVfsAndRestorePf:
+
+    @patch('builtins.open')
+    @patch.object(DeviceManagerAllocator, '_verify_sriov_numvfs')
+    @patch.object(DeviceManagerAllocator, '_restore_pf_after_vf_destroy')
+    def test_successful_destroy(self, mock_restore_pf, mock_verify_sriov, mock_open, allocator):
+        """测试成功销毁 VF 并恢复 PF"""
+        # 创建 PF 记录
+        mock_pf_record = MagicMock()
+        mock_pf_record.bdf = "0000:3b:00.0"
+        mock_pf_record.device_name = "enp59s0"
+
+        # 创建设备分配器实例
+        allocator = DeviceManagerAllocator()
+        
+        # 执行被测方法
+        allocator._destroy_vfs_and_restore_pf(mock_pf_record)
+        
+        # 验证 _restore_pf_after_vf_destroy 被调用
+        mock_restore_pf.assert_called_once_with(mock_pf_record)
+        
+        # 验证 _verify_sriov_numvfs 被调用
+        mock_verify_sriov.assert_called_once_with("enp59s0", 0)
+
+    @patch('builtins.open', side_effect=PermissionError("denied"))
+    @patch.object(DeviceManagerAllocator, '_restore_pf_after_vf_destroy')
+    def test_permission_denied(self, mock_open, allocator):
+        mock_pf_record = MagicMock()
+        mock_pf_record.bdf = "0000:3b:00.0"
+        mock_pf_record.device_name = "enp59s0"
+
+        allocator._destroy_vfs_and_restore_pf(mock_pf_record)
+
+        allocator._restore_pf_after_vf_destroy.assert_not_called()
+
+    @patch('builtins.open', side_effect=OSError("I/O error"))
+    @patch.object(DeviceManagerAllocator, '_restore_pf_after_vf_destroy')
+    def test_os_error_on_write(self, mock_open, allocator):
+        mock_pf_record = MagicMock()
+        mock_pf_record.bdf = "0000:3b:00.0"
+        mock_pf_record.device_name = "enp59s0"
+
+        allocator._destroy_vfs_and_restore_pf(mock_pf_record)
+
+        allocator._restore_pf_after_vf_destroy.assert_not_called()
+
+    @patch('builtins.open', mock_open())
+    @patch.object(DeviceManagerAllocator, '_restore_pf_after_vf_destroy')
+    @patch.object(DeviceManagerAllocator, '_verify_sriov_numvfs', return_value=False)
+    def test_verify_failure_skips_restore(self, mock_open, allocator):
+        mock_pf_record = MagicMock()
+        mock_pf_record.bdf = "0000:3b:00.0"
+        mock_pf_record.device_name = "enp59s0"
+
+        allocator._destroy_vfs_and_restore_pf(mock_pf_record)
+
+        allocator._restore_pf_after_vf_destroy.assert_not_called()
+
+    @patch.object(DeviceManagerAllocator, '_restore_pf_after_vf_destroy')
+    def test_no_device_name_skips(self, allocator):
+        mock_pf_record = MagicMock()
+        mock_pf_record.bdf = "0000:3b:00.0"
+        mock_pf_record.device_name = None
+
+        allocator._destroy_vfs_and_restore_pf(mock_pf_record)
+
+        allocator._restore_pf_after_vf_destroy.assert_not_called()
+
+    @patch.object(DeviceManagerAllocator, '_restore_pf_after_vf_destroy')
+    def test_empty_device_name_skips(self, allocator):
+        mock_pf_record = MagicMock()
+        mock_pf_record.bdf = "0000:3b:00.0"
+        mock_pf_record.device_name = ""
+
+        allocator._destroy_vfs_and_restore_pf(mock_pf_record)
+
+        allocator._restore_pf_after_vf_destroy.assert_not_called()
+
+
+class TestRestorePfAfterVfDestroy:
+
+    @patch('virtcca_deploy.services.resource_allocator.db')
+    def test_restore_pf_and_delete_vf_records(self, mock_db, allocator):
+        mock_vf1 = MagicMock()
+        mock_vf1.bdf = "0000:3b:00.1"
+        mock_vf2 = MagicMock()
+        mock_vf2.bdf = "0000:3b:00.2"
+
+        mock_query = MagicMock()
+        mock_query.filter.return_value = mock_query
+        mock_query.all.return_value = [mock_vf1, mock_vf2]
+
+        DeviceAllocation.query = mock_query
+
+        mock_pf_record = MagicMock()
+        mock_pf_record.bdf = "0000:3b:00.0"
+
+        allocator._restore_pf_after_vf_destroy(mock_pf_record)
+
+        assert mock_pf_record.status == DeviceAllocation.DEVICE_STATUS_AVAILABLE
+        mock_db.session.delete.assert_any_call(mock_vf1)
+        mock_db.session.delete.assert_any_call(mock_vf2)
+        assert mock_db.session.delete.call_count == 2
+        mock_db.session.commit.assert_called_once()
+
+    @patch('virtcca_deploy.services.resource_allocator.db')
+    def test_restore_pf_no_vf_records(self, mock_db, allocator):
+        mock_query = MagicMock()
+        mock_query.filter.return_value = mock_query
+        mock_query.all.return_value = []
+        DeviceAllocation.query = mock_query
+
+        mock_pf_record = MagicMock()
+        mock_pf_record.bdf = "0000:3b:00.0"
+
+        allocator._restore_pf_after_vf_destroy(mock_pf_record)
+
+        assert mock_pf_record.status == DeviceAllocation.DEVICE_STATUS_AVAILABLE
+        mock_db.session.delete.assert_not_called()
+        mock_db.session.commit.assert_called_once()
+
+    @patch('virtcca_deploy.services.resource_allocator.db')
+    @patch('virtcca_deploy.services.resource_allocator.DeviceAllocation')
+    def test_restore_pf_db_error_rollback(self, mock_allocation, mock_db, allocator):
+        mock_query = MagicMock()
+        mock_query.filter.return_value = mock_query
+        mock_query.all.return_value = []
+        mock_allocation.query = mock_query
+
+        mock_db.session.commit.side_effect = Exception("db error")
+
+        mock_pf_record = MagicMock()
+        mock_pf_record.bdf = "0000:3b:00.0"
+
+        allocator._restore_pf_after_vf_destroy(mock_pf_record)
+
+        mock_db.session.rollback.assert_called_once()
+
+
+class TestReleaseWithVfAutoDestroy:
+
+    @patch('virtcca_deploy.services.resource_allocator.db')
+    @patch.object(DeviceManagerAllocator, '_try_reclaim_sriov_pf')
+    def test_release_vf_triggers_reclaim_check(self, mock_try_reclaim, mock_db, allocator):
+        mock_vf_device = MagicMock()
+        mock_vf_device.bdf = "0000:3b:00.1"
+        mock_vf_device.device_type = DeviceTypeConfig.DEVICE_TYPE_NET_VF
+        mock_vf_device.status = DeviceAllocation.DEVICE_STATUS_ALLOCATED
+        mock_vf_device.allocated_vm_id = "test-vm-1"
+
+        mock_query = MagicMock()
+        mock_query.filter_by.return_value = mock_query
+        mock_query.all.return_value = [mock_vf_device]
+        DeviceAllocation.query = mock_query
+
+        req = DeviceReleaseReq(vm_id="test-vm-1")
+        result = allocator.release(req)
+
+        assert result.success is True
+        assert mock_vf_device.status == DeviceAllocation.DEVICE_STATUS_AVAILABLE
+        assert mock_vf_device.allocated_vm_id is None
+        mock_try_reclaim.assert_called_once_with(["0000:3b:00.1"])
+
+    @patch('virtcca_deploy.services.resource_allocator.db')
+    @patch.object(DeviceManagerAllocator, '_try_reclaim_sriov_pf')
+    def test_release_pf_only_no_reclaim(self, mock_allocation, mock_db, allocator):
+        mock_pf_device = MagicMock()
+        mock_pf_device.bdf = "0000:3b:00.0"
+        mock_pf_device.device_type = DeviceTypeConfig.DEVICE_TYPE_NET_PF
+        mock_pf_device.status = DeviceAllocation.DEVICE_STATUS_ALLOCATED
+        mock_pf_device.allocated_vm_id = "test-vm-1"
+
+        mock_query = MagicMock()
+        mock_query.filter_by.return_value = mock_query
+        mock_query.all.return_value = [mock_pf_device]
+        DeviceAllocation.query = mock_query
+
+        req = DeviceReleaseReq(vm_id="test-vm-1")
+        result = allocator.release(req)
+
+        assert result.success is True
+        allocator._try_reclaim_sriov_pf.assert_not_called()
+
+    @patch('virtcca_deploy.services.resource_allocator.db')
+    @patch.object(DeviceManagerAllocator, '_try_reclaim_sriov_pf')
+    def test_release_mixed_pf_and_vf(self, mock_allocation, mock_db, allocator):
+        mock_pf_device = MagicMock()
+        mock_pf_device.bdf = "0000:3b:00.0"
+        mock_pf_device.device_type = DeviceTypeConfig.DEVICE_TYPE_NET_PF
+        mock_pf_device.status = DeviceAllocation.DEVICE_STATUS_ALLOCATED
+        mock_pf_device.allocated_vm_id = "test-vm-1"
+
+        mock_vf_device = MagicMock()
+        mock_vf_device.bdf = "0000:3b:00.1"
+        mock_vf_device.device_type = DeviceTypeConfig.DEVICE_TYPE_NET_VF
+        mock_vf_device.status = DeviceAllocation.DEVICE_STATUS_ALLOCATED
+        mock_vf_device.allocated_vm_id = "test-vm-1"
+
+        mock_query = MagicMock()
+        mock_query.filter_by.return_value = mock_query
+        mock_query.all.return_value = [mock_pf_device, mock_vf_device]
+        DeviceAllocation.query = mock_query
+
+        req = DeviceReleaseReq(vm_id="test-vm-1")
+        result = allocator.release(req)
+
+        assert result.success is True
+        allocator._try_reclaim_sriov_pf.assert_called_once_with(["0000:3b:00.1"])
+
+    @patch('virtcca_deploy.services.resource_allocator.db')
+    @patch.object(DeviceManagerAllocator, '_try_reclaim_sriov_pf')
+    def test_release_multiple_vfs(self, mock_allocation, mock_db, allocator):
+        mock_vf1 = MagicMock()
+        mock_vf1.bdf = "0000:3b:00.1"
+        mock_vf1.device_type = DeviceTypeConfig.DEVICE_TYPE_NET_VF
+        mock_vf1.status = DeviceAllocation.DEVICE_STATUS_ALLOCATED
+        mock_vf1.allocated_vm_id = "test-vm-1"
+
+        mock_vf2 = MagicMock()
+        mock_vf2.bdf = "0000:3b:00.2"
+        mock_vf2.device_type = DeviceTypeConfig.DEVICE_TYPE_NET_VF
+        mock_vf2.status = DeviceAllocation.DEVICE_STATUS_ALLOCATED
+        mock_vf2.allocated_vm_id = "test-vm-1"
+
+        mock_query = MagicMock()
+        mock_query.filter_by.return_value = mock_query
+        mock_query.all.return_value = [mock_vf1, mock_vf2]
+        DeviceAllocation.query = mock_query
+
+        req = DeviceReleaseReq(vm_id="test-vm-1")
+        result = allocator.release(req)
+
+        assert result.success is True
+        allocator._try_reclaim_sriov_pf.assert_called_once_with(
+            ["0000:3b:00.1", "0000:3b:00.2"]
+        )

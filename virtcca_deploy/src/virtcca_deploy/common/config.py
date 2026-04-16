@@ -5,16 +5,11 @@
 import os
 import configparser
 import logging
-import json
-import ast
-import gevent
-import gevent.lock
 from typing import List, Dict
 
 from virtcca_deploy.common import constants
 
 LOG_DIR = constants.PathConfig.LOG_DIR
-DEVICE_STATUS_FILE = constants.PathConfig.DEVICE_STATUS_FILE
 g_logger = logging.getLogger("virtcca_deploy")
 
 
@@ -26,8 +21,8 @@ class Config:
         self.config = configparser.ConfigParser()
         self.config.read(config_path)
         self.logger = None
-        self.ssl_cert = None    # ca cert
-        self.device_manager = None
+        self.ssl_cert = None
+        self.device_allocator = None
 
     def configure_log(self, log_name):
         if self.logger is not None:
@@ -55,31 +50,6 @@ class Config:
         self.ssl_cert = os.path.abspath(ssl_cert)
 
         return
-    def _load_net_list(self):
-        if 'PCI' not in self.config:
-            raise KeyError("PCI section not found in the configuration file.")
-
-        pf_whitelist_str = self.config['PCI'].get('pf_whitelist', '[]')
-        vf_whitelist_str = self.config['PCI'].get('vf_whitelist', '[]')
-        net_list = [None, None]
-
-        try:
-            pf_list = ast.literal_eval(pf_whitelist_str)
-            if not isinstance(pf_list, list):
-                raise ValueError(f"pf_whitelist should be a list, got {type(pf_list).__name__}")
-
-            vf_list = ast.literal_eval(vf_whitelist_str)
-            if not isinstance(vf_list, list):
-                raise ValueError(f"vf_whitelist should be a list, got {type(vf_list).__name__}")
-
-            net_list[0] = pf_list
-            net_list[1] = vf_list
-            return net_list
-
-        except (SyntaxError, ValueError) as e:
-            raise ValueError(f"Error parsing PCI whitelist: {e}")
-        except Exception as e:
-            raise ValueError(f"Unexpected error while parsing PCI whitelist: {e}")
 
     def configure_auth(self):
         """配置认证相关参数，自动生成和管理JWT密钥"""
@@ -135,92 +105,3 @@ class Config:
                                                      fallback=constants.DEFAULT_MAX_LOGIN_ATTEMPTS)
         self.lockout_duration_minutes = self.config.getint('AUTH', 'lockout_duration_minutes',
                                                            fallback=constants.DEFAULT_LOCKOUT_DURATION_MINUTES)
-
-    def configure_device(self):
-        net_list = self._load_net_list()
-        self.device_manager = DeviceManager(net_list)
-
-        return
-
-
-class DeviceManager:
-    def __init__(self, devices, status_file=DEVICE_STATUS_FILE):
-        self.devices = devices
-        self.status_file = status_file
-        self.device_status = {}
-        self._lock = gevent.lock.RLock()
-        all_devices = devices[0] + devices[1]
-
-        if not os.path.exists(self.status_file):
-            for device in all_devices:
-                numa_node = self.get_device_numa_node(device)
-                self.device_status[device] = {
-                    "cvm_id": None,  # not in use
-                    "numa_node": numa_node,
-                    "type": "PF" if device in devices[0] else "VF"
-                }
-            self._save_device_status()
-        else:
-            self._load_device_status()
-
-    def get_device_numa_node(self, device_id):
-        try:
-            numa_node_file = f"/sys/bus/pci/devices/{device_id}/numa_node"
-            with open(numa_node_file, 'r') as f:
-                numa_node = f.read().strip()
-            return int(numa_node) if numa_node != 'invalid' else None  #  NUMA 
-        except FileNotFoundError:
-            g_logger.warn("Cannot find device %s numa file", device_id)
-            return None
-        except Exception as e:
-            g_logger.warn("Failed to read device %s numa file: %s", device_id, e)
-            return None
-
-    def _load_device_status(self):
-        with open(self.status_file, "r") as f:
-            self.device_status = json.load(f)
-
-    def _save_device_status(self):
-        with open(self.status_file, "w") as f:
-            json.dump(self.device_status, f, indent=4)
-
-    def use_device(self, device_id: str, cvm_id: str):
-        with self._lock:
-            if device_id not in self.device_status:
-                g_logger.error("Device %s is not exist!", device_id)
-                return False
-
-            device = self.device_status[device_id]
-            if device["cvm_id"]:
-                g_logger.error("Device %s is in use!", device_id)
-                return False
-            else:
-                device["cvm_id"] = cvm_id
-                self._save_device_status()
-                g_logger.info("Device %s has been successfully used.", device_id)
-                return True
-
-    def get_available_device(self, device_type: str, numa_node: int = None):
-        with self._lock:
-            if device_type not in ["PF", "VF"]:
-                g_logger.error("Invalid device type. Please specify 'PF' or 'VF'.")
-                return None
-
-            available_devices = []
-            for device in self.device_status:
-                status_info = self.device_status[device]
-                if status_info["type"] != device_type or status_info["cvm_id"]:
-                    continue
-                if numa_node is not None and status_info["numa_node"] != numa_node:
-                    continue
-                available_devices.append(device)
-
-            return available_devices
-
-    def release_device_by_cvm_id(self, cvm_id: str):
-        with self._lock:
-            for device in self.device_status:
-                status_info = self.device_status[device]
-                if status_info["cvm_id"] == cvm_id:
-                    status_info["cvm_id"] = None
-            self._save_device_status()

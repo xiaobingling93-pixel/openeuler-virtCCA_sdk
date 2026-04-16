@@ -16,8 +16,6 @@ import pytest
 from unittest.mock import patch, MagicMock
 from flask import Flask
 import virtcca_deploy.common.constants as constants
-from virtcca_deploy.common.constants import HTTPStatusCodes, OperationCodes
-from virtcca_deploy.common.data_model import ApiResponse
 from virtcca_deploy.services.virt_service import deploy_cvm
 
 
@@ -32,7 +30,7 @@ class TestComputeDeploy:
                 'memory': 8192,
                 'core_num': 4,
                 'vlan_id': 0,
-                'gateway_ip': '192.168.100.1',
+                'gateway_ip': ['192.168.100.1'],
                 'net_pf_num': 1,
                 'net_vf_num': 0,
                 'disk_size': 10,
@@ -76,7 +74,7 @@ class TestComputeDeploy:
                 'memory': 8192,
                 'core_num': 4,
                 'vlan_id': 0,
-                'gateway_ip': '192.168.100.1',
+                'gateway_ip': ['192.168.100.1'],
                 'net_pf_num': 1,
                 'net_vf_num': 0,
                 'disk_size': 10,
@@ -105,7 +103,7 @@ class TestComputeDeploy:
                 'memory': 8192,
                 'core_num': 4,
                 'vlan_id': 0,
-                'gateway_ip': '192.168.100.1',
+                'gateway_ip': ['192.168.100.1'],
                 'net_pf_num': 1,
                 'net_vf_num': 0,
                 'disk_size': 10,
@@ -133,7 +131,7 @@ class TestComputeDeploy:
                 'memory': 8192,
                 'core_num': 4,
                 'vlan_id': 0,
-                'gateway_ip': '192.168.100.1',
+                'gateway_ip': ['192.168.100.1'],
                 'net_pf_num': 1,
                 'net_vf_num': 0,
                 'disk_size': 10,
@@ -179,7 +177,7 @@ class TestComputeDeploy:
                 'memory': 8192,
                 'core_num': 4,
                 'vlan_id': 0,
-                'gateway_ip': '192.168.100.1',
+                'gateway_ip': ['192.168.100.1'],
                 'net_pf_num': 1,
                 'net_vf_num': 0,
                 'disk_size': 10,
@@ -207,7 +205,7 @@ class TestComputeDeploy:
                 'memory': 8192,
                 'core_num': 4,
                 'vlan_id': 0,
-                'gateway_ip': '192.168.100.1',
+                'gateway_ip': ['192.168.100.1'],
                 'net_pf_num': 1,
                 'net_vf_num': 0,
                 'disk_size': 10,
@@ -253,7 +251,7 @@ class TestVirtServiceDeploy:
             memory=8192,
             core_num=4,
             vlan_id=0,
-            gateway_ip='192.168.100.1',
+            gateway_ip=['192.168.100.1'],
             net_pf_num=1,
             net_vf_num=0,
             disk_size=10,
@@ -299,7 +297,7 @@ class TestVirtServiceDeploy:
             memory=8192,
             core_num=4,
             vlan_id=0,
-            gateway_ip='192.168.100.1',
+            gateway_ip=['192.168.100.1'],
             net_pf_num=1,
             net_vf_num=0,
             disk_size=10,

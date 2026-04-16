@@ -456,6 +456,80 @@ def create_app():
                 message = f"Failed to start undeployment: {e}"
             ).to_dict()), HTTPStatus.INTERNAL_SERVER_ERROR
 
+    @app.route(constants.ROUTE_VM_STOP, methods=[constants.POST])
+    def stop_cvm():
+        stop_data = flask.request.get_json()
+
+        vm_id_list = None
+        if isinstance(stop_data, list):
+            vm_id_list = stop_data
+        elif isinstance(stop_data, dict) and "vm_ids" in stop_data:
+            vm_id_list = stop_data["vm_ids"]
+        else:
+            return flask.jsonify(ApiResponse(
+                message = "Invalid request format, expected a list of VM IDs"
+            ).to_dict()), HTTPStatus.BAD_REQUEST
+
+        if not vm_id_list or not isinstance(vm_id_list, list):
+            return flask.jsonify(ApiResponse(
+                message = "Invalid request format, expected a non-empty list of VM IDs"
+            ).to_dict()), HTTPStatus.BAD_REQUEST
+
+        if len(vm_id_list) == 0:
+            return flask.jsonify(ApiResponse(
+                message = "VM ID list cannot be empty"
+            ).to_dict()), HTTPStatus.BAD_REQUEST
+
+        vm_service_instance = vm_service.get_vm_service()
+        try:
+            stop_results = vm_service_instance.execute_stop(vm_id_list)
+            return flask.jsonify(ApiResponse(
+                data = stop_results,
+                message = ""
+            ).to_dict()), HTTPStatus.ACCEPTED
+        except Exception as e:
+            g_logger.error(f"Failed to start stop operation: {e}")
+            return flask.jsonify(ApiResponse(
+                message = f"Failed to start stop operation: {e}"
+            ).to_dict()), HTTPStatus.INTERNAL_SERVER_ERROR
+
+    @app.route(constants.ROUTE_VM_START, methods=[constants.POST])
+    def start_cvm():
+        start_data = flask.request.get_json()
+
+        vm_id_list = None
+        if isinstance(start_data, list):
+            vm_id_list = start_data
+        elif isinstance(start_data, dict) and "vm_ids" in start_data:
+            vm_id_list = start_data["vm_ids"]
+        else:
+            return flask.jsonify(ApiResponse(
+                message = "Invalid request format, expected a list of VM IDs"
+            ).to_dict()), HTTPStatus.BAD_REQUEST
+
+        if not vm_id_list or not isinstance(vm_id_list, list):
+            return flask.jsonify(ApiResponse(
+                message = "Invalid request format, expected a non-empty list of VM IDs"
+            ).to_dict()), HTTPStatus.BAD_REQUEST
+
+        if len(vm_id_list) == 0:
+            return flask.jsonify(ApiResponse(
+                message = "VM ID list cannot be empty"
+            ).to_dict()), HTTPStatus.BAD_REQUEST
+
+        vm_service_instance = vm_service.get_vm_service()
+        try:
+            start_results = vm_service_instance.execute_start(vm_id_list)
+            return flask.jsonify(ApiResponse(
+                data = start_results,
+                message = ""
+            ).to_dict()), HTTPStatus.ACCEPTED
+        except Exception as e:
+            g_logger.error(f"Failed to start operation: {e}")
+            return flask.jsonify(ApiResponse(
+                message = f"Failed to start operation: {e}"
+            ).to_dict()), HTTPStatus.INTERNAL_SERVER_ERROR
+
     @app.route(constants.ROUTE_VM_STATE, methods=[constants.POST])
     def get_cvm_state():
         """
