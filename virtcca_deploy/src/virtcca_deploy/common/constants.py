@@ -178,7 +178,6 @@ class PathConfig:
     COMPUTE_SOFTWARE_PATH = f"{UPLOAD_DIR}/compute"
     QCOW2_DIR = f"{DATA_DIR}/qcow2"
     MOUNT_PATH = f"{QCOW2_DIR}/mnt"
-    DEVICE_STATUS_FILE = f"{DATA_DIR}/device_status.json"
     MANAGER_DB = f"sqlite:///{DATA_DIR}/virtcca_deploy_manager.db"
     COMPUTE_DB = f"sqlite:///{DATA_DIR}/virtcca_deploy_compute.db"
 

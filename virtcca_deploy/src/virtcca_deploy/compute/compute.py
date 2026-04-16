@@ -18,6 +18,7 @@ import virtcca_deploy.services.virt_service as virt_service
 import virtcca_deploy.services.network_service as network_service
 import virtcca_deploy.services.util_service as util_service
 import virtcca_deploy.services.db_service as db_service
+import virtcca_deploy.services.resource_allocator as resource_allocator
 from virtcca_deploy.common.data_model import VmDeploySpec, ApiResponse, VmDeploySpecInternal
 
 g_logger = config.g_logger
@@ -29,7 +30,6 @@ def create_app():
     server_config = config.Config(constants.DEFAULT_CONFIG_PATH)
     server_config.configure_log(constants.COMPUTE_LOG_NAME)
     server_config.configure_ssl()
-    server_config.configure_device()
 
     root_logger = logging.getLogger()
     app.logger.setLevel(logging.INFO)
@@ -46,6 +46,12 @@ def create_app():
     with app.app_context():
         compute_db.db.create_all()
         g_logger.info("Compute database initialized at %s", constants.PathConfig.COMPUTE_DB)
+
+        device_allocator = resource_allocator.DeviceManagerAllocator()
+        device_allocator.discover_hi1822_devices()
+        device_allocator.sync_discovered_to_db()
+        server_config.device_allocator = device_allocator
+        g_logger.info("Device allocator initialized and devices synced to database")
 
     manager_domain_name = server_config.config.get("DEFAULT", "manager").strip().strip('"').strip("'")
     try:

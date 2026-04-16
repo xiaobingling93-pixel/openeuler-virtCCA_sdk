@@ -155,6 +155,7 @@ class DeviceAllocation(db.Model):
     numa_node = db.Column(db.Integer, nullable=True)
     device_type = db.Column(db.String(10), nullable=False)
     status = db.Column(db.String(20), nullable=False, default="available")
+    device_name = db.Column(db.String(40), nullable=True)
     allocated_vm_id = db.Column(db.String(80), nullable=True)
     allocated_at = db.Column(db.DateTime, nullable=True)
     released_at = db.Column(db.DateTime, nullable=True)
@@ -163,6 +164,7 @@ class DeviceAllocation(db.Model):
 
     DEVICE_STATUS_AVAILABLE = "available"
     DEVICE_STATUS_ALLOCATED = "allocated"
+    DEVICE_STATUS_SRIOV_USED = "sriov_used"
 
     def to_dict(self):
         return {
@@ -172,6 +174,7 @@ class DeviceAllocation(db.Model):
             "numa_node": self.numa_node,
             "device_type": self.device_type,
             "status": self.status,
+            "device_name": self.device_name,
             "allocated_vm_id": self.allocated_vm_id,
             "allocated_at": self.allocated_at.isoformat() if self.allocated_at else None,
             "released_at": self.released_at.isoformat() if self.released_at else None,

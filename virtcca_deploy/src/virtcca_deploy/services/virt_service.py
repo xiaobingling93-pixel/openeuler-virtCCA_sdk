@@ -12,12 +12,14 @@ import time
 import libvirt
 import subprocess
 
-from virtcca_deploy.common.data_model import VmDeploySpecInternal
-from virtcca_deploy.common.data_model import VmDeploySpec
+from virtcca_deploy.common.data_model import (
+    VmDeploySpecInternal, VmDeploySpec, DeviceAllocReq, DeviceReleaseReq, SriovVfSetupResp
+)
 import virtcca_deploy.common.config as config
 import virtcca_deploy.common.constants as constants
 import virtcca_deploy.common.hardware as hardware
 import virtcca_deploy.services.util_service as util_service
+import virtcca_deploy.services.resource_allocator as resource_allocator
 
 g_logger = config.g_logger
 NET_CONFIG_PATH = "/etc/sysconfig/network-scripts"
@@ -284,40 +286,25 @@ def cvm_numa_check(core_num: int, mem_size: int, vm_num: int) -> Tuple[Optional[
 
 def cvm_device_check(
     cvm_name: str,
-    device_manager: config.DeviceManager,
+    device_allocator: resource_allocator.DeviceManagerAllocator,
     pf_num: int,
     vf_num: int,
-) -> Tuple[List[List[str]], str]:
-    """
-    check and allocate device for CVM.
-    """
-    allocated_devices = []
+) -> Tuple[List[str], str]:
     if pf_num + vf_num == 0:
-        return allocated_devices, None
+        return [], None
 
-    available_pf = device_manager.get_available_device("PF")
-    available_vf = device_manager.get_available_device("VF")
+    req = DeviceAllocReq(vm_id=cvm_name, pf_num=pf_num, vf_num=vf_num)
+    result = device_allocator.allocate(req)
 
-    if len(available_pf) < pf_num:
-        err_msg = f"Not enough PF devices. Need {pf_num}, available: {len(available_pf)}"
-        g_logger.error(err_msg)
-        return [], err_msg
+    if result.success:
+        return result.device_list, None
 
-    if len(available_vf) < vf_num:
-        err_msg = f"Not enough VF devices. Need {vf_num}, available: {len(available_vf)}"
-        g_logger.error(err_msg)
-        return [], err_msg
-
-    for _ in range(pf_num):
-        device = available_pf.pop(0)
-        device_manager.use_device(device, cvm_name)
-        allocated_devices.append(device)
-    for _ in range(vf_num):
-        device = available_vf.pop(0)
-        device_manager.use_device(device, cvm_name)
-        allocated_devices.append(device)
-
-    return allocated_devices, None
+    err_msg = (
+        f"Device allocation failed for VM {cvm_name}: "
+        f"need {pf_num} PF + {vf_num} VF"
+    )
+    g_logger.error(err_msg)
+    return [], err_msg
 
 def cvm_net_check(ip_list: List[str], retries: int = 5, delay: int = 3) -> List[str]:
     """
@@ -359,8 +346,9 @@ def cvm_resource_reclaim(cvm_name: str, server_config: config):
         libvirt.destroy_cvm_by_name(cvm_name)
     file_name = f"{cvm_name}.qcow2"
     qcow2_path = os.path.join(server_config.config.get("DEFAULT", "cvm_image_path"), file_name)
-    os.remove(qcow2_path)
-    server_config.device_manager.release_device_by_cvm_id(cvm_name)
+    if os.path.exists(qcow2_path):
+        os.remove(qcow2_path)
+    server_config.device_allocator.release(DeviceReleaseReq(vm_id=cvm_name))
 
 def _execute_deploy_cvm(
     cvm_name: str,
@@ -394,21 +382,171 @@ def _execute_deploy_cvm(
         return err_msg
     return None
 
+def _ensure_sriov_vf_resources(
+    device_allocator: resource_allocator.DeviceManagerAllocator,
+    required_vf_count: int,
+    total_vm_count: int,
+) -> Optional[str]:
+    """
+    确保 SR-IOV VF 资源满足部署需求
+
+    1. 查询当前可用 VF 数量
+    2. 若不足，扫描可用 PF 并调用 setup_sriov_vf 创建 VF
+    3. 创建后重新扫描设备并同步数据库，再次检查 VF 可用性
+
+    :param device_allocator: 设备分配器实例
+    :param required_vf_count: 每台 VM 所需的 VF 数量
+    :param total_vm_count: 待部署的 VM 总数
+    :return: 错误信息字符串，资源充足时返回 None
+    """
+    total_required = required_vf_count * total_vm_count
+
+    available_vfs = device_allocator.get_available_devices(
+        constants.DeviceTypeConfig.DEVICE_TYPE_NET_VF
+    )
+    available_vf_count = len(available_vfs)
+    g_logger.info(
+        f"SR-IOV VF resource check: required={total_required}, "
+        f"available={available_vf_count}"
+    )
+
+    if available_vf_count >= total_required:
+        g_logger.info("Sufficient SR-IOV VF resources available, no provisioning needed")
+        return None
+
+    shortage = total_required - available_vf_count
+    g_logger.info(
+        f"Insufficient VF resources (shortage={shortage}), "
+        f"scanning for available PFs to provision VFs"
+    )
+
+    available_pfs = device_allocator.get_available_devices(
+        constants.DeviceTypeConfig.DEVICE_TYPE_NET_PF
+    )
+    if not available_pfs:
+        err_msg = (
+            f"Insufficient SR-IOV VF/PF resources available for CVM deployment: "
+            f"need {total_required} VF(s), have {available_vf_count} VF(s) "
+            f"and no available PF(s) to provision"
+        )
+        g_logger.error(err_msg)
+        return err_msg
+
+    for pf in available_pfs:
+        if shortage <= 0:
+            break
+
+        pf_device_name = pf.get("device_name")
+        if not pf_device_name:
+            g_logger.warning(
+                f"PF device {pf['bdf']} has no device_name, skipping for SR-IOV setup"
+            )
+            continue
+
+        vf_to_create = min(shortage, _get_pf_max_vf_capacity(pf_device_name))
+        if vf_to_create <= 0:
+            g_logger.warning(
+                f"PF device {pf_device_name} reports zero VF capacity, skipping"
+            )
+            continue
+
+        g_logger.info(
+            f"Provisioning {vf_to_create} VF(s) on PF {pf_device_name} "
+            f"(BDF={pf['bdf']})"
+        )
+        result: SriovVfSetupResp = device_allocator.setup_sriov_vf(
+            pf_device_name, vf_to_create
+        )
+        if not result.success:
+            g_logger.error(
+                f"Failed to provision VF(s) on PF {pf_device_name}: {result.message}"
+            )
+            continue
+
+        g_logger.info(
+            f"Successfully provisioned {vf_to_create} VF(s) on PF {pf_device_name}"
+        )
+        shortage -= vf_to_create
+
+    if shortage > 0:
+        err_msg = (
+            f"Insufficient SR-IOV VF/PF resources available for CVM deployment: "
+            f"need {total_required} VF(s), still short {shortage} after provisioning"
+        )
+        g_logger.error(err_msg)
+        return err_msg
+
+    g_logger.info("Rescanning PCI devices after SR-IOV VF provisioning")
+    device_allocator.find_device(
+        vendor_id=constants.DeviceTypeConfig.HUAWEI_VENDOR_ID,
+        device_id=constants.DeviceTypeConfig.HI1822_VF_DEVICE_ID,
+        refresh=True,
+    )
+    device_allocator.sync_discovered_to_db()
+
+    recheck_vfs = device_allocator.get_available_devices(
+        constants.DeviceTypeConfig.DEVICE_TYPE_NET_VF
+    )
+    if len(recheck_vfs) < total_required:
+        err_msg = (
+            f"Insufficient SR-IOV VF/PF resources available for CVM deployment: "
+            f"after provisioning, found {len(recheck_vfs)} VF(s) but need {total_required}"
+        )
+        g_logger.error(err_msg)
+        return err_msg
+
+    g_logger.info(
+        f"SR-IOV VF resources confirmed: {len(recheck_vfs)} VF(s) available"
+    )
+    return None
+
+
+def _get_pf_max_vf_capacity(pf_device_name: str) -> int:
+    """
+    读取 PF 设备支持的最大 VF 数量
+
+    从 /sys/class/net/${pf_device_name}/device/sriov_totalvfs 读取
+
+    :param pf_device_name: PF 网络接口名称
+    :return: 最大 VF 数量，读取失败返回 0
+    """
+    totalvfs_path = os.path.join(
+        "/sys/class/net", pf_device_name, "device/sriov_totalvfs"
+    )
+    try:
+        with open(totalvfs_path, 'r') as f:
+            return int(f.read().strip())
+    except (FileNotFoundError, ValueError, OSError) as e:
+        g_logger.warning(
+            f"Failed to read sriov_totalvfs for {pf_device_name}: {e}"
+        )
+        return 0
+
+
 def deploy_cvm(cvm_deploy_spec_internal: VmDeploySpecInternal, server_config: config) -> Tuple[List[str], str]:
     vm_spec = cvm_deploy_spec_internal.vm_spec
     successfully_deployed_vms = []
     device_list = []
-
 
     available_nodes, err_msg = cvm_numa_check(vm_spec.core_num, vm_spec.memory, vm_spec.max_vm_num)
     if not available_nodes:
         g_logger.error(err_msg)
         return None, err_msg
 
+    if vm_spec.net_vf_num > 0:
+        err_msg = _ensure_sriov_vf_resources(
+            server_config.device_allocator,
+            vm_spec.net_vf_num,
+            vm_spec.max_vm_num,
+        )
+        if err_msg:
+            g_logger.error(err_msg)
+            return None, err_msg
+
     for i, cvm_name in enumerate(cvm_deploy_spec_internal.vm_id_list):
         device_list = []
         device_list, err_msg = cvm_device_check(cvm_name,
-                                                server_config.device_manager,
+                                                server_config.device_allocator,
                                                 vm_spec.net_pf_num,
                                                 vm_spec.net_vf_num)
         if err_msg:

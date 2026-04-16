@@ -188,3 +188,11 @@ class DeviceReleaseReq:
 @dataclass
 class DeviceReleaseResp:
     success: bool
+
+
+@dataclass
+class SriovVfSetupResp:
+    success: bool
+    device_name: str = ""
+    vf_num: int = 0
+    message: Optional[str] = None
