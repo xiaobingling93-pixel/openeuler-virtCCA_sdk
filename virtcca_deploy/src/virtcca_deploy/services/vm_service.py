@@ -21,6 +21,7 @@ from virtcca_deploy.common.data_model import (
 from virtcca_deploy.services.db_service import ComputeNode, VmInstance, VmDeploySpecModel, db
 from virtcca_deploy.services.network_service import NetworkService
 from virtcca_deploy.services.task_service import get_task_service
+import virtcca_deploy.services.util_service as util_service
 
 
 class VmService:
@@ -681,12 +682,7 @@ class VmService:
         """
         response_data = {
             "vm_info": {},
-            "pagination": {
-                "page": page,
-                "page_size": page_size,
-                "entry_num": 0,
-                "total": 0
-            }
+            "pagination": util_service.build_pagination_response(page, page_size, 0)
         }
         try:
             # 构建查询条件
@@ -838,12 +834,7 @@ class VmService:
             # 构建响应数据
             response_data = {
                 "vm_info": vm_info_result,
-                "pagination": {
-                    "page": page,
-                    "page_size": page_size,
-                    "entry_num": len(vm_instances),
-                    "total": total_vms
-                }
+                "pagination": util_service.build_pagination_response(page, page_size, total_vms)
             }
             
             if failed_nodes:
