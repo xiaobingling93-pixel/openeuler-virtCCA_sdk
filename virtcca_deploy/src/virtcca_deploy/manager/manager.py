@@ -351,12 +351,52 @@ def create_app():
             
             return True, target_nodes, ""
 
-        def check_vm_id(vm_id_dict):
+        def check_vm_id(vm_id_dict, deploy_config):
             """检查vm_id参数"""
             if not vm_id_dict:
                 g_logger.info("vm_id is empty, will use default naming convention (hostname-number)")
-                # 默认命名规则：以hostname-编号的形式为每个vm命名
                 return True, None, ""
+
+            if not isinstance(vm_id_dict, dict):
+                return False, None, "vm_id must be a dict"
+
+            for node_name, vm_ids in vm_id_dict.items():
+                if not isinstance(vm_ids, list):
+                    return False, None, f"vm_id['{node_name}'] must be a list"
+
+                node = node_service.NodeService.get_node_by_name(node_name)
+                if not node:
+                    return False, None, f"Node '{node_name}' does not exist"
+
+                for vm_id in vm_ids:
+                    if not isinstance(vm_id, str) or not vm_id:
+                        return False, None, f"Invalid vm_id in node '{node_name}': must be a non-empty string"
+
+                    if '-' not in vm_id:
+                        return False, None, f"Invalid vm_id format '{vm_id}': expected '{{nodename}}-{{number}}'"
+
+                    parts = vm_id.rsplit('-', 1)
+                    id_nodename = parts[0]
+                    id_number_str = parts[1]
+
+                    if id_nodename != node_name:
+                        return False, None, f"vm_id '{vm_id}' nodename '{id_nodename}' does not match node '{node_name}'"
+
+                    try:
+                        id_number = int(id_number_str)
+                    except ValueError:
+                        return False, None, f"Invalid vm_id format '{vm_id}': number part must be an integer"
+
+                    if id_number < 1:
+                        return False, None, f"Invalid vm_id '{vm_id}': number must be >= 1"
+
+                    if id_number > deploy_config.max_vm_num:
+                        return False, None, f"vm_id '{vm_id}' number {id_number} exceeds max_vm_num {deploy_config.max_vm_num}"
+
+                    existing_vm = db_service.VmInstance.query.filter_by(vm_id=vm_id).first()
+                    if existing_vm:
+                        return False, None, f"vm_id '{vm_id}' already exists"
+
             return True, None, ""
 
         # Step 1: Validate basic parameters
@@ -392,7 +432,7 @@ def create_app():
                     message = error_msg).to_dict()), HTTPStatus.BAD_REQUEST
 
         # Step 5: Check vm_id
-        success, _, error_msg = check_vm_id(vm_id_dict)
+        success, _, error_msg = check_vm_id(vm_id_dict, requested_config)
         if not success:
             return flask.jsonify(ApiResponse(
                     data = None,

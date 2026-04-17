@@ -37,36 +37,21 @@ class VmService:
         
         task_service = get_task_service()
         
-        # Create individual tasks for each node
-        node_to_spec = {}
+        if not vm_id_dict:
+            node_to_spec = self._prepare_default_deployment(deploy_nodes, deploy_config)
+        else:
+            node_to_spec = self._prepare_specified_deployment(deploy_nodes, deploy_config, vm_id_dict)
+
         for node in deploy_nodes:
-            # Generate all VM names for this node
-            cvm_spec_internal = VmDeploySpecInternal.from_db_model(deploy_config)
-            cvm_spec_internal.vm_id_list = [f"{node.nodename}-{i + 1}" for i in range(cvm_spec_internal.vm_spec.max_vm_num)]
-
-            if self.ip_allocator:
-                try:
-                    allocReq = NetAllocReq(cvm_spec_internal.vm_id_list,
-                        cvm_spec_internal.vm_spec.vlan_id,
-                        cvm_spec_internal.vm_spec.net_pf_num,
-                        cvm_spec_internal.vm_spec.net_vf_num,
-                        node.ip
-                    )
-                    allocResp = self.ip_allocator.allocate(request=allocReq)
-                    if allocResp.success:
-                        cvm_spec_internal.vm_ip_dict = allocResp.vm_ip_map
-                    self.logger.info(f"Allocated IPs for node {node.nodename}: {cvm_spec_internal.vm_ip_dict}")
-                except Exception as e:
-                    self.logger.error(f"Failed to allocate IPs for node {node.nodename}: {e}")
-
-            node_to_spec[node.nodename] = cvm_spec_internal
+            if node.nodename not in node_to_spec:
+                continue
+            cvm_spec_internal = node_to_spec[node.nodename]
 
             try:
                 instance_task_id = task_service.create_task(TASK_TYPE_VM_CREATE, {"total_vms": cvm_spec_internal.vm_id_list})
                 node_task[node.nodename] = instance_task_id
                 
                 for vm_name in cvm_spec_internal.vm_id_list:
-                    # Record VM instance info in the response
                     vm_instances[vm_name] = {
                         "task_id": instance_task_id,
                         "host_ip": node.ip
@@ -82,7 +67,6 @@ class VmService:
                 try:
                     task_service.update_task_status(node_task_id, "running")
                     
-                    # Perform actual deployment
                     compute_link = NetworkService(
                         node.nodename, COMPUTE_PORT, True, self.ssl_cert
                     )
@@ -116,26 +100,32 @@ class VmService:
                         else:
                             task_service.update_task_status(node_task_id, "failed")
                         
-                        # 只记录成功部署的VM到数据库
                         for vm_name in success_vms:
-                            # 获取IP列表，如果没有分配IP则使用空字符串
                             ips = cvm_spec_internal.vm_ip_dict.get(vm_name, []) if cvm_spec_internal.vm_ip_dict else []
                             ip_list_str = ",".join(ips) if ips else ""
 
-                            # Create VM instance record
-                            vm_instance = VmInstance(
-                                vm_id=vm_name,
-                                host_ip=node.ip,
-                                host_name=node.nodename,
-                                vm_spec_uuid=cvm_spec_internal.vm_spec.uuid,
-                                ip_list=ip_list_str,
-                                os_version="openEuler-2403LTS-SP2"
-                            )
-                        
                             try:
-                                db.session.add(vm_instance)
-                                db.session.commit()
-                                self.logger.info(f"Successfully recorded VM {vm_name} in database for node {node.ip}")
+                                existing_vm = VmInstance.query.filter_by(vm_id=vm_name).first()
+                                if existing_vm:
+                                    existing_vm.host_ip = node.ip
+                                    existing_vm.host_name = node.nodename
+                                    existing_vm.vm_spec_uuid = cvm_spec_internal.vm_spec.uuid
+                                    existing_vm.ip_list = ip_list_str
+                                    existing_vm.os_version = "openEuler-2403LTS-SP2"
+                                    db.session.commit()
+                                    self.logger.info(f"Successfully updated reused VM {vm_name} in database for node {node.ip}")
+                                else:
+                                    vm_instance = VmInstance(
+                                        vm_id=vm_name,
+                                        host_ip=node.ip,
+                                        host_name=node.nodename,
+                                        vm_spec_uuid=cvm_spec_internal.vm_spec.uuid,
+                                        ip_list=ip_list_str,
+                                        os_version="openEuler-2403LTS-SP2"
+                                    )
+                                    db.session.add(vm_instance)
+                                    db.session.commit()
+                                    self.logger.info(f"Successfully recorded VM {vm_name} in database for node {node.ip}")
                             except Exception as e:
                                 self.logger.error(f"Failed to record VM instance {vm_name} to database: {e}")
                                 db.session.rollback()
@@ -165,27 +155,145 @@ class VmService:
                     
                 if fail_vms:
                     self.ip_allocator.release(request=NetReleaseReq(fail_vms))
-        node_to_spec = {}
+
+        async_node_to_spec = {}
         for node in deploy_nodes:
             if node.nodename in node_task:
-                # 创建新的实例，避免引用问题
                 node_spec = VmDeploySpecInternal.from_db_model(deploy_config)
-                node_spec.vm_id_list = [f"{node.nodename}-{i + 1}" for i in range(node_spec.vm_spec.max_vm_num)]
-                node_to_spec[node.nodename] = node_spec
+                if not vm_id_dict:
+                    node_spec.vm_id_list = [f"{node.nodename}-{i + 1}" for i in range(node_spec.vm_spec.max_vm_num)]
+                else:
+                    node_spec.vm_id_list = vm_id_dict.get(node.nodename, [f"{node.nodename}-{i + 1}" for i in range(node_spec.vm_spec.max_vm_num)])
+                async_node_to_spec[node.nodename] = node_spec
         
-        # Start deployment asynchronously for all nodes
         jobs = []
         for node in deploy_nodes:
-            if node.nodename in node_task:  # 只处理任务创建成功的节点
+            if node.nodename in node_task:
                 jobs.append(gevent.spawn(
                     deploy_node_async, 
                     node, 
                     node_task[node.nodename], 
-                    node_to_spec[node.nodename],
+                    async_node_to_spec[node.nodename],
                     current_app._get_current_object()
                 ))
         
         return vm_instances
+
+    def _prepare_default_deployment(self, deploy_nodes: List[ComputeNode],
+                                     deploy_config: VmDeploySpecModel) -> Dict[str, VmDeploySpecInternal]:
+        """vm_id_dict为空时的默认部署准备：自动生成vm_id并分配IP"""
+        self.logger.info("vm_id_dict is empty, using default naming convention (nodename-number)")
+        node_to_spec = {}
+
+        for node in deploy_nodes:
+            cvm_spec_internal = VmDeploySpecInternal.from_db_model(deploy_config)
+            cvm_spec_internal.vm_id_list = [f"{node.nodename}-{i + 1}" for i in range(cvm_spec_internal.vm_spec.max_vm_num)]
+            self.logger.info(f"Node {node.nodename}: generated {len(cvm_spec_internal.vm_id_list)} VM IDs: {cvm_spec_internal.vm_id_list}")
+
+            if self.ip_allocator:
+                try:
+                    allocReq = NetAllocReq(cvm_spec_internal.vm_id_list,
+                        cvm_spec_internal.vm_spec.vlan_id,
+                        cvm_spec_internal.vm_spec.net_pf_num,
+                        cvm_spec_internal.vm_spec.net_vf_num,
+                        node.ip
+                    )
+                    allocResp = self.ip_allocator.allocate(request=allocReq)
+                    if allocResp.success:
+                        cvm_spec_internal.vm_ip_dict = allocResp.vm_ip_map
+                    self.logger.info(f"Allocated IPs for node {node.nodename}: {cvm_spec_internal.vm_ip_dict}")
+                except Exception as e:
+                    self.logger.error(f"Failed to allocate IPs for node {node.nodename}: {e}")
+
+            node_to_spec[node.nodename] = cvm_spec_internal
+
+        return node_to_spec
+
+    def _prepare_specified_deployment(self, deploy_nodes: List[ComputeNode],
+                                       deploy_config: VmDeploySpecModel,
+                                       vm_id_dict: Dict) -> Dict[str, VmDeploySpecInternal]:
+        """vm_id_dict非空时的指定部署准备：区分已有VM(复用资源)和新VM(分配资源)"""
+        self.logger.info(f"vm_id_dict is not empty, processing specified VM IDs: {vm_id_dict}")
+        node_to_spec = {}
+
+        for node in deploy_nodes:
+            cvm_spec_internal = VmDeploySpecInternal.from_db_model(deploy_config)
+
+            if node.nodename not in vm_id_dict:
+                self.logger.info(f"Node {node.nodename} not in vm_id_dict, using default naming")
+                cvm_spec_internal.vm_id_list = [f"{node.nodename}-{i + 1}" for i in range(cvm_spec_internal.vm_spec.max_vm_num)]
+
+                if self.ip_allocator:
+                    try:
+                        allocReq = NetAllocReq(cvm_spec_internal.vm_id_list,
+                            cvm_spec_internal.vm_spec.vlan_id,
+                            cvm_spec_internal.vm_spec.net_pf_num,
+                            cvm_spec_internal.vm_spec.net_vf_num,
+                            node.ip
+                        )
+                        allocResp = self.ip_allocator.allocate(request=allocReq)
+                        if allocResp.success:
+                            cvm_spec_internal.vm_ip_dict = allocResp.vm_ip_map
+                        self.logger.info(f"Allocated IPs for node {node.nodename}: {cvm_spec_internal.vm_ip_dict}")
+                    except Exception as e:
+                        self.logger.error(f"Failed to allocate IPs for node {node.nodename}: {e}")
+
+                node_to_spec[node.nodename] = cvm_spec_internal
+                continue
+
+            requested_vm_ids = vm_id_dict[node.nodename]
+            new_vm_ids = []
+            reused_vm_ids = []
+
+            for vm_id in requested_vm_ids:
+                try:
+                    existing_vm = VmInstance.query.filter_by(vm_id=vm_id).first()
+                except Exception as e:
+                    self.logger.error(f"Database query failed for vm_id '{vm_id}': {e}")
+                    continue
+
+                if existing_vm:
+                    self.logger.info(f"vm_id '{vm_id}' already exists in database, reusing resources (host={existing_vm.host_ip})")
+                    reused_vm_ids.append(vm_id)
+                else:
+                    self.logger.info(f"vm_id '{vm_id}' not found in database, will allocate new resources")
+                    new_vm_ids.append(vm_id)
+
+            cvm_spec_internal.vm_id_list = requested_vm_ids
+            self.logger.info(f"Node {node.nodename}: total={len(requested_vm_ids)}, reused={len(reused_vm_ids)}, new={len(new_vm_ids)}")
+
+            if new_vm_ids and self.ip_allocator:
+                try:
+                    allocReq = NetAllocReq(new_vm_ids,
+                        cvm_spec_internal.vm_spec.vlan_id,
+                        cvm_spec_internal.vm_spec.net_pf_num,
+                        cvm_spec_internal.vm_spec.net_vf_num,
+                        node.ip
+                    )
+                    allocResp = self.ip_allocator.allocate(request=allocReq)
+                    if allocResp.success:
+                        if not cvm_spec_internal.vm_ip_dict:
+                            cvm_spec_internal.vm_ip_dict = {}
+                        cvm_spec_internal.vm_ip_dict.update(allocResp.vm_ip_map)
+                    self.logger.info(f"Allocated IPs for new VMs on node {node.nodename}: {allocResp.vm_ip_map}")
+                except Exception as e:
+                    self.logger.error(f"Failed to allocate IPs for new VMs on node {node.nodename}: {e}")
+
+            if reused_vm_ids:
+                try:
+                    reused_vms = VmInstance.query.filter(VmInstance.vm_id.in_(reused_vm_ids)).all()
+                    if not cvm_spec_internal.vm_ip_dict:
+                        cvm_spec_internal.vm_ip_dict = {}
+                    for vm in reused_vms:
+                        if vm.ip_list:
+                            cvm_spec_internal.vm_ip_dict[vm.vm_id] = vm.ip_list.split(",")
+                        self.logger.info(f"Reused IP for vm_id '{vm.vm_id}': {cvm_spec_internal.vm_ip_dict.get(vm.vm_id, [])}")
+                except Exception as e:
+                    self.logger.error(f"Failed to query reused VM IPs for node {node.nodename}: {e}")
+
+            node_to_spec[node.nodename] = cvm_spec_internal
+
+        return node_to_spec
 
     def execute_undeployment(self, deploy_nodes: List[ComputeNode], vm_id_list: List[str]) -> Dict:
         vm_instances = {}
