@@ -3,8 +3,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 import hashlib
-import secrets
-import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -17,29 +15,31 @@ class TestHashPassword:
         hashed, salt = AuthService.hash_password("Test@1234")
         assert isinstance(hashed, str)
         assert isinstance(salt, str)
-        assert len(hashed) == 64  # SHA-256 hex digest
-        assert len(salt) == 64  # 32 bytes hex
+        assert len(hashed) == 64
+        assert len(salt) == 64
 
     def test_hash_password_different_salts(self):
-        """每次调用应生成不同的 salt"""
         hashed1, salt1 = AuthService.hash_password("Test@1234")
         hashed2, salt2 = AuthService.hash_password("Test@1234")
         assert salt1 != salt2
         assert hashed1 != hashed2
 
     def test_hash_password_with_provided_salt(self):
-        """提供相同 salt 时应产生相同哈希"""
         salt = "fixed_salt_value"
         h1, s1 = AuthService.hash_password("Test@1234", salt)
         h2, s2 = AuthService.hash_password("Test@1234", salt)
         assert h1 == h2
         assert s1 == s2 == salt
 
-    def test_hash_password_matches_sha256(self):
-        """验证哈希结果与手动 SHA-256 一致"""
+    def test_hash_password_matches_pbkdf2(self):
         password = "Test@1234"
         salt = "test_salt"
-        expected = hashlib.sha256((salt + password).encode('utf-8')).hexdigest()
+        expected = hashlib.pbkdf2_hmac(
+            'sha256',
+            password.encode('utf-8'),
+            salt.encode('utf-8'),
+            10000
+        ).hex()
         actual, s = AuthService.hash_password(password, salt)
         assert actual == expected
 

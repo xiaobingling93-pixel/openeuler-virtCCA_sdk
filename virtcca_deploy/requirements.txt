@@ -21,3 +21,4 @@ Werkzeug==3.1.5
 zope.event==6.1
 zope.interface==8.2
 gevent==25.9.1
+PyJWT==2.12.1

@@ -99,9 +99,6 @@ class Config:
                 g_logger.warning("Using temporary JWT secret key (not persisted)")
         
         # 从配置文件读取其他认证参数
-        self.jwt_expiration_minutes = self.config.getint('AUTH', 'jwt_expiration_minutes',
-                                                         fallback=constants.DEFAULT_JWT_EXPIRATION_MINUTES)
-        self.max_login_attempts = self.config.getint('AUTH', 'max_login_attempts',
-                                                     fallback=constants.DEFAULT_MAX_LOGIN_ATTEMPTS)
-        self.lockout_duration_minutes = self.config.getint('AUTH', 'lockout_duration_minutes',
-                                                           fallback=constants.DEFAULT_LOCKOUT_DURATION_MINUTES)
+        self.jwt_expiration_minutes = constants.DEFAULT_JWT_EXPIRATION_MINUTES
+        self.max_login_attempts = constants.DEFAULT_MAX_LOGIN_ATTEMPTS
+        self.lockout_duration_minutes = constants.DEFAULT_LOCKOUT_DURATION_MINUTES
