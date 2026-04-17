@@ -65,6 +65,15 @@ class VmDeploySpec:
             return False
         if not (0 <= self.net_vf_num <= constants.MAX_NET_VF_NUM):
             return False
+        if not isinstance(self.disk_size, int):
+            g_logger.error("disk_size must be an int")
+            return False
+        if self.disk_size < 0:
+            g_logger.error("disk_size must be >= 0")
+            return False
+        if self.disk_size > constants.MAX_DISK_SIZE_GB:
+            g_logger.error("disk_size cannot exceed %d GB", constants.MAX_DISK_SIZE_GB)
+            return False
         if not isinstance(self.gateway_ip, list):
             g_logger.error("gateway_ip must be a list")
             return False

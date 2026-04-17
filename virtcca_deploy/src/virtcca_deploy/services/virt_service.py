@@ -101,6 +101,19 @@ def handle_disk(root, qcow2_file):
         g_logger.error("<disk> element with the specified attributes not found.")
     raise Exception("CVM template xml is invalid!")
 
+def handle_data_disk(root, data_disk_file: str):
+    devices_node = root.find(".//devices")
+    if devices_node is None:
+        raise Exception("CVM template xml is invalid, unable to find element 'devices'!")
+
+    new_disk = ET.SubElement(devices_node, "disk", type='file', device='disk')
+    ET.SubElement(new_disk, "driver", name='qemu', type='qcow2', cache='none', queues='2', iommu='on')
+    ET.SubElement(new_disk, "source", file=data_disk_file)
+    ET.SubElement(new_disk, "target", dev='vdb', bus='virtio')
+    ET.SubElement(new_disk, "address", type='pci', domain='0x0000', bus='0x03', slot='0x00', function='0x0')
+
+    g_logger.info("Added data disk %s at bus 0x03", data_disk_file)
+
 def handle_pci(root, pci_list: List[str]):
     device_node = root.find(".//devices")
     if device_node is not None:
@@ -124,7 +137,7 @@ def handle_pci(root, pci_list: List[str]):
     else:
         raise Exception("CVM template xml is invalid, unable to find element 'devices'!")
 
-def config_xml(cvm_name: str, vm_spec: VmDeploySpec, qcow2_file: str, host_numa_id: int, device_list: List[str]) -> str:
+def config_xml(cvm_name: str, vm_spec: VmDeploySpec, qcow2_file: str, host_numa_id: int, device_list: List[str], data_disk_file: str = None) -> str:
     """
     Modify the XML configuration and return the XML string.
 
@@ -132,6 +145,7 @@ def config_xml(cvm_name: str, vm_spec: VmDeploySpec, qcow2_file: str, host_numa_
         cvm_name: Name of the CVM
         vm_deploy_spec: VmDeploySpecInternal configuration object
         qcow2_file: Path to the QCOW2 file
+        data_disk_file: Optional path to the data disk QCOW2 file
     
     Returns:
         The modified XML as a string, or "" if an error occurs
@@ -162,13 +176,15 @@ def config_xml(cvm_name: str, vm_spec: VmDeploySpec, qcow2_file: str, host_numa_
         handle_vm_id(root, cvm_name)
         if device_list:
             handle_pci(root, device_list)
+        if data_disk_file:
+            handle_data_disk(root, data_disk_file)
     except Exception as e:
         g_logger.error("Error during configuration of XML, %s", e)
         return ""
 
     return ET.tostring(root, encoding="unicode", method="xml")
 
-def config_disk(cvm_name: str, file_path: str, ip_list: List[str], server_config: config,) -> str:
+def config_disk(cvm_name: str, file_path: str, ip_list: List[str], server_config: config, disk_size: int = 0) -> Tuple[str, Optional[str]]:
     base_qcow2 = constants.BASE_QCOW2
     file_name = f"{cvm_name}.qcow2"
     os.makedirs(file_path, exist_ok=True)
@@ -179,12 +195,49 @@ def config_disk(cvm_name: str, file_path: str, ip_list: List[str], server_config
         g_logger.info("Copied %s to %s", base_qcow2, new_qcow2_path)
     except FileNotFoundError:
         g_logger.error("Base QCOW2 file %s not found.", base_qcow2)
-        return ""
+        return "", None
     except Exception as e:
         g_logger.error("Error while copying QCOW2 file: {}".format(e))
-        return ""
+        return "", None
 
-    return new_qcow2_path
+    data_disk_path = None
+    if disk_size > 0:
+        if disk_size < constants.MIN_DISK_SIZE_GB:
+            g_logger.error("disk_size %d GB is below minimum %d GB", disk_size, constants.MIN_DISK_SIZE_GB)
+            return "", None
+
+        data_disk_name = f"{cvm_name}_data.qcow2"
+        data_disk_path = os.path.join(file_path, data_disk_name)
+
+        try:
+            create_cmd = [
+                "qemu-img", "create",
+                "-f", "qcow2",
+                data_disk_path,
+                f"{disk_size}G"
+            ]
+            result = subprocess.run(
+                create_cmd,
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            if result.returncode != 0:
+                g_logger.error("Failed to create data disk: %s", result.stderr)
+                return "", None
+
+            g_logger.info("Created data disk %s with size %d GB", data_disk_path, disk_size)
+        except subprocess.TimeoutExpired:
+            g_logger.error("Timeout while creating data disk %s", data_disk_path)
+            return "", None
+        except FileNotFoundError:
+            g_logger.error("qemu-img command not found")
+            return "", None
+        except Exception as e:
+            g_logger.error("Error creating data disk: %s", e)
+            return "", None
+
+    return new_qcow2_path, data_disk_path
 
 def config_net(ip_list: List[str], perfix: str):
     net_template = constants.PathConfig.IFCTL_TEMPLATE
@@ -333,10 +386,16 @@ def cvm_resource_reclaim(cvm_name: str, server_config: config):
     libvirt = libvirtDriver()
     if libvirt.is_vm_running(cvm_name):
         libvirt.destroy_cvm_by_name(cvm_name)
+    qcow2_dir = server_config.config.get("DEFAULT", "cvm_image_path")
     file_name = f"{cvm_name}.qcow2"
-    qcow2_path = os.path.join(server_config.config.get("DEFAULT", "cvm_image_path"), file_name)
+    qcow2_path = os.path.join(qcow2_dir, file_name)
     if os.path.exists(qcow2_path):
         os.remove(qcow2_path)
+    data_disk_name = f"{cvm_name}_data.qcow2"
+    data_disk_path = os.path.join(qcow2_dir, data_disk_name)
+    if os.path.exists(data_disk_path):
+        os.remove(data_disk_path)
+        g_logger.info("Removed data disk: %s", data_disk_path)
     server_config.device_allocator.release(DeviceReleaseReq(vm_id=cvm_name))
 
 def _execute_deploy_cvm(
@@ -348,19 +407,21 @@ def _execute_deploy_cvm(
     server_config: config,
     ) -> str:
     qcow2_path = server_config.config.get("DEFAULT", "cvm_image_path")
-    qcow2 = config_disk(cvm_name, qcow2_path, ip_list, server_config)
+    qcow2, data_disk = config_disk(cvm_name, qcow2_path, ip_list, server_config, cvm_spec.disk_size)
     if not qcow2:
         err_msg = f"Skipping VM {cvm_name} due to disk configuration failure."
         g_logger.error(err_msg)
         return err_msg
 
-    output_xml = config_xml(cvm_name, cvm_spec, qcow2, host_numa_id, device_list)
+    output_xml = config_xml(cvm_name, cvm_spec, qcow2, host_numa_id, device_list, data_disk)
     if not output_xml:
         err_msg = f"Skipping VM {cvm_name} due to XML configuration failure."
         g_logger.error(err_msg)
         return err_msg
 
     g_logger.info("config qcow2 success: %s", qcow2)
+    if data_disk:
+        g_logger.info("data disk configured: %s", data_disk)
     time.sleep(1)
     libvirt = libvirtDriver()
     if libvirt.start_vm_by_xml(output_xml):

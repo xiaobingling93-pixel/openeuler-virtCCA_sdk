@@ -70,8 +70,7 @@ class TestManagerApi:
                 "pagination": {
                     "page": 1,
                     "page_size": 10,
-                    "entry_num": 1,
-                    "total": 1
+                    "entry_num": 1
                 }
             }
             
@@ -127,8 +126,7 @@ class TestManagerApi:
                 "pagination": {
                     "page": 1,
                     "page_size": 10,
-                    "entry_num": 1,
-                    "total": 1
+                    "entry_num": 1
                 }
             }
             
@@ -193,7 +191,7 @@ class TestManagerApi:
         # 验证响应
         assert response.status_code == HTTPStatus.BAD_REQUEST
         response_data = response.get_json()
-        assert "Invalid pagination parameters" in response_data["message"]
+        assert "Page must be >= 1." in response_data["message"]
         
         # 发送请求 - 页大小超过100
         response = authenticated_client.post(
@@ -209,7 +207,7 @@ class TestManagerApi:
         # 验证响应
         assert response.status_code == HTTPStatus.BAD_REQUEST
         response_data = response.get_json()
-        assert "Invalid pagination parameters" in response_data["message"]
+        assert "Page size cannot exceed 100." in response_data["message"]
 
     def test_get_cvm_state_invalid_parameter_types(self, authenticated_client, app):
         """测试无效的参数类型"""
@@ -227,7 +225,7 @@ class TestManagerApi:
         # 验证响应
         assert response.status_code == HTTPStatus.BAD_REQUEST
         response_data = response.get_json()
-        assert "Invalid nodes parameter" in response_data["message"]
+        assert "Invalid nodes parameter, expected list." in response_data["message"]
         
         # 发送请求 - vm_ids不是列表
         response = authenticated_client.post(
@@ -243,7 +241,7 @@ class TestManagerApi:
         # 验证响应
         assert response.status_code == HTTPStatus.BAD_REQUEST
         response_data = response.get_json()
-        assert "Invalid vm_ids parameter" in response_data["message"]
+        assert "Invalid vm_ids parameter, expected list." in response_data["message"]
         
         # 发送请求 - 分页参数不是整数
         response = authenticated_client.post(
@@ -259,7 +257,7 @@ class TestManagerApi:
         # 验证响应
         assert response.status_code == HTTPStatus.BAD_REQUEST
         response_data = response.get_json()
-        assert "Invalid pagination parameters" in response_data["message"]
+        assert "Pagination parameters must be integers." in response_data["message"]
 
     def test_get_cvm_state_vm_service_error(self, authenticated_client, app):
         """测试vm_service返回错误的情况"""

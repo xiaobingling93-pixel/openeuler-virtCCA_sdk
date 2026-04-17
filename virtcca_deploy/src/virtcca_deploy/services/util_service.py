@@ -63,6 +63,31 @@ class UtilService:
         return hardware_info
 
     @staticmethod
+    def _parse_size_to_gb(size_str: str) -> float:
+        units = {
+            'K': 1 / (1024 * 1024),
+            'M': 1 / 1024,
+            'G': 1,
+            'T': 1024,
+            'P': 1024 * 1024,
+            'E': 1024 * 1024 * 1024,
+        }
+        size_str = size_str.strip()
+        if not size_str:
+            return 0.0
+        unit = size_str[-1].upper()
+        if unit in units:
+            try:
+                value = float(size_str[:-1])
+                return round(value * units[unit], 2)
+            except ValueError:
+                return 0.0
+        try:
+            return round(float(size_str) / (1024 * 1024 * 1024), 2)
+        except ValueError:
+            return 0.0
+
+    @staticmethod
     def _get_disk_info_by_df():
         disks = []
         try:
@@ -85,8 +110,8 @@ class UtilService:
                 disks.append({
                     "device": device,
                     "filesystem": fstype,
-                    "total": size,
-                    "available": avail,
+                    "total": UtilService._parse_size_to_gb(size),
+                    "available": UtilService._parse_size_to_gb(avail),
                     "mount_point": mount_point
                 })
         except FileNotFoundError:

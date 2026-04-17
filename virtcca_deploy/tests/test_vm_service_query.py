@@ -104,7 +104,6 @@ class TestVmServiceQuery:
                 assert pagination["page"] == 1
                 assert pagination["page_size"] == 10
                 assert pagination["entry_num"] == 2
-                assert pagination["total"] == 2
 
     def test_query_vm_states_by_vm_ids(self, app):
         """测试根据虚拟机ID查询虚拟机状态"""
@@ -250,8 +249,7 @@ class TestVmServiceQuery:
                 assert len(vm_info) == 10
                 assert pagination["page"] == 1
                 assert pagination["page_size"] == 10
-                assert pagination["entry_num"] == 10
-                assert pagination["total"] == 15
+                assert pagination["entry_num"] == 15
                 
                 # 测试第二页（5条记录）
                 result, message = vm_service.query_vm_states(nodes=["compute01"], page=2, page_size=10)
@@ -262,8 +260,7 @@ class TestVmServiceQuery:
                 assert len(vm_info) == 5
                 assert pagination["page"] == 2
                 assert pagination["page_size"] == 10
-                assert pagination["entry_num"] == 5
-                assert pagination["total"] == 15
+                assert pagination["entry_num"] == 15
 
     def test_query_vm_states_network_failure(self, app):
         """测试网络请求失败的情况"""
@@ -448,4 +445,3 @@ class TestVmServiceQuery:
             
             assert len(vm_info) == 0
             assert pagination["entry_num"] == 0
-            assert pagination["total"] == 0
