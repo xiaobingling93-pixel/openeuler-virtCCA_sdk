@@ -361,8 +361,8 @@ def create_app():
                 return False, None, "vm_id must be a dict"
 
             for node_name, vm_ids in vm_id_dict.items():
-                if not isinstance(vm_ids, list):
-                    return False, None, f"vm_id['{node_name}'] must be a list"
+                if not isinstance(vm_ids, list) or len(vm_ids) == 0:
+                    return False, None, f"vm_id['{node_name}'] must be a Non-empty list"
 
                 node = node_service.NodeService.get_node_by_name(node_name)
                 if not node:

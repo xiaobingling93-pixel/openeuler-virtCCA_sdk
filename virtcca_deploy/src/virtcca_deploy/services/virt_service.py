@@ -386,6 +386,8 @@ def cvm_resource_reclaim(cvm_name: str, server_config: config):
     libvirt = libvirtDriver()
     if libvirt.is_vm_running(cvm_name):
         libvirt.destroy_cvm_by_name(cvm_name)
+    else:
+        libvirt.undefine_cvm_by_name(cvm_name)
     qcow2_dir = server_config.config.get("DEFAULT", "cvm_image_path")
     file_name = f"{cvm_name}.qcow2"
     qcow2_path = os.path.join(qcow2_dir, file_name)
@@ -733,6 +735,23 @@ class libvirtDriver:
                 return True
             except libvirt.libvirtError as e:
                 g_logger.error("unable to destroy/undefine cvm '%s': %s", vm_name, e)
+                return False
+
+    def undefine_cvm_by_name(self, vm_name) -> bool:
+        """
+        移除虚拟机 XML 定义
+
+        :param vm_name: 虚拟机名称
+        :return: 成功返回 True，失败返回 False
+        """
+        with self._get_connection() as conn:
+            try:
+                domain = conn.lookupByName(vm_name)
+                domain.undefine()
+                g_logger.info("cvm '%s' XML definition has been removed", vm_name)
+                return True
+            except libvirt.libvirtError as e:
+                g_logger.error("unable to undefine cvm '%s': %s", vm_name, e)
                 return False
 
     def start_vm(self, vm_name: str) -> Tuple[bool, str]:
