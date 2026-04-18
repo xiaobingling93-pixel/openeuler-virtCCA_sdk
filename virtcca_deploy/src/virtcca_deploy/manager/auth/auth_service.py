@@ -21,12 +21,21 @@ g_logger = config.g_logger
 class AuthService:
     """认证服务，静态方法提供无状态操作"""
 
+    _PBKDF2_ITERATIONS = 10000
+    _PBKDF2_HASH_NAME = 'sha256'
+    _SALT_LENGTH = 32
+
     @staticmethod
     def hash_password(password: str, salt: str = None) -> tuple:
-        """SHA-256 + 随机salt，返回 (hashed_password, salt)"""
+        """PBKDF2_HMAC + 随机salt，返回 (hashed_password, salt)"""
         if salt is None:
-            salt = secrets.token_hex(32)
-        hashed = hashlib.sha256((salt + password).encode('utf-8')).hexdigest()
+            salt = secrets.token_hex(AuthService._SALT_LENGTH)
+        hashed = hashlib.pbkdf2_hmac(
+            AuthService._PBKDF2_HASH_NAME,
+            password.encode('utf-8'),
+            salt.encode('utf-8'),
+            AuthService._PBKDF2_ITERATIONS
+        ).hex()
         return hashed, salt
 
     @staticmethod

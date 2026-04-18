@@ -80,6 +80,15 @@ def create_app():
 
     g_logger.info("Virtcca Deploy Manager node start!")
 
+    def _check_vm_ids_exist(vm_id_list):
+        not_found = []
+        for vm_id in vm_id_list:
+            if not db_service.VmInstance.query.filter_by(vm_id=vm_id).first():
+                not_found.append(vm_id)
+        if not_found:
+            return False, f"VM ID(s) not found: {', '.join(not_found)}"
+        return True, ""
+
     @app.route("/")
     def hello():
         g_logger.info("hello!")
@@ -143,19 +152,12 @@ def create_app():
                 return flask.jsonify(ApiResponse(
                     data={
                         "host_info": {},
-                        "pagination": {
-                            "page": page,
-                            "page_size": page_size,
-                            "entry_num": 0
-                        }
+                        "pagination": util_service.build_pagination_response(page, page_size, 0)
                     },
                     message=""
                 ).to_dict())
             
-            total_nodes = len(query_nodes)
-            start_idx = (page - 1) * page_size
-            end_idx = start_idx + page_size
-            paged_nodes = query_nodes[start_idx:end_idx]
+            paged_nodes, total_nodes = util_service.paginate_list(query_nodes, page, page_size)
             
             host_infos = {}
             for node in paged_nodes:
@@ -181,6 +183,7 @@ def create_app():
                         "pf_num_total": node_data.get("pf_num_total", 0),
                         "pf_num_free": node_data.get("pf_num_free", 0),
                         "disks": node_data.get("disks", []),
+                        "os": node_data.get("os", "Unknown"),
                         "secure_memory": node_data.get("secure_memory", 0),
                         "secure_memory_free": node_data.get("secure_memory_free", 0),
                         "secure_numa_topology": node_data.get("secure_numa_topology", {})
@@ -198,11 +201,7 @@ def create_app():
             
             response_data = {
                 "host_info": host_infos,
-                "pagination": {
-                    "page": page,
-                    "page_size": page_size,
-                    "entry_num": total_nodes
-                }
+                "pagination": util_service.build_pagination_response(page, page_size, total_nodes)
             }
             
             return flask.jsonify(ApiResponse(
@@ -352,12 +351,52 @@ def create_app():
             
             return True, target_nodes, ""
 
-        def check_vm_id(vm_id_dict):
+        def check_vm_id(vm_id_dict, deploy_config):
             """检查vm_id参数"""
             if not vm_id_dict:
                 g_logger.info("vm_id is empty, will use default naming convention (hostname-number)")
-                # 默认命名规则：以hostname-编号的形式为每个vm命名
                 return True, None, ""
+
+            if not isinstance(vm_id_dict, dict):
+                return False, None, "vm_id must be a dict"
+
+            for node_name, vm_ids in vm_id_dict.items():
+                if not isinstance(vm_ids, list):
+                    return False, None, f"vm_id['{node_name}'] must be a list"
+
+                node = node_service.NodeService.get_node_by_name(node_name)
+                if not node:
+                    return False, None, f"Node '{node_name}' does not exist"
+
+                for vm_id in vm_ids:
+                    if not isinstance(vm_id, str) or not vm_id:
+                        return False, None, f"Invalid vm_id in node '{node_name}': must be a non-empty string"
+
+                    if '-' not in vm_id:
+                        return False, None, f"Invalid vm_id format '{vm_id}': expected '{{nodename}}-{{number}}'"
+
+                    parts = vm_id.rsplit('-', 1)
+                    id_nodename = parts[0]
+                    id_number_str = parts[1]
+
+                    if id_nodename != node_name:
+                        return False, None, f"vm_id '{vm_id}' nodename '{id_nodename}' does not match node '{node_name}'"
+
+                    try:
+                        id_number = int(id_number_str)
+                    except ValueError:
+                        return False, None, f"Invalid vm_id format '{vm_id}': number part must be an integer"
+
+                    if id_number < 1:
+                        return False, None, f"Invalid vm_id '{vm_id}': number must be >= 1"
+
+                    if id_number > deploy_config.max_vm_num:
+                        return False, None, f"vm_id '{vm_id}' number {id_number} exceeds max_vm_num {deploy_config.max_vm_num}"
+
+                    existing_vm = db_service.VmInstance.query.filter_by(vm_id=vm_id).first()
+                    if existing_vm:
+                        return False, None, f"vm_id '{vm_id}' already exists"
+
             return True, None, ""
 
         # Step 1: Validate basic parameters
@@ -393,7 +432,7 @@ def create_app():
                     message = error_msg).to_dict()), HTTPStatus.BAD_REQUEST
 
         # Step 5: Check vm_id
-        success, _, error_msg = check_vm_id(vm_id_dict)
+        success, _, error_msg = check_vm_id(vm_id_dict, requested_config)
         if not success:
             return flask.jsonify(ApiResponse(
                     data = None,
@@ -439,6 +478,11 @@ def create_app():
         if len(vm_id_list) == 0:
             return flask.jsonify(ApiResponse(
                 message = "VM ID list cannot be empty").to_dict()), HTTPStatus.BAD_REQUEST
+
+        exist, err_msg = _check_vm_ids_exist(vm_id_list)
+        if not exist:
+            return flask.jsonify(ApiResponse(
+                message = err_msg).to_dict()), HTTPStatus.BAD_REQUEST
         
         # 获取VM服务实例
         vm_service_instance = vm_service.get_vm_service()
@@ -480,6 +524,12 @@ def create_app():
                 message = "VM ID list cannot be empty"
             ).to_dict()), HTTPStatus.BAD_REQUEST
 
+        exist, err_msg = _check_vm_ids_exist(vm_id_list)
+        if not exist:
+            return flask.jsonify(ApiResponse(
+                message = err_msg
+            ).to_dict()), HTTPStatus.BAD_REQUEST
+
         vm_service_instance = vm_service.get_vm_service()
         try:
             stop_results = vm_service_instance.execute_stop(vm_id_list)
@@ -515,6 +565,12 @@ def create_app():
         if len(vm_id_list) == 0:
             return flask.jsonify(ApiResponse(
                 message = "VM ID list cannot be empty"
+            ).to_dict()), HTTPStatus.BAD_REQUEST
+
+        exist, err_msg = _check_vm_ids_exist(vm_id_list)
+        if not exist:
+            return flask.jsonify(ApiResponse(
+                message = err_msg
             ).to_dict()), HTTPStatus.BAD_REQUEST
 
         vm_service_instance = vm_service.get_vm_service()
@@ -555,8 +611,7 @@ def create_app():
             # 解析参数
             nodes = request_data.get("nodes", [])
             vm_ids = request_data.get("vm_ids", [])
-            pagination = request_data.get("pagination", {})
-            
+
             # 检查nodes和vm_ids不能同时非空
             if nodes and vm_ids:
                 return flask.jsonify(ApiResponse(
@@ -574,28 +629,12 @@ def create_app():
                 return flask.jsonify(ApiResponse(
                     message="Invalid vm_ids parameter, expected list"
                 ).to_dict()), HTTPStatus.BAD_REQUEST
-            
-            # 解析分页参数
-            if pagination and isinstance(pagination, dict):
-                page = pagination.get("page", 1)
-                page_size = pagination.get("page_size", 10)
-            else:
-                page = 1
-                page_size = 10
-            
-            # 转换为整数
-            try:
-                page = int(page)
-                page_size = int(page_size)
-            except (ValueError, TypeError):
+
+            # 校验分页参数
+            success, error_msg, page, page_size = util_service.validate_and_extract_pagination(request_data)
+            if not success:
                 return flask.jsonify(ApiResponse(
-                    message="Invalid pagination parameters, expected integers"
-                ).to_dict()), HTTPStatus.BAD_REQUEST
-            
-            # 验证分页参数
-            if page < 1 or page_size < 1 or page_size > 100:
-                return flask.jsonify(ApiResponse(
-                    message="Invalid pagination parameters, page must be >= 1, page_size must be between 1 and 100"
+                    message=error_msg
                 ).to_dict()), HTTPStatus.BAD_REQUEST
             
             # 调用vm_service查询虚拟机状态
@@ -721,7 +760,7 @@ def create_app():
         
         # 防止路径穿越攻击，只保留文件名部分
         original_filename = os.path.basename(upload_file.filename)
-        file_type = original_filename.split('.')[-1] if '.' in original_filename else ''
+        file_type = original_filename.split('.')[-1] if '.' in original_filename else 'Unknown'
         
         g_logger.info("Received upload software request: file_name=%s, file_type=%s, file_size=%sKB", 
                      file_name, file_type, file_size)

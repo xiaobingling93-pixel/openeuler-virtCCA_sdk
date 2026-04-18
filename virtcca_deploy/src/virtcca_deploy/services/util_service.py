@@ -4,7 +4,7 @@
 
 import os
 import subprocess
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, List
 
 from gevent import Timeout
 
@@ -57,7 +57,83 @@ class UtilService:
         hardware_info["pf_num_total"] = pf_num_total
         hardware_info["pf_num_free"] = pf_num_free
 
+        hardware_info["disks"] = UtilService._get_disk_info_by_df()
+        hardware_info["os"] = UtilService._get_os_info()
+
         return hardware_info
+
+    @staticmethod
+    def _parse_size_to_gb(size_str: str) -> float:
+        units = {
+            'K': 1 / (1024 * 1024),
+            'M': 1 / 1024,
+            'G': 1,
+            'T': 1024,
+            'P': 1024 * 1024,
+            'E': 1024 * 1024 * 1024,
+        }
+        size_str = size_str.strip()
+        if not size_str:
+            return 0.0
+        unit = size_str[-1].upper()
+        if unit in units:
+            try:
+                value = float(size_str[:-1])
+                return round(value * units[unit], 2)
+            except ValueError:
+                return 0.0
+        try:
+            return round(float(size_str) / (1024 * 1024 * 1024), 2)
+        except ValueError:
+            return 0.0
+
+    @staticmethod
+    def _get_disk_info_by_df():
+        disks = []
+        try:
+            result = subprocess.run(
+                ["df", "-h", "--output=source,fstype,size,avail,target"],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode != 0:
+                g_logger.warning("df command failed: %s", result.stderr)
+                return disks
+
+            lines = result.stdout.strip().splitlines()
+            for line in lines[1:]:
+                parts = line.split()
+                if len(parts) < 5:
+                    continue
+                device, fstype, size, avail, mount_point = parts[0], parts[1], parts[2], parts[3], parts[4]
+                if not device.startswith("/dev/"):
+                    continue
+                disks.append({
+                    "device": device,
+                    "filesystem": fstype,
+                    "total": UtilService._parse_size_to_gb(size),
+                    "available": UtilService._parse_size_to_gb(avail),
+                    "mount_point": mount_point
+                })
+        except FileNotFoundError:
+            g_logger.warning("df command not found")
+        except subprocess.TimeoutExpired:
+            g_logger.warning("df command timed out")
+        except Exception as e:
+            g_logger.warning("Failed to get disk info via df: %s", e)
+        return disks
+
+    @staticmethod
+    def _get_os_info():
+        try:
+            with open("/etc/os-release", "r") as f:
+                for line in f:
+                    if line.startswith("PRETTY_NAME="):
+                        return line.strip().split("=", 1)[1].strip('"')
+        except FileNotFoundError:
+            g_logger.warning("/etc/os-release not found")
+        except Exception as e:
+            g_logger.warning("Failed to read /etc/os-release: %s", e)
+        return "Unknown"
 
     @staticmethod
     def _get_hi1822_device_stats():
@@ -97,33 +173,41 @@ class UtilService:
 def validate_and_extract_pagination(data: Dict[str, Any], 
                                   default_page: int = 1, 
                                   default_page_size: int = 10) -> Tuple[bool, str, int, int]:
-    """
-    校验和提取分页参数
-    
-    Args:
-        data: 请求的JSON数据
-        default_page: 默认页码
-        default_page_size: 默认每页大小
-    
-    Returns:
-        Tuple: (是否成功, 错误消息, 页码, 每页大小)
-        如果校验成功，返回 (True, "", page, page_size)
-        如果校验失败，返回 (False, 错误消息, default_page, default_page_size)
-    """
     pagination = data.get('pagination', {})
     page = pagination.get('page', default_page)
     page_size = pagination.get('page_size', default_page_size)
 
-    if not isinstance(page, int) or not isinstance(page_size, int):
+    try:
+        page = int(page)
+        page_size = int(page_size)
+    except (ValueError, TypeError):
         return False, "Pagination parameters must be integers.", default_page, default_page_size
 
-    if page <= 0 or page_size <= 0:
-        return False, "Pagination parameters must be positive integers.", default_page, default_page_size
+    if page < 1:
+        return False, "Page must be >= 1.", default_page, default_page_size
+
+    if page_size < 1:
+        return False, "Page size must be >= 1.", default_page, default_page_size
 
     if page_size > MAX_PAGE_SIZE:
         return False, f"Page size cannot exceed {MAX_PAGE_SIZE}.", default_page, default_page_size
 
     return True, "", page, page_size
+
+
+def paginate_list(items: List[Any], page: int, page_size: int) -> Tuple[List[Any], int]:
+    total = len(items)
+    start_idx = (page - 1) * page_size
+    end_idx = start_idx + page_size
+    return items[start_idx:end_idx], total
+
+
+def build_pagination_response(page: int, page_size: int, total: int) -> Dict[str, int]:
+    return {
+        "page": page,
+        "page_size": page_size,
+        "entry_num": total
+    }
 
 @timeout(60)
 def qcow2_mount(qcow2_image_path):
