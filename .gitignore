@@ -51,7 +51,13 @@ external/
 # AI
 CLAUDE.md
 .claude
+.sisyphus/
 transcript.txt
+
+# KDC build artifacts
+KDC/target/
+KDC/output/
+KDC/Cargo.lock
 
 # project
 .clang

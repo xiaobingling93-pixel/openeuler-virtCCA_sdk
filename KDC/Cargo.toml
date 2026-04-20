@@ -1,0 +1,67 @@
+[workspace]
+members = [
+    "common",
+    "kdc_agent",
+    "kdc_proxy",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Crypto (PSK AES-256-GCM)
+openssl = "0.10"
+
+# Error handling
+thiserror = "1"
+anyhow = "1"
+
+# Logging
+log = "0.4"
+log4rs = { version = "1", features = ["gzip"] }
+
+# HTTP framework (agent)
+axum = "0.7"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+rustls = "0.23"
+rustls-pemfile = "2"
+tower = { version = "0.5", features = ["limit", "util"] }
+tower-http = { version = "0.6", features = ["timeout", "limit"] }
+
+# HTTP client (proxy)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+
+# Plugin loading
+libloading = "0.8"
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+
+# Concurrency
+parking_lot = "0.12"
+
+# Database
+rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+
+# Token verification
+token_verifier = { git = "https://gitcode.com/openeuler/global-trust-authority.git", package = "token_management" }
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ["cfg(coverage_nightly)"] }

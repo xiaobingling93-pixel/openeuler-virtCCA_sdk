@@ -1,0 +1,24 @@
+{
+    "ip": "192.168.122.45",
+    "port": 26068,
+    "caPath": "/etc/kdc_agent/certs/ca.crt",
+    "certPath": "/etc/kdc_agent/certs/server.crt",
+    "privatePath": "/etc/kdc_agent/certs/server.key",
+    "crlPath": "/etc/kdc_agent/certs/ca.crl",
+    "raPublicKeyPath": "",
+    "logPath": "/var/log/kdcagent.log",
+    "dataPath": "/var/lib/kdc_agent/data",
+    "logMaxSize": 10,
+    "logBackupCount": 5,
+    "minLogLevel": "debug",
+    "plugins": [
+        {
+            "name": "hisec_trustattribute",
+            "path": "/usr/lib64/libhisec_trustattribute.so",
+            "param": {
+                "key1": "value1",
+                "key2": "value2"
+            }
+        }
+    ]
+}
