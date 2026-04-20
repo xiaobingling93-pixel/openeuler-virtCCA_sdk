@@ -1,0 +1,21 @@
+[Unit]
+Description=KDC Agent Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/kdc_agent
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kdcagent_launcher
+WorkingDirectory=/etc/kdc_agent
+
+# Resource limits
+MemoryMax=100M
+CPUQuota=5%
+
+[Install]
+WantedBy=multi-user.target
