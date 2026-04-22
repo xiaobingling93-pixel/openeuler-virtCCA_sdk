@@ -145,6 +145,46 @@ class VmSoftware(db.Model):
         )
 
 
+class NetworkConfig(db.Model):
+    __tablename__ = 'network_config'
+
+    id = db.Column(db.Integer, primary_key=True)
+    node_name = db.Column(db.String(80), nullable=False, index=True)
+    mac_address = db.Column(db.String(20), nullable=False)
+    vlan_id = db.Column(db.Integer, nullable=False)
+    ip_address = db.Column(db.String(39), nullable=False)
+    subnet_mask = db.Column(db.String(39), nullable=False)
+    gateway = db.Column(db.String(39), nullable=False)
+    status = db.Column(db.String(20), nullable=False, default="unused")
+    created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
+    updated_at = db.Column(db.DateTime, default=db.func.current_timestamp(), onupdate=db.func.current_timestamp())
+
+    STATUS_UNUSED = "unused"
+    STATUS_USED = "used"
+
+    __table_args__ = (
+        db.UniqueConstraint('node_name', 'mac_address', name='uq_node_mac'),
+    )
+
+    def to_dict(self):
+        return {
+            "node_name": self.node_name,
+            "mac_address": self.mac_address,
+            "vlan_id": self.vlan_id,
+            "ip_address": self.ip_address,
+            "subnet_mask": self.subnet_mask,
+            "gateway": self.gateway,
+            "status": self.status,
+        }
+
+    def __repr__(self):
+        return (
+            "<NetworkConfig(node_name: {}, mac: {}, ip: {}, status: {})>"
+        ).format(
+            self.node_name, self.mac_address, self.ip_address, self.status
+        )
+
+
 class DeviceAllocation(db.Model):
     __tablename__ = 'device_allocation'
 
