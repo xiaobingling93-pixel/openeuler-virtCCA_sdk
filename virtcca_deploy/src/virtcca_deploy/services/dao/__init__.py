@@ -7,11 +7,13 @@ Provides interface-based access to database models
 
 from virtcca_deploy.services.dao.interfaces import (
     NetworkConfigDAOInterface,
-    VmInstanceDAOInterface
+    VmInstanceDAOInterface,
+    VmSoftwareDAOInterface
 )
 from virtcca_deploy.services.dao.impl import (
     NetworkConfigDAO,
-    VmInstanceDAO
+    VmInstanceDAO,
+    VmSoftwareDAO
 )
 from virtcca_deploy.services.dao.registry import (
     DAORegistry,
@@ -22,8 +24,10 @@ from virtcca_deploy.services.dao.registry import (
 __all__ = [
     'NetworkConfigDAOInterface',
     'VmInstanceDAOInterface',
+    'VmSoftwareDAOInterface',
     'NetworkConfigDAO',
     'VmInstanceDAO',
+    'VmSoftwareDAO',
     'DAORegistry',
     'get_dao_registry',
     'init_dao_registry'

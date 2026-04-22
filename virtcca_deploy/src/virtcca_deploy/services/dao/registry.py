@@ -5,8 +5,8 @@ DAO registry for dependency injection
 Provides centralized access to DAO instances
 """
 
-from virtcca_deploy.services.dao.impl import NetworkConfigDAO, VmInstanceDAO
-from virtcca_deploy.services.dao.interfaces import NetworkConfigDAOInterface, VmInstanceDAOInterface
+from virtcca_deploy.services.dao.impl import NetworkConfigDAO, VmInstanceDAO, VmSoftwareDAO
+from virtcca_deploy.services.dao.interfaces import NetworkConfigDAOInterface, VmInstanceDAOInterface, VmSoftwareDAOInterface
 
 
 class DAORegistry:
@@ -15,6 +15,7 @@ class DAORegistry:
     def __init__(self):
         self._network_config_dao: NetworkConfigDAOInterface = NetworkConfigDAO()
         self._vm_instance_dao: VmInstanceDAOInterface = VmInstanceDAO()
+        self._vm_software_dao: VmSoftwareDAOInterface = VmSoftwareDAO()
 
     @property
     def network_config_dao(self) -> NetworkConfigDAOInterface:
@@ -35,6 +36,16 @@ class DAORegistry:
     def vm_instance_dao(self, dao: VmInstanceDAOInterface):
         """Set VmInstance DAO instance (for testing/mocking)"""
         self._vm_instance_dao = dao
+
+    @property
+    def vm_software_dao(self) -> VmSoftwareDAOInterface:
+        """Get VmSoftware DAO instance"""
+        return self._vm_software_dao
+
+    @vm_software_dao.setter
+    def vm_software_dao(self, dao: VmSoftwareDAOInterface):
+        """Set VmSoftware DAO instance (for testing/mocking)"""
+        self._vm_software_dao = dao
 
 
 g_dao_registry = None

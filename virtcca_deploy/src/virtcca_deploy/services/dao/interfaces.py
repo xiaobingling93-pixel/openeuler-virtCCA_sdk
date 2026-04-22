@@ -7,7 +7,7 @@ Defines abstract interfaces for database operations
 
 from abc import ABC, abstractmethod
 from typing import List, Optional, Dict
-from virtcca_deploy.services.db_service import NetworkConfig, VmInstance
+from virtcca_deploy.services.db_service import NetworkConfig, VmInstance, VmSoftware
 
 
 class NetworkConfigDAOInterface(ABC):
@@ -144,4 +144,53 @@ class VmInstanceDAOInterface(ABC):
         """Query VM instances with filters and pagination
         Returns: (total_count, vm_instances)
         """
+        pass
+
+
+class VmSoftwareDAOInterface(ABC):
+    """Interface for VmSoftware database operations"""
+
+    @abstractmethod
+    def create(self, vm_software: VmSoftware) -> VmSoftware:
+        """Create a new software record"""
+        pass
+
+    @abstractmethod
+    def get_by_id(self, software_id: int) -> Optional[VmSoftware]:
+        """Get software by ID"""
+        pass
+
+    @abstractmethod
+    def get_by_file_name(self, file_name: str) -> Optional[VmSoftware]:
+        """Get software by file name"""
+        pass
+
+    @abstractmethod
+    def get_all(self) -> List[VmSoftware]:
+        """Get all software records"""
+        pass
+
+    @abstractmethod
+    def update(self, vm_software: VmSoftware) -> bool:
+        """Update an existing software record"""
+        pass
+
+    @abstractmethod
+    def delete_by_id(self, software_id: int) -> bool:
+        """Delete software by ID"""
+        pass
+
+    @abstractmethod
+    def delete_by_file_name(self, file_name: str) -> bool:
+        """Delete software by file name"""
+        pass
+
+    @abstractmethod
+    def exists_by_file_name(self, file_name: str) -> bool:
+        """Check if software exists by file name"""
+        pass
+
+    @abstractmethod
+    def count(self) -> int:
+        """Count total software records"""
         pass

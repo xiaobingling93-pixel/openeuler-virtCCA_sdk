@@ -1,15 +1,15 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """
-DAO implementations for NetworkConfig and VmInstance models
+DAO implementations for NetworkConfig, VmInstance and VmSoftware models
 Concrete implementations of database operations
 """
 
 import logging
 from typing import List, Optional
 
-from virtcca_deploy.services.db_service import db, NetworkConfig, VmInstance
-from virtcca_deploy.services.dao.interfaces import NetworkConfigDAOInterface, VmInstanceDAOInterface
+from virtcca_deploy.services.db_service import db, NetworkConfig, VmInstance, VmSoftware
+from virtcca_deploy.services.dao.interfaces import NetworkConfigDAOInterface, VmInstanceDAOInterface, VmSoftwareDAOInterface
 
 logger = logging.getLogger(__name__)
 
@@ -289,4 +289,103 @@ class VmInstanceDAO(VmInstanceDAOInterface):
             return total_count, vm_instances
         except Exception as e:
             logger.error(f"Failed to query VM instances with filters: {e}")
+            raise
+
+
+class VmSoftwareDAO(VmSoftwareDAOInterface):
+    """Implementation of VmSoftware database operations"""
+
+    def create(self, vm_software: VmSoftware) -> VmSoftware:
+        """Create a new software record"""
+        try:
+            db.session.add(vm_software)
+            db.session.commit()
+            logger.info(f"Created software record: {vm_software}")
+            return vm_software
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Failed to create software record: {e}")
+            raise
+
+    def get_by_id(self, software_id: int) -> Optional[VmSoftware]:
+        """Get software by ID"""
+        try:
+            return db.session.get(VmSoftware, software_id)
+        except Exception as e:
+            logger.error(f"Failed to get software by id {software_id}: {e}")
+            raise
+
+    def get_by_file_name(self, file_name: str) -> Optional[VmSoftware]:
+        """Get software by file name"""
+        try:
+            return VmSoftware.query.filter_by(file_name=file_name).first()
+        except Exception as e:
+            logger.error(f"Failed to get software by file_name {file_name}: {e}")
+            raise
+
+    def get_all(self) -> List[VmSoftware]:
+        """Get all software records"""
+        try:
+            return VmSoftware.query.all()
+        except Exception as e:
+            logger.error(f"Failed to get all software records: {e}")
+            raise
+
+    def update(self, vm_software: VmSoftware) -> bool:
+        """Update an existing software record"""
+        try:
+            db.session.commit()
+            logger.info(f"Updated software record: {vm_software}")
+            return True
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Failed to update software record: {e}")
+            raise
+
+    def delete_by_id(self, software_id: int) -> bool:
+        """Delete software by ID"""
+        try:
+            vm_software = db.session.get(VmSoftware, software_id)
+            if vm_software:
+                db.session.delete(vm_software)
+                db.session.commit()
+                logger.info(f"Deleted software record: {software_id}")
+                return True
+            logger.warning(f"Software record {software_id} not found for deletion")
+            return False
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Failed to delete software record {software_id}: {e}")
+            raise
+
+    def delete_by_file_name(self, file_name: str) -> bool:
+        """Delete software by file name"""
+        try:
+            vm_software = VmSoftware.query.filter_by(file_name=file_name).first()
+            if vm_software:
+                db.session.delete(vm_software)
+                db.session.commit()
+                logger.info(f"Deleted software record: {file_name}")
+                return True
+            logger.warning(f"Software record {file_name} not found for deletion")
+            return False
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Failed to delete software record {file_name}: {e}")
+            raise
+
+    def exists_by_file_name(self, file_name: str) -> bool:
+        """Check if software exists by file name"""
+        try:
+            return VmSoftware.query.filter_by(file_name=file_name).first() is not None
+        except Exception as e:
+            logger.error(f"Failed to check existence of software {file_name}: {e}")
+            raise
+
+    def count(self) -> int:
+        """Count total software records"""
+        try:
+            return VmSoftware.query.count()
+        except Exception as e:
+            logger.error(f"Failed to count software records: {e}")
             raise
