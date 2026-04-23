@@ -20,93 +20,94 @@ from virtcca_deploy.services.vm_service import VmService, init_vm_service
 from virtcca_deploy.services.task_service import init_task_service
 from virtcca_deploy.common.data_model import VmDeploySpec, NetAllocResp, NetReleaseReq
 import virtcca_deploy.common.constants as constants
-from virtcca_deploy.services.resource_allocator import SimpleIpAllocator
+from virtcca_deploy.services.resource_allocator import IpAllocator
 
 class TestVmServiceDeployment:
     def test_execute_deployment_success(self, app):
         with app.app_context():
             init_task_service()
-            ip_allocator = SimpleIpAllocator(base_ip="192.168.1.0", ip_count=254)
-            vm_service = VmService(None, ip_allocator)
+            with patch('virtcca_deploy.services.network_config_service.get_network_config_service'):
+                ip_allocator = IpAllocator()
+                vm_service = VmService(None, ip_allocator)
 
-            node = ComputeNode(
-                nodename="compute01",
-                ip="192.168.1.100",
-                physical_cpu=8,
-                memory=16384,
-                memory_free=8192,
-                secure_memory=4096,
-                secure_memory_free=4096,
-                secure_numa_topology="{}"
-            )
-            db.session.add(node)
+                node = ComputeNode(
+                    nodename="compute01",
+                    ip="192.168.1.100",
+                    physical_cpu=8,
+                    memory=16384,
+                    memory_free=8192,
+                    secure_memory=4096,
+                    secure_memory_free=4096,
+                    secure_numa_topology="{}"
+                )
+                db.session.add(node)
 
-            deploy_spec = VmDeploySpec(max_vm_num=2, memory=4096, core_num=2, vlan_id=100)
-            deploy_spec_model = deploy_spec.to_db_model()
-            deploy_spec_model.is_default = True
-            db.session.add(deploy_spec_model)
-            db.session.commit()
+                deploy_spec = VmDeploySpec(max_vm_num=2, memory=4096, core_num=2, vlan_id=100)
+                deploy_spec_model = deploy_spec.to_db_model()
+                deploy_spec_model.is_default = True
+                db.session.add(deploy_spec_model)
+                db.session.commit()
 
-            with patch('virtcca_deploy.services.vm_service.get_task_service') as mock_get_task_service, \
-                patch('virtcca_deploy.services.vm_service.NetworkService') as mock_network_service, \
-                patch('virtcca_deploy.services.vm_service.gevent.spawn') as mock_spawn, \
-                patch('virtcca_deploy.services.vm_service.gevent.joinall') as mock_joinall:
+                with patch('virtcca_deploy.services.vm_service.get_task_service') as mock_get_task_service, \
+                    patch('virtcca_deploy.services.vm_service.NetworkService') as mock_network_service, \
+                    patch('virtcca_deploy.services.vm_service.gevent.spawn') as mock_spawn, \
+                    patch('virtcca_deploy.services.vm_service.gevent.joinall') as mock_joinall:
 
-                mock_task = MagicMock()
-                mock_task.create_task.return_value = "task-123"
-                mock_get_task_service.return_value = mock_task
+                    mock_task = MagicMock()
+                    mock_task.create_task.return_value = "task-123"
+                    mock_get_task_service.return_value = mock_task
 
-                mock_network_instance = MagicMock()
-                mock_response = MagicMock()
-                mock_response.status_code = HTTPStatus.OK
-                # 模拟返回成功部署的VM列表
-                mock_response.json.return_value = {"data": ["compute01-1", "compute01-2"], "message": ""}
-                # 模拟返回成功部署的VM列表
-                mock_response.json.return_value = {"data": ["compute01-1", "compute01-2"], "message": ""}
-                mock_network_instance.vm_deploy.return_value = mock_response
-                mock_network_service.return_value = mock_network_instance
+                    mock_network_instance = MagicMock()
+                    mock_response = MagicMock()
+                    mock_response.status_code = HTTPStatus.OK
+                    # 模拟返回成功部署的VM列表
+                    mock_response.json.return_value = {"data": ["compute01-1", "compute01-2"], "message": ""}
+                    # 模拟返回成功部署的VM列表
+                    mock_response.json.return_value = {"data": ["compute01-1", "compute01-2"], "message": ""}
+                    mock_network_instance.vm_deploy.return_value = mock_response
+                    mock_network_service.return_value = mock_network_instance
 
-                # Mock gevent → 同步执行
-                jobs = []
-                def sync_spawn(func, *args, **kwargs):
-                    # 立即执行函数并创建mock job
-                    func(*args, **kwargs)
-                    job_mock = MagicMock()
-                    jobs.append(job_mock)
-                    return job_mock
-                
-                def sync_joinall(jobs_to_join, timeout=None):
-                    # 同步join，不执行任何操作
-                    pass
+                    # Mock gevent → 同步执行
+                    jobs = []
+                    def sync_spawn(func, *args, **kwargs):
+                        # 立即执行函数并创建mock job
+                        func(*args, **kwargs)
+                        job_mock = MagicMock()
+                        jobs.append(job_mock)
+                        return job_mock
+                    
+                    def sync_joinall(jobs_to_join, timeout=None):
+                        # 同步join，不执行任何操作
+                        pass
 
-                mock_spawn.side_effect = sync_spawn
-                mock_joinall.side_effect = sync_joinall
+                    mock_spawn.side_effect = sync_spawn
+                    mock_joinall.side_effect = sync_joinall
 
-                result = vm_service.execute_deployment([node], deploy_spec_model, {})
+                    result = vm_service.execute_deployment([node], deploy_spec_model, {})
 
-                assert result is not None
-                assert len(result) == 2
+                    assert result is not None
+                    assert len(result) == 2
 
-                assert mock_task.create_task.called
-                mock_task.update_task_status.assert_any_call("task-123", "running")
-                mock_task.update_task_status.assert_any_call("task-123", "success")
-                
-                # 验证任务参数是否正确更新
-                mock_task.update_task_params.assert_called_once()
-                call_args = mock_task.update_task_params.call_args
-                assert call_args[0][0] == "task-123"
-                task_params = call_args[0][1]
-                assert set(task_params["success_vms"]) == {"compute01-1", "compute01-2"}
-                assert task_params["fail_vms"] == []
-                assert set(task_params["total_vms"]) == {"compute01-1", "compute01-2"}
+                    assert mock_task.create_task.called
+                    mock_task.update_task_status.assert_any_call("task-123", "running")
+                    mock_task.update_task_status.assert_any_call("task-123", "success")
+                    
+                    # 验证任务参数是否正确更新
+                    mock_task.update_task_params.assert_called_once()
+                    call_args = mock_task.update_task_params.call_args
+                    assert call_args[0][0] == "task-123"
+                    task_params = call_args[0][1]
+                    assert set(task_params["success_vms"]) == {"compute01-1", "compute01-2"}
+                    assert task_params["fail_vms"] == []
+                    assert set(task_params["total_vms"]) == {"compute01-1", "compute01-2"}
 
-                mock_network_service.assert_called_once()
-                mock_network_instance.vm_deploy.assert_called_once()
+                    mock_network_service.assert_called_once()
+                    mock_network_instance.vm_deploy.assert_called_once()
 
-                # 刷新会话并查询
-                db.session.expire_all()
-                vm_list = VmInstance.query.all()
-                assert len(vm_list) == 2
+                    # 刷新会话并查询
+                    db.session.expire_all()
+                    vm_list = VmInstance.query.all()
+                    assert len(vm_list) == 2
 
     def test_execute_deployment_failure(self, app):
         with app.app_context():
@@ -190,65 +191,67 @@ class TestVmServiceDeployment:
         """vm_id_dict为空时：自动生成vm_id并分配IP"""
         with app.app_context():
             init_task_service()
-            ip_allocator = SimpleIpAllocator(base_ip="192.168.1.0", ip_count=254)
-            vm_service = VmService(None, ip_allocator)
+            with patch('virtcca_deploy.services.network_config_service.get_network_config_service'):
+                ip_allocator = IpAllocator()
+                vm_service = VmService(None, ip_allocator)
 
-            node = ComputeNode(
-                nodename="compute01",
-                ip="192.168.1.100",
-                physical_cpu=8,
-                memory=16384,
-                memory_free=8192,
-                secure_memory=4096,
-                secure_memory_free=4096,
-                secure_numa_topology="{}"
-            )
-            db.session.add(node)
+                node = ComputeNode(
+                    nodename="compute01",
+                    ip="192.168.1.100",
+                    physical_cpu=8,
+                    memory=16384,
+                    memory_free=8192,
+                    secure_memory=4096,
+                    secure_memory_free=4096,
+                    secure_numa_topology="{}"
+                )
+                db.session.add(node)
 
-            deploy_spec = VmDeploySpec(max_vm_num=3, memory=4096, core_num=2, vlan_id=100)
-            deploy_spec_model = deploy_spec.to_db_model()
-            deploy_spec_model.is_default = True
-            db.session.add(deploy_spec_model)
-            db.session.commit()
+                deploy_spec = VmDeploySpec(max_vm_num=3, memory=4096, core_num=2, vlan_id=100)
+                deploy_spec_model = deploy_spec.to_db_model()
+                deploy_spec_model.is_default = True
+                db.session.add(deploy_spec_model)
+                db.session.commit()
 
-            result = vm_service._prepare_default_deployment([node], deploy_spec_model)
+                result = vm_service._prepare_default_deployment([node], deploy_spec_model)
 
-            assert "compute01" in result
-            spec = result["compute01"]
-            assert spec.vm_id_list == ["compute01-1", "compute01-2", "compute01-3"]
-            assert len(spec.vm_id_list) == 3
+                assert "compute01" in result
+                spec = result["compute01"]
+                assert spec.vm_id_list == ["compute01-1", "compute01-2", "compute01-3"]
+                assert len(spec.vm_id_list) == 3
 
     def test_prepare_default_deployment_multiple_nodes(self, app):
         """vm_id_dict为空时：多节点自动生成vm_id"""
         with app.app_context():
             init_task_service()
-            ip_allocator = SimpleIpAllocator(base_ip="192.168.1.0", ip_count=254)
-            vm_service = VmService(None, ip_allocator)
+            with patch('virtcca_deploy.services.network_config_service.get_network_config_service'):
+                ip_allocator = IpAllocator()
+                vm_service = VmService(None, ip_allocator)
 
-            node1 = ComputeNode(
-                nodename="compute01", ip="192.168.1.100",
-                physical_cpu=8, memory=16384, memory_free=8192,
-                secure_memory=4096, secure_memory_free=4096, secure_numa_topology="{}"
-            )
-            node2 = ComputeNode(
-                nodename="compute02", ip="192.168.1.101",
-                physical_cpu=8, memory=16384, memory_free=8192,
-                secure_memory=4096, secure_memory_free=4096, secure_numa_topology="{}"
-            )
-            db.session.add_all([node1, node2])
+                node1 = ComputeNode(
+                    nodename="compute01", ip="192.168.1.100",
+                    physical_cpu=8, memory=16384, memory_free=8192,
+                    secure_memory=4096, secure_memory_free=4096, secure_numa_topology="{}"
+                )
+                node2 = ComputeNode(
+                    nodename="compute02", ip="192.168.1.101",
+                    physical_cpu=8, memory=16384, memory_free=8192,
+                    secure_memory=4096, secure_memory_free=4096, secure_numa_topology="{}"
+                )
+                db.session.add_all([node1, node2])
 
-            deploy_spec = VmDeploySpec(max_vm_num=2, memory=4096, core_num=2, vlan_id=100)
-            deploy_spec_model = deploy_spec.to_db_model()
-            deploy_spec_model.is_default = True
-            db.session.add(deploy_spec_model)
-            db.session.commit()
+                deploy_spec = VmDeploySpec(max_vm_num=2, memory=4096, core_num=2, vlan_id=100)
+                deploy_spec_model = deploy_spec.to_db_model()
+                deploy_spec_model.is_default = True
+                db.session.add(deploy_spec_model)
+                db.session.commit()
 
-            result = vm_service._prepare_default_deployment([node1, node2], deploy_spec_model)
+                result = vm_service._prepare_default_deployment([node1, node2], deploy_spec_model)
 
-            assert "compute01" in result
-            assert "compute02" in result
-            assert result["compute01"].vm_id_list == ["compute01-1", "compute01-2"]
-            assert result["compute02"].vm_id_list == ["compute02-1", "compute02-2"]
+                assert "compute01" in result
+                assert "compute02" in result
+                assert result["compute01"].vm_id_list == ["compute01-1", "compute01-2"]
+                assert result["compute02"].vm_id_list == ["compute02-1", "compute02-2"]
 
     def test_prepare_default_deployment_no_ip_allocator(self, app):
         """vm_id_dict为空时：无IP分配器仍能生成vm_id"""
@@ -271,289 +274,357 @@ class TestVmServiceDeployment:
             result = vm_service._prepare_default_deployment([node], deploy_spec_model)
 
             assert result["compute01"].vm_id_list == ["compute01-1", "compute01-2"]
-            assert result["compute01"].vm_ip_dict == {}
+            assert result["compute01"].vm_iface == {}
 
     def test_prepare_specified_deployment_all_new(self, app):
         """vm_id_dict非空时：所有vm_id均为新VM，需分配IP"""
         with app.app_context():
             init_task_service()
-            ip_allocator = SimpleIpAllocator(base_ip="192.168.1.0", ip_count=254)
-            vm_service = VmService(None, ip_allocator)
+            with patch('virtcca_deploy.services.network_config_service.get_network_config_service') as mock_get_service:
+                mock_service = MagicMock()
+                mock_service.allocate_ips_for_deployment.return_value = (
+                    True,
+                    {"compute01-1": ["192.168.100.10"], "compute01-2": ["192.168.100.11"]},
+                    {
+                        "compute01-1": [{"mac_address": "00:11:22:33:44:55", "vlan_id": 100,
+                                         "ip_address": "192.168.100.10", "subnet_mask": "255.255.255.0",
+                                         "gateway": "192.168.100.1"}],
+                        "compute01-2": [{"mac_address": "00:11:22:33:44:56", "vlan_id": 100,
+                                         "ip_address": "192.168.100.11", "subnet_mask": "255.255.255.0",
+                                         "gateway": "192.168.100.1"}]
+                    },
+                    ""
+                )
+                mock_get_service.return_value = mock_service
 
-            node = ComputeNode(
-                nodename="compute01", ip="192.168.1.100",
-                physical_cpu=8, memory=16384, memory_free=8192,
-                secure_memory=4096, secure_memory_free=4096, secure_numa_topology="{}"
-            )
-            db.session.add(node)
+                ip_allocator = IpAllocator()
+                vm_service = VmService(None, ip_allocator)
 
-            deploy_spec = VmDeploySpec(max_vm_num=5, memory=4096, core_num=2, vlan_id=100)
-            deploy_spec_model = deploy_spec.to_db_model()
-            db.session.add(deploy_spec_model)
-            db.session.commit()
+                node = ComputeNode(
+                    nodename="compute01", ip="192.168.1.100",
+                    physical_cpu=8, memory=16384, memory_free=8192,
+                    secure_memory=4096, secure_memory_free=4096, secure_numa_topology="{}"
+                )
+                db.session.add(node)
 
-            vm_id_dict = {"compute01": ["compute01-1", "compute01-2"]}
-            result = vm_service._prepare_specified_deployment([node], deploy_spec_model, vm_id_dict)
+                deploy_spec = VmDeploySpec(max_vm_num=5, memory=4096, core_num=2, vlan_id=100, net_pf_num=2)
+                deploy_spec_model = deploy_spec.to_db_model()
+                db.session.add(deploy_spec_model)
+                db.session.commit()
 
-            assert result["compute01"].vm_id_list == ["compute01-1", "compute01-2"]
-            assert len(result["compute01"].vm_ip_dict) == 2
+                vm_id_dict = {"compute01": ["compute01-1", "compute01-2"]}
+                result = vm_service._prepare_specified_deployment([node], deploy_spec_model, vm_id_dict)
+
+                assert result["compute01"].vm_id_list == ["compute01-1", "compute01-2"]
+                assert len(result["compute01"].vm_iface) == 2
 
     def test_prepare_specified_deployment_all_reused(self, app):
         """vm_id_dict非空时：所有vm_id已存在于数据库，复用IP"""
         with app.app_context():
             init_task_service()
-            ip_allocator = SimpleIpAllocator(base_ip="192.168.1.0", ip_count=254)
-            vm_service = VmService(None, ip_allocator)
+            with patch('virtcca_deploy.services.network_config_service.get_network_config_service'):
+                ip_allocator = IpAllocator()
+                vm_service = VmService(None, ip_allocator)
 
-            node = ComputeNode(
-                nodename="compute01", ip="192.168.1.100",
-                physical_cpu=8, memory=16384, memory_free=8192,
-                secure_memory=4096, secure_memory_free=4096, secure_numa_topology="{}"
-            )
-            db.session.add(node)
+                node = ComputeNode(
+                    nodename="compute01", ip="192.168.1.100",
+                    physical_cpu=8, memory=16384, memory_free=8192,
+                    secure_memory=4096, secure_memory_free=4096, secure_numa_topology="{}"
+                )
+                db.session.add(node)
 
-            deploy_spec = VmDeploySpec(max_vm_num=5, memory=4096, core_num=2, vlan_id=100)
-            deploy_spec_model = deploy_spec.to_db_model()
-            db.session.add(deploy_spec_model)
+                deploy_spec = VmDeploySpec(max_vm_num=5, memory=4096, core_num=2, vlan_id=100)
+                deploy_spec_model = deploy_spec.to_db_model()
+                db.session.add(deploy_spec_model)
 
-            existing_vm = VmInstance(
-                vm_id="compute01-1",
-                host_ip="192.168.1.100",
-                host_name="compute01",
-                vm_spec_uuid=deploy_spec_model.uuid,
-                ip_list="192.168.1.10,192.168.1.11"
-            )
-            db.session.add(existing_vm)
-            db.session.commit()
+                existing_vm = VmInstance(
+                    vm_id="compute01-1",
+                    host_ip="192.168.1.100",
+                    host_name="compute01",
+                    vm_spec_uuid=deploy_spec_model.uuid,
+                    iface_list=json.dumps([
+                            {
+                                "node_name": "compute01",
+                                "mac_address": "00:11:22:33:44:55",
+                                "vlan_id": 100,
+                                "ip_address": "192.168.1.10",
+                                "subnet_mask": "255.255.255.0",
+                                "gateway": "192.168.1.1"
+                            },
+                            {
+                                "node_name": "compute01",
+                                "mac_address": "00:11:22:33:44:56",
+                                "vlan_id": 100,
+                                "ip_address": "192.168.1.11",
+                                "subnet_mask": "255.255.255.0",
+                                "gateway": "192.168.1.1"
+                            }
+                    ])
+                )
+                db.session.add(existing_vm)
+                db.session.commit()
 
-            vm_id_dict = {"compute01": ["compute01-1"]}
-            result = vm_service._prepare_specified_deployment([node], deploy_spec_model, vm_id_dict)
+                vm_id_dict = {"compute01": ["compute01-1"]}
+                result = vm_service._prepare_specified_deployment([node], deploy_spec_model, vm_id_dict)
 
-            assert result["compute01"].vm_id_list == ["compute01-1"]
-            assert result["compute01"].vm_ip_dict.get("compute01-1") == ["192.168.1.10", "192.168.1.11"]
+                assert result["compute01"].vm_id_list == ["compute01-1"]
+                assert "compute01-1" in result["compute01"].vm_iface
+                assert len(result["compute01"].vm_iface["compute01-1"]) == 2
+                assert result["compute01"].vm_iface["compute01-1"][0].ip_address == "192.168.1.10"
+                assert result["compute01"].vm_iface["compute01-1"][1].ip_address == "192.168.1.11"
 
     def test_prepare_specified_deployment_mixed_new_and_reused(self, app):
         """vm_id_dict非空时：混合场景，部分复用部分新建"""
         with app.app_context():
             init_task_service()
-            ip_allocator = SimpleIpAllocator(base_ip="192.168.1.0", ip_count=254)
-            vm_service = VmService(None, ip_allocator)
+            with patch('virtcca_deploy.services.network_config_service.get_network_config_service') as mock_get_service:
+                mock_service = MagicMock()
+                mock_service.allocate_ips_for_deployment.return_value = (
+                    True,
+                    {"compute01-2": ["192.168.100.11"]},
+                    {
+                        "compute01-2": [{"mac_address": "00:11:22:33:44:56", "vlan_id": 100,
+                                         "ip_address": "192.168.100.11", "subnet_mask": "255.255.255.0",
+                                         "gateway": "192.168.100.1"}]
+                    },
+                    ""
+                )
+                mock_get_service.return_value = mock_service
 
-            node = ComputeNode(
-                nodename="compute01", ip="192.168.1.100",
-                physical_cpu=8, memory=16384, memory_free=8192,
-                secure_memory=4096, secure_memory_free=4096, secure_numa_topology="{}"
-            )
-            db.session.add(node)
+                ip_allocator = IpAllocator()
+                vm_service = VmService(None, ip_allocator)
 
-            deploy_spec = VmDeploySpec(max_vm_num=5, memory=4096, core_num=2, vlan_id=100)
-            deploy_spec_model = deploy_spec.to_db_model()
-            db.session.add(deploy_spec_model)
+                node = ComputeNode(
+                    nodename="compute01", ip="192.168.1.100",
+                    physical_cpu=8, memory=16384, memory_free=8192,
+                    secure_memory=4096, secure_memory_free=4096, secure_numa_topology="{}"
+                )
+                db.session.add(node)
 
-            existing_vm = VmInstance(
-                vm_id="compute01-1",
-                host_ip="192.168.1.100",
-                host_name="compute01",
-                vm_spec_uuid=deploy_spec_model.uuid,
-                ip_list="192.168.1.10"
-            )
-            db.session.add(existing_vm)
-            db.session.commit()
+                deploy_spec = VmDeploySpec(max_vm_num=5, memory=4096, core_num=2, vlan_id=100, net_pf_num=2)
+                deploy_spec_model = deploy_spec.to_db_model()
+                db.session.add(deploy_spec_model)
 
-            vm_id_dict = {"compute01": ["compute01-1", "compute01-2"]}
-            result = vm_service._prepare_specified_deployment([node], deploy_spec_model, vm_id_dict)
+                existing_vm = VmInstance(
+                    vm_id="compute01-1",
+                    host_ip="192.168.1.100",
+                    host_name="compute01",
+                    vm_spec_uuid=deploy_spec_model.uuid,
+                    iface_list=json.dumps([
+                        {
+                            "node_name": "compute01",
+                            "mac_address": "00:11:22:33:44:55",
+                            "vlan_id": 100,
+                            "ip_address": "192.168.1.10",
+                            "subnet_mask": "255.255.255.0",
+                            "gateway": "192.168.1.1"
+                        }
+                    ])
+                )
+                db.session.add(existing_vm)
+                db.session.commit()
 
-            assert result["compute01"].vm_id_list == ["compute01-1", "compute01-2"]
-            assert result["compute01"].vm_ip_dict.get("compute01-1") == ["192.168.1.10"]
-            assert "compute01-2" in result["compute01"].vm_ip_dict
+                vm_id_dict = {"compute01": ["compute01-1", "compute01-2"]}
+                result = vm_service._prepare_specified_deployment([node], deploy_spec_model, vm_id_dict)
+
+                assert result["compute01"].vm_id_list == ["compute01-1", "compute01-2"]
+                assert "compute01-1" in result["compute01"].vm_iface
+                assert len(result["compute01"].vm_iface["compute01-1"]) == 1
+                assert result["compute01"].vm_iface["compute01-1"][0].ip_address == "192.168.1.10"
+                assert "compute01-2" in result["compute01"].vm_iface
 
     def test_prepare_specified_deployment_node_not_in_dict(self, app):
         """vm_id_dict非空时：节点不在dict中，回退到默认命名"""
         with app.app_context():
             init_task_service()
-            ip_allocator = SimpleIpAllocator(base_ip="192.168.1.0", ip_count=254)
-            vm_service = VmService(None, ip_allocator)
+            with patch('virtcca_deploy.services.network_config_service.get_network_config_service'):
+                ip_allocator = IpAllocator()
+                vm_service = VmService(None, ip_allocator)
 
-            node1 = ComputeNode(
-                nodename="compute01", ip="192.168.1.100",
-                physical_cpu=8, memory=16384, memory_free=8192,
-                secure_memory=4096, secure_memory_free=4096, secure_numa_topology="{}"
-            )
-            node2 = ComputeNode(
-                nodename="compute02", ip="192.168.1.101",
-                physical_cpu=8, memory=16384, memory_free=8192,
-                secure_memory=4096, secure_memory_free=4096, secure_numa_topology="{}"
-            )
-            db.session.add_all([node1, node2])
+                node1 = ComputeNode(
+                    nodename="compute01", ip="192.168.1.100",
+                    physical_cpu=8, memory=16384, memory_free=8192,
+                    secure_memory=4096, secure_memory_free=4096, secure_numa_topology="{}"
+                )
+                node2 = ComputeNode(
+                    nodename="compute02", ip="192.168.1.101",
+                    physical_cpu=8, memory=16384, memory_free=8192,
+                    secure_memory=4096, secure_memory_free=4096, secure_numa_topology="{}"
+                )
+                db.session.add_all([node1, node2])
 
-            deploy_spec = VmDeploySpec(max_vm_num=2, memory=4096, core_num=2, vlan_id=100)
-            deploy_spec_model = deploy_spec.to_db_model()
-            db.session.add(deploy_spec_model)
-            db.session.commit()
+                deploy_spec = VmDeploySpec(max_vm_num=2, memory=4096, core_num=2, vlan_id=100)
+                deploy_spec_model = deploy_spec.to_db_model()
+                db.session.add(deploy_spec_model)
+                db.session.commit()
 
-            vm_id_dict = {"compute01": ["compute01-1"]}
-            result = vm_service._prepare_specified_deployment([node1, node2], deploy_spec_model, vm_id_dict)
+                vm_id_dict = {"compute01": ["compute01-1"]}
+                result = vm_service._prepare_specified_deployment([node1, node2], deploy_spec_model, vm_id_dict)
 
-            assert result["compute01"].vm_id_list == ["compute01-1"]
-            assert result["compute02"].vm_id_list == ["compute02-1", "compute02-2"]
+                assert result["compute01"].vm_id_list == ["compute01-1"]
+                assert result["compute02"].vm_id_list == ["compute02-1", "compute02-2"]
 
     def test_prepare_specified_deployment_db_query_failure(self, app):
         """vm_id_dict非空时：数据库查询异常，跳过该vm_id"""
         with app.app_context():
             init_task_service()
-            ip_allocator = SimpleIpAllocator(base_ip="192.168.1.0", ip_count=254)
-            vm_service = VmService(None, ip_allocator)
+            with patch('virtcca_deploy.services.network_config_service.get_network_config_service'):
+                ip_allocator = IpAllocator()
+                vm_service = VmService(None, ip_allocator)
 
-            node = ComputeNode(
-                nodename="compute01", ip="192.168.1.100",
-                physical_cpu=8, memory=16384, memory_free=8192,
-                secure_memory=4096, secure_memory_free=4096, secure_numa_topology="{}"
-            )
-            db.session.add(node)
+                node = ComputeNode(
+                    nodename="compute01", ip="192.168.1.100",
+                    physical_cpu=8, memory=16384, memory_free=8192,
+                    secure_memory=4096, secure_memory_free=4096, secure_numa_topology="{}"
+                )
+                db.session.add(node)
 
-            deploy_spec = VmDeploySpec(max_vm_num=5, memory=4096, core_num=2, vlan_id=100)
-            deploy_spec_model = deploy_spec.to_db_model()
-            db.session.add(deploy_spec_model)
-            db.session.commit()
+                deploy_spec = VmDeploySpec(max_vm_num=5, memory=4096, core_num=2, vlan_id=100)
+                deploy_spec_model = deploy_spec.to_db_model()
+                db.session.add(deploy_spec_model)
+                db.session.commit()
 
-            vm_id_dict = {"compute01": ["compute01-1", "compute01-2"]}
+                vm_id_dict = {"compute01": ["compute01-1", "compute01-2"]}
 
-            with patch('virtcca_deploy.services.vm_service.VmInstance') as MockVmInstance:
-                mock_query = MagicMock()
-                mock_query.filter_by.return_value.first.side_effect = Exception("DB connection lost")
-                MockVmInstance.query = mock_query
+                with patch('virtcca_deploy.services.vm_service.VmInstance') as MockVmInstance:
+                    mock_query = MagicMock()
+                    mock_query.filter_by.return_value.first.side_effect = Exception("DB connection lost")
+                    MockVmInstance.query = mock_query
 
-                result = vm_service._prepare_specified_deployment([node], deploy_spec_model, vm_id_dict)
+                    result = vm_service._prepare_specified_deployment([node], deploy_spec_model, vm_id_dict)
 
-                assert "compute01" in result
-                assert result["compute01"].vm_id_list == ["compute01-1", "compute01-2"]
+                    assert "compute01" in result
+                    assert result["compute01"].vm_id_list == ["compute01-1", "compute01-2"]
 
     def test_execute_deployment_empty_vm_id_dict_calls_default(self, app):
         """vm_id_dict为空时：execute_deployment调用_prepare_default_deployment"""
         with app.app_context():
             init_task_service()
-            ip_allocator = SimpleIpAllocator(base_ip="192.168.1.0", ip_count=254)
-            vm_service = VmService(None, ip_allocator)
+            with patch('virtcca_deploy.services.network_config_service.get_network_config_service'):
+                ip_allocator = IpAllocator()
+                vm_service = VmService(None, ip_allocator)
 
-            node = ComputeNode(
-                nodename="compute01", ip="192.168.1.100",
-                physical_cpu=8, memory=16384, memory_free=8192,
-                secure_memory=4096, secure_memory_free=4096, secure_numa_topology="{}"
-            )
-            db.session.add(node)
+                node = ComputeNode(
+                    nodename="compute01", ip="192.168.1.100",
+                    physical_cpu=8, memory=16384, memory_free=8192,
+                    secure_memory=4096, secure_memory_free=4096, secure_numa_topology="{}"
+                )
+                db.session.add(node)
 
-            deploy_spec = VmDeploySpec(max_vm_num=2, memory=4096, core_num=2, vlan_id=100)
-            deploy_spec_model = deploy_spec.to_db_model()
-            deploy_spec_model.is_default = True
-            db.session.add(deploy_spec_model)
-            db.session.commit()
+                deploy_spec = VmDeploySpec(max_vm_num=2, memory=4096, core_num=2, vlan_id=100)
+                deploy_spec_model = deploy_spec.to_db_model()
+                deploy_spec_model.is_default = True
+                db.session.add(deploy_spec_model)
+                db.session.commit()
 
-            with patch.object(vm_service, '_prepare_default_deployment', wraps=vm_service._prepare_default_deployment) as mock_default, \
-                patch.object(vm_service, '_prepare_specified_deployment') as mock_specified, \
-                patch('virtcca_deploy.services.vm_service.get_task_service') as mock_get_task_service, \
-                patch('virtcca_deploy.services.vm_service.NetworkService'), \
-                patch('virtcca_deploy.services.vm_service.gevent.spawn'):
+                with patch.object(vm_service, '_prepare_default_deployment', wraps=vm_service._prepare_default_deployment) as mock_default, \
+                    patch.object(vm_service, '_prepare_specified_deployment') as mock_specified, \
+                    patch('virtcca_deploy.services.vm_service.get_task_service') as mock_get_task_service, \
+                    patch('virtcca_deploy.services.vm_service.NetworkService'), \
+                    patch('virtcca_deploy.services.vm_service.gevent.spawn'):
 
-                mock_task = MagicMock()
-                mock_task.create_task.return_value = "task-123"
-                mock_get_task_service.return_value = mock_task
+                    mock_task = MagicMock()
+                    mock_task.create_task.return_value = "task-123"
+                    mock_get_task_service.return_value = mock_task
 
-                vm_service.execute_deployment([node], deploy_spec_model, {})
+                    vm_service.execute_deployment([node], deploy_spec_model, {})
 
-                mock_default.assert_called_once_with([node], deploy_spec_model)
-                mock_specified.assert_not_called()
+                    mock_default.assert_called_once_with([node], deploy_spec_model)
+                    mock_specified.assert_not_called()
 
     def test_execute_deployment_nonempty_vm_id_dict_calls_specified(self, app):
         """vm_id_dict非空时：execute_deployment调用_prepare_specified_deployment"""
         with app.app_context():
             init_task_service()
-            ip_allocator = SimpleIpAllocator(base_ip="192.168.1.0", ip_count=254)
-            vm_service = VmService(None, ip_allocator)
+            with patch('virtcca_deploy.services.network_config_service.get_network_config_service'):
+                ip_allocator = IpAllocator()
+                vm_service = VmService(None, ip_allocator)
 
-            node = ComputeNode(
-                nodename="compute01", ip="192.168.1.100",
-                physical_cpu=8, memory=16384, memory_free=8192,
-                secure_memory=4096, secure_memory_free=4096, secure_numa_topology="{}"
-            )
-            db.session.add(node)
+                node = ComputeNode(
+                    nodename="compute01", ip="192.168.1.100",
+                    physical_cpu=8, memory=16384, memory_free=8192,
+                    secure_memory=4096, secure_memory_free=4096, secure_numa_topology="{}"
+                )
+                db.session.add(node)
 
-            deploy_spec = VmDeploySpec(max_vm_num=2, memory=4096, core_num=2, vlan_id=100)
-            deploy_spec_model = deploy_spec.to_db_model()
-            deploy_spec_model.is_default = True
-            db.session.add(deploy_spec_model)
-            db.session.commit()
+                deploy_spec = VmDeploySpec(max_vm_num=2, memory=4096, core_num=2, vlan_id=100)
+                deploy_spec_model = deploy_spec.to_db_model()
+                deploy_spec_model.is_default = True
+                db.session.add(deploy_spec_model)
+                db.session.commit()
 
-            vm_id_dict = {"compute01": ["compute01-1"]}
+                vm_id_dict = {"compute01": ["compute01-1"]}
 
-            with patch.object(vm_service, '_prepare_default_deployment') as mock_default, \
-                patch.object(vm_service, '_prepare_specified_deployment', wraps=vm_service._prepare_specified_deployment) as mock_specified, \
-                patch('virtcca_deploy.services.vm_service.get_task_service') as mock_get_task_service, \
-                patch('virtcca_deploy.services.vm_service.NetworkService'), \
-                patch('virtcca_deploy.services.vm_service.gevent.spawn'):
+                with patch.object(vm_service, '_prepare_default_deployment') as mock_default, \
+                    patch.object(vm_service, '_prepare_specified_deployment', wraps=vm_service._prepare_specified_deployment) as mock_specified, \
+                    patch('virtcca_deploy.services.vm_service.get_task_service') as mock_get_task_service, \
+                    patch('virtcca_deploy.services.vm_service.NetworkService'), \
+                    patch('virtcca_deploy.services.vm_service.gevent.spawn'):
 
-                mock_task = MagicMock()
-                mock_task.create_task.return_value = "task-123"
-                mock_get_task_service.return_value = mock_task
+                    mock_task = MagicMock()
+                    mock_task.create_task.return_value = "task-123"
+                    mock_get_task_service.return_value = mock_task
 
-                vm_service.execute_deployment([node], deploy_spec_model, vm_id_dict)
+                    vm_service.execute_deployment([node], deploy_spec_model, vm_id_dict)
 
-                mock_specified.assert_called_once_with([node], deploy_spec_model, vm_id_dict)
-                mock_default.assert_not_called()
+                    mock_specified.assert_called_once_with([node], deploy_spec_model, vm_id_dict)
+                    mock_default.assert_not_called()
 
     def test_execute_deployment_with_vm_id_dict_full_flow(self, app):
         """vm_id_dict非空时：完整部署流程，验证vm_id使用指定值"""
         with app.app_context():
             init_task_service()
-            ip_allocator = SimpleIpAllocator(base_ip="192.168.1.0", ip_count=254)
-            vm_service = VmService(None, ip_allocator)
+            with patch('virtcca_deploy.services.network_config_service.get_network_config_service'):
+                ip_allocator = IpAllocator()
+                vm_service = VmService(None, ip_allocator)
 
-            node = ComputeNode(
-                nodename="compute01", ip="192.168.1.100",
-                physical_cpu=8, memory=16384, memory_free=8192,
-                secure_memory=4096, secure_memory_free=4096, secure_numa_topology="{}"
-            )
-            db.session.add(node)
+                node = ComputeNode(
+                    nodename="compute01", ip="192.168.1.100",
+                    physical_cpu=8, memory=16384, memory_free=8192,
+                    secure_memory=4096, secure_memory_free=4096, secure_numa_topology="{}"
+                )
+                db.session.add(node)
 
-            deploy_spec = VmDeploySpec(max_vm_num=5, memory=4096, core_num=2, vlan_id=100)
-            deploy_spec_model = deploy_spec.to_db_model()
-            deploy_spec_model.is_default = True
-            db.session.add(deploy_spec_model)
-            db.session.commit()
+                deploy_spec = VmDeploySpec(max_vm_num=5, memory=4096, core_num=2, vlan_id=100)
+                deploy_spec_model = deploy_spec.to_db_model()
+                deploy_spec_model.is_default = True
+                db.session.add(deploy_spec_model)
+                db.session.commit()
 
-            vm_id_dict = {"compute01": ["compute01-3", "compute01-5"]}
+                vm_id_dict = {"compute01": ["compute01-3", "compute01-5"]}
 
-            with patch('virtcca_deploy.services.vm_service.get_task_service') as mock_get_task_service, \
-                patch('virtcca_deploy.services.vm_service.NetworkService') as mock_network_service, \
-                patch('virtcca_deploy.services.vm_service.gevent.spawn') as mock_spawn:
+                with patch('virtcca_deploy.services.vm_service.get_task_service') as mock_get_task_service, \
+                    patch('virtcca_deploy.services.vm_service.NetworkService') as mock_network_service, \
+                    patch('virtcca_deploy.services.vm_service.gevent.spawn') as mock_spawn:
 
-                mock_task = MagicMock()
-                mock_task.create_task.return_value = "task-123"
-                mock_get_task_service.return_value = mock_task
+                    mock_task = MagicMock()
+                    mock_task.create_task.return_value = "task-123"
+                    mock_get_task_service.return_value = mock_task
 
-                mock_network_instance = MagicMock()
-                mock_response = MagicMock()
-                mock_response.status_code = HTTPStatus.OK
-                mock_response.json.return_value = {"data": ["compute01-3", "compute01-5"], "message": ""}
-                mock_network_instance.vm_deploy.return_value = mock_response
-                mock_network_service.return_value = mock_network_instance
+                    mock_network_instance = MagicMock()
+                    mock_response = MagicMock()
+                    mock_response.status_code = HTTPStatus.OK
+                    mock_response.json.return_value = {"data": ["compute01-3", "compute01-5"], "message": ""}
+                    mock_network_instance.vm_deploy.return_value = mock_response
+                    mock_network_service.return_value = mock_network_instance
 
-                def sync_spawn(func, *args, **kwargs):
-                    func(*args, **kwargs)
-                    return MagicMock()
+                    def sync_spawn(func, *args, **kwargs):
+                        func(*args, **kwargs)
+                        return MagicMock()
 
-                mock_spawn.side_effect = sync_spawn
+                    mock_spawn.side_effect = sync_spawn
 
-                result = vm_service.execute_deployment([node], deploy_spec_model, vm_id_dict)
+                    result = vm_service.execute_deployment([node], deploy_spec_model, vm_id_dict)
 
-                assert "compute01-3" in result
-                assert "compute01-5" in result
-                assert len(result) == 2
+                    assert "compute01-3" in result
+                    assert "compute01-5" in result
+                    assert len(result) == 2
 
-                db.session.expire_all()
-                vm_list = VmInstance.query.all()
-                assert len(vm_list) == 2
-                vm_ids = {vm.vm_id for vm in vm_list}
-                assert vm_ids == {"compute01-3", "compute01-5"}
+                    db.session.expire_all()
+                    vm_list = VmInstance.query.all()
+                    assert len(vm_list) == 2
+                    vm_ids = {vm.vm_id for vm in vm_list}
+                    assert vm_ids == {"compute01-3", "compute01-5"}
                 
     def test_execute_deployment_task_creation_failure(self, app):
         with app.app_context():

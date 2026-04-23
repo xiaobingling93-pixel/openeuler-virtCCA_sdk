@@ -5,6 +5,7 @@
 import os
 import sys
 from http import HTTPStatus
+import json
 
 # 确保项目src目录在sys.path中
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -39,7 +40,12 @@ class TestVmUndeployEndpoint:
                 host_ip=node1.ip,
                 host_name=node1.nodename,
                 vm_spec_uuid="spec-123",
-                ip_list="192.168.1.10"
+                iface_list=json.dumps({
+                "mac_address": "00:11:22:33:44:55",
+                "vlan_id": 100,
+                "ip_address": "192.168.1.10",
+                "subnet_mask": "255.255.255.0",
+                "gateway": "192.168.1.1"})
             )
             db.session.add(vm1)
             db.session.commit()
@@ -88,7 +94,12 @@ class TestVmUndeployEndpoint:
                 host_ip=node1.ip,
                 host_name=node1.nodename,
                 vm_spec_uuid="spec-123",
-                ip_list="192.168.1.10"
+                iface_list=json.dumps({
+                "mac_address": "00:11:22:33:44:55",
+                "vlan_id": 100,
+                "ip_address": "192.168.1.10",
+                "subnet_mask": "255.255.255.0",
+                "gateway": "192.168.1.1"})
             )
             db.session.add(vm1)
             db.session.commit()
@@ -136,7 +147,12 @@ class TestVmUndeployEndpoint:
                 host_ip=node1.ip,
                 host_name=node1.nodename,
                 vm_spec_uuid="spec-123",
-                ip_list="192.168.1.10"
+                iface_list=json.dumps({
+                "mac_address": "00:11:22:33:44:55",
+                "vlan_id": 100,
+                "ip_address": "192.168.1.10",
+                "subnet_mask": "255.255.255.0",
+                "gateway": "192.168.1.1"})
             )
             db.session.add(vm1)
             db.session.commit()

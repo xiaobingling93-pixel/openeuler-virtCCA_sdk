@@ -49,14 +49,42 @@ class TestVmServiceQuery:
                 host_ip=node.ip,
                 host_name=node.nodename,
                 vm_spec_uuid="spec-123",
-                ip_list="192.168.1.10,192.168.1.11"
+                iface_list=json.dumps([
+                    {
+                        "node_name": "compute01",
+                        "mac_address": "00:11:22:33:44:55",
+                        "vlan_id": 100,
+                        "ip_address": "192.168.1.10",
+                        "subnet_mask": "255.255.255.0",
+                        "gateway": "192.168.1.1"
+                    },
+                    {
+                        "node_name":
+                        "compute01",
+                        "mac_address":
+                        "00:11:22:33:44:56",
+                        "vlan_id": 200,
+                        "ip_address": "192.168.1.11",
+                        "subnet_mask": "255.255.255.0",
+                        "gateway": "192.168.1.1"
+                    }
+                ])
             )
             vm2 = VmInstance(
                 vm_id="compute01-2",
                 host_ip=node.ip,
                 host_name=node.nodename,
                 vm_spec_uuid="spec-123",
-                ip_list="192.168.1.12"
+                iface_list=json.dumps([
+                    {
+                        "node_name": "compute01",
+                        "mac_address": "00:11:22:33:44:57",
+                        "vlan_id": 100,
+                        "ip_address": "192.168.1.12",
+                        "subnet_mask": "255.255.255.0",
+                        "gateway": "192.168.1.1"
+                    }
+                ])
             )
             db.session.add_all([vm1, vm2])
             db.session.commit()
@@ -132,14 +160,32 @@ class TestVmServiceQuery:
                 host_ip=node.ip,
                 host_name=node.nodename,
                 vm_spec_uuid="spec-123",
-                ip_list="192.168.1.10"
+                iface_list=json.dumps([
+                    {
+                        "node_name": "compute01",
+                        "mac_address": "00:11:22:33:44:55",
+                        "vlan_id": 100,
+                        "ip_address": "192.168.1.10",
+                        "subnet_mask": "255.255.255.0",
+                        "gateway": "192.168.1.1"
+                    }
+                ])
             )
             vm2 = VmInstance(
                 vm_id="compute01-2",
                 host_ip=node.ip,
                 host_name=node.nodename,
                 vm_spec_uuid="spec-123",
-                ip_list="192.168.1.11"
+                iface_list=json.dumps([
+                    {
+                        "node_name": "compute01",
+                        "mac_address": "00:11:22:33:44:56",
+                        "vlan_id": 100,
+                        "ip_address": "192.168.1.11",
+                        "subnet_mask": "255.255.255.0",
+                        "gateway": "192.168.1.1"
+                    }
+                ])
             )
             db.session.add_all([vm1, vm2])
             db.session.commit()
@@ -210,7 +256,16 @@ class TestVmServiceQuery:
                     host_ip=node.ip,
                     host_name=node.nodename,
                     vm_spec_uuid="spec-123",
-                    ip_list=f"192.168.1.{i+10}"
+                    iface_list=json.dumps([
+                        {
+                            "node_name": "compute01",
+                            "mac_address": f"00:11:22:33:44:{i:02X}",
+                            "vlan_id": 100,
+                            "ip_address": f"192.168.1.{i+10}",
+                            "subnet_mask": "255.255.255.0",
+                            "gateway": "192.168.1.1"
+                        }
+                    ])
                 )
                 vms.append(vm)
             db.session.add_all(vms)
@@ -288,7 +343,16 @@ class TestVmServiceQuery:
                 host_ip=node.ip,
                 host_name=node.nodename,
                 vm_spec_uuid="spec-123",
-                ip_list="192.168.1.10"
+                iface_list=json.dumps([
+                    {
+                        "node_name": "compute01",
+                        "mac_address": "00:11:22:33:44:55",
+                        "vlan_id": 100,
+                        "ip_address": "192.168.1.10",
+                        "subnet_mask": "255.255.255.0",
+                        "gateway": "192.168.1.1"
+                    }
+                ])
             )
             db.session.add(vm)
             db.session.commit()
@@ -344,7 +408,16 @@ class TestVmServiceQuery:
                 host_ip=node.ip,
                 host_name=node.nodename,
                 vm_spec_uuid="spec-123",
-                ip_list="192.168.1.10"
+                iface_list=json.dumps([
+                    {
+                        "node_name": "compute01",
+                        "mac_address": "00:11:22:33:44:55",
+                        "vlan_id": 100,
+                        "ip_address": "192.168.1.10",
+                        "subnet_mask": "255.255.255.0",
+                        "gateway": "192.168.1.1"
+                    }
+                ])
             )
             db.session.add(vm)
             db.session.commit()
@@ -393,7 +466,14 @@ class TestVmServiceQuery:
                 host_ip=node.ip,
                 host_name=node.nodename,
                 vm_spec_uuid="spec-123",
-                ip_list="192.168.1.10"
+                iface_list=json.dumps([{
+                    "node_name": "compute01",
+                    "mac_address": "00:11:22:33:44:55",
+                    "vlan_id": 100,
+                    "ip_address": "192.168.1.10",
+                    "subnet_mask": "255.255.255.0",
+                    "gateway": "192.168.1.1"
+                }])
             )
             db.session.add(vm)
             db.session.commit()

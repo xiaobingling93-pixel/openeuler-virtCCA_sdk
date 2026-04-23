@@ -36,7 +36,7 @@ class TestComputeDeploy:
                 'disk_size': 10,
                 'uuid': '74260cba-197f-42d1-9af5-4247d182edd5'
             },
-            'vm_ip_dict': {}
+            'vm_iface': {}
         }
         
         # 模拟部署结果
@@ -80,7 +80,7 @@ class TestComputeDeploy:
                 'disk_size': 10,
                 'uuid': '74260cba-197f-42d1-9af5-4247d182edd5'
             },
-            'vm_ip_dict': {}
+            'vm_iface': {}
         }
         
         response = compute_client.post(
@@ -109,7 +109,7 @@ class TestComputeDeploy:
                 'disk_size': 10,
                 'uuid': '74260cba-197f-42d1-9af5-4247d182edd5'
             },
-            'vm_ip_dict': {}
+            'vm_iface': {}
         }
         
         response = compute_client.post(
@@ -137,7 +137,7 @@ class TestComputeDeploy:
                 'disk_size': 10,
                 'uuid': '74260cba-197f-42d1-9af5-4247d182edd5'
             },
-            'vm_ip_dict': {}
+            'vm_iface': {}
         }
         
         response = compute_client.post(
@@ -155,7 +155,7 @@ class TestComputeDeploy:
         request_data = {
             'vm_id_list': ['compute01-1'],
             'vm_spec': 'invalid_spec',  # 应该是字典
-            'vm_ip_dict': {}
+            'vm_iface': {}
         }
         
         response = compute_client.post(
@@ -168,8 +168,8 @@ class TestComputeDeploy:
         response_data = response.get_json()
         assert 'vm_spec must be a dictionary' in response_data.get('message', '')
     
-    def test_deploy_cvm_internal_invalid_vm_ip_dict(self, compute_client):
-        """测试无效的vm_ip_dict格式"""
+    def test_deploy_cvm_internal_invalid_vm_iface(self, compute_client):
+        """测试无效的vm_iface格式"""
         request_data = {
             'vm_id_list': ['compute01-1'],
             'vm_spec': {
@@ -183,7 +183,7 @@ class TestComputeDeploy:
                 'disk_size': 10,
                 'uuid': '74260cba-197f-42d1-9af5-4247d182edd5'
             },
-            'vm_ip_dict': 'invalid_ip_dict'  # 应该是字典
+            'vm_iface': 'invalid_vm_iface'  # 应该是字典
         }
         
         response = compute_client.post(
@@ -194,7 +194,7 @@ class TestComputeDeploy:
         
         assert response.status_code == 400
         response_data = response.get_json()
-        assert 'vm_ip_dict must be a dictionary' in response_data.get('message', '')
+        assert 'vm_iface must be a dictionary' in response_data.get('message', '')
     
     def test_deploy_cvm_internal_deployment_failure(self, compute_client):
         """测试部署失败的情况"""
@@ -211,7 +211,7 @@ class TestComputeDeploy:
                 'disk_size': 10,
                 'uuid': '74260cba-197f-42d1-9af5-4247d182edd5'
             },
-            'vm_ip_dict': {}
+            'vm_iface': {}
         }
         
         # 模拟部分部署失败
@@ -261,7 +261,7 @@ class TestVirtServiceDeploy:
         cvm_deploy_spec_internal = VmDeploySpecInternal(
             vm_id_list=['compute01-1', 'compute01-2'],
             vm_spec=vm_spec,
-            vm_ip_dict={}
+            vm_iface={}
         )
         
         server_config = MagicMock()
@@ -287,8 +287,8 @@ class TestVirtServiceDeploy:
                         assert result == ['compute01-1', 'compute01-2']
                         assert mock_execute_deploy.call_count == 2
 
-    def test_deploy_cvm_with_empty_vm_ip_dict(self, monkeypatch):
-        """测试virt_service.deploy_cvm函数处理空的vm_ip_dict"""
+    def test_deploy_cvm_with_empty_vm_iface(self, monkeypatch):
+        """测试virt_service.deploy_cvm函数处理空的vm_iface"""
         from virtcca_deploy.common.data_model import VmDeploySpecInternal, VmDeploySpec
         
         # 创建测试数据
@@ -307,7 +307,7 @@ class TestVirtServiceDeploy:
         cvm_deploy_spec_internal = VmDeploySpecInternal(
             vm_id_list=['compute01-1'],
             vm_spec=vm_spec,
-            vm_ip_dict={}  # 空的IP字典
+            vm_iface={}  # 空的IP字典
         )
         
         server_config = MagicMock()
