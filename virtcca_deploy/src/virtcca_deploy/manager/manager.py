@@ -24,7 +24,7 @@ import virtcca_deploy.services.vm_service as vm_service
 import virtcca_deploy.services.task_service as task_service
 from virtcca_deploy.common.data_model import VmDeploySpec, ApiResponse
 from virtcca_deploy.services.db_service import VmDeploySpecModel
-from virtcca_deploy.services.resource_allocator import SimpleIpAllocator
+from virtcca_deploy.services.resource_allocator import IpAllocator
 from virtcca_deploy.services.network_config_service import init_network_config_service
 from virtcca_deploy.services.software_service import init_software_service, get_software_service
 
@@ -74,10 +74,7 @@ def create_app():
         init_auth(app, server_config)
         init_network_config_service()
         init_software_service()
-        # 初始化 IP 分配器 
-        ip_allocator = SimpleIpAllocator( 
-            base_ip=constants.NetResourceConfig.BASE_IP, 
-            ip_count=constants.NetResourceConfig.IP_COUNT)
+        ip_allocator = IpAllocator()
 
         vm_service.init_vm_service(server_config.ssl_cert, ip_allocator)
         task_service.init_task_service()

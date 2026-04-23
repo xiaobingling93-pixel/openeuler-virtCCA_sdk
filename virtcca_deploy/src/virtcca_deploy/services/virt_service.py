@@ -143,7 +143,7 @@ def config_xml(cvm_name: str, vm_spec: VmDeploySpec, qcow2_file: str, host_numa_
 
     Args:
         cvm_name: Name of the CVM
-        vm_deploy_spec: VmDeploySpecInternal configuration object
+        vm_deploy_spec: VmDeploySpec configuration object
         qcow2_file: Path to the QCOW2 file
         data_disk_file: Optional path to the data disk QCOW2 file
     
@@ -151,7 +151,7 @@ def config_xml(cvm_name: str, vm_spec: VmDeploySpec, qcow2_file: str, host_numa_
         The modified XML as a string, or "" if an error occurs
     """
     if not vm_spec or not vm_spec.is_valid():
-        g_logger.error("Invalid VmDeploySpecInternal configuration")
+        g_logger.error("Invalid VmDeploySpec configuration")
         return ""
 
     template_xml = constants.CVM_TEMPLATE_XML
@@ -610,7 +610,7 @@ def deploy_cvm(cvm_deploy_spec_internal: VmDeploySpecInternal, server_config: co
         err_msg = _execute_deploy_cvm(cvm_name,
                                       vm_spec, available_nodes[node_index],
                                       device_list,
-                                      cvm_deploy_spec_internal.vm_ip_dict.get(cvm_name, []),
+                                      cvm_deploy_spec_internal.vm_iface.get(cvm_name, []),
                                       server_config)
         if err_msg:
             cvm_resource_reclaim(cvm_name, server_config)

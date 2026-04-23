@@ -62,16 +62,17 @@ class VmInstance(db.Model):
     host_ip = db.Column(db.String(39), nullable=False)
     host_name = db.Column(db.String(80), nullable=False)
     vm_spec_uuid = db.Column(db.String(36), db.ForeignKey('vm_deploy_spec_model.uuid'), nullable=False)
-    ip_list = db.Column(db.Text, nullable=True)  # 存储VM的IP列表，使用逗号分隔
+    iface_list = db.Column(db.Text, nullable=True)
     os_version = db.Column(db.String(50), nullable=True)
     created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
 
     def __repr__(self):
         return (
             "<vm_id: {}, host_ip: {}, host_name: {}, "
-            "vm_spec_uuid: {}, ip_list: {}, os_version: {}>"
+            "vm_spec_uuid: {}, iface_list: {}, os_version: {}>"
             ).format(self.vm_id, self.host_ip, self.host_name, 
-                    self.vm_spec_uuid, self.ip_list, self.os_version)
+                    self.vm_spec_uuid, self.iface_list, self.os_version)
+
 
 
 class Task(db.Model):
@@ -196,6 +197,7 @@ class DeviceAllocation(db.Model):
     device_type = db.Column(db.String(10), nullable=False)
     status = db.Column(db.String(20), nullable=False, default="available")
     device_name = db.Column(db.String(40), nullable=True)
+    mac_address = db.Column(db.String(17), nullable=True)
     allocated_vm_id = db.Column(db.String(80), nullable=True)
     allocated_at = db.Column(db.DateTime, nullable=True)
     released_at = db.Column(db.DateTime, nullable=True)
@@ -215,6 +217,7 @@ class DeviceAllocation(db.Model):
             "device_type": self.device_type,
             "status": self.status,
             "device_name": self.device_name,
+            "mac_address": self.mac_address,
             "allocated_vm_id": self.allocated_vm_id,
             "allocated_at": self.allocated_at.isoformat() if self.allocated_at else None,
             "released_at": self.released_at.isoformat() if self.released_at else None,
@@ -223,8 +226,8 @@ class DeviceAllocation(db.Model):
     def __repr__(self):
         return (
             "<DeviceAllocation(bdf: {}, vendor_id: 0x{:04x}, device_id: 0x{:04x}, "
-            "type: {}, status: {}, vm: {})>"
+            "type: {}, status: {}, vm: {}, mac: {})>"
         ).format(
             self.bdf, self.vendor_id, self.device_id,
-            self.device_type, self.status, self.allocated_vm_id
+            self.device_type, self.status, self.allocated_vm_id, self.mac_address
         )

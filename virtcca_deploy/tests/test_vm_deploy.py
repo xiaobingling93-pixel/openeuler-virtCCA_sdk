@@ -133,20 +133,20 @@ class TestVmDeployEndpoint:
         with patch('virtcca_deploy.services.vm_service.get_vm_service') as mock_get_vm_service:
             mock_vm_service = MagicMock()
             mock_vm_service.execute_deployment.return_value = {
-                "my-custom-vm-1": {"task_id": "task-1", "host_ip": "192.168.1.100"}
+                "compute01-1": {"task_id": "task-1", "host_ip": "192.168.1.100"}
             }
             mock_get_vm_service.return_value = mock_vm_service
             
             resp = authenticated_client.post(constants.ROUTE_VM_DEPLOY, json={
                 "deploy_config_id": deploy_config_id,
                 "vm_id": {
-                    "compute01": ["my-custom-vm-1"]
+                    "compute01": ["compute01-1"]
                 }
             })
             
             assert resp.status_code == 202
             data = resp.get_json()
-            assert "my-custom-vm-1" in data["data"]
+            assert "compute01-1" in data["data"]
     
     def test_deploy_cvm_invalid_node(self, authenticated_client, app):
         # 无效的节点名
@@ -204,7 +204,12 @@ class TestVmDeployEndpoint:
                 host_ip="192.168.1.100",
                 host_name="compute01",
                 vm_spec_uuid=deploy_spec_model1.uuid,
-                ip_list="10.0.0.10"
+                iface_list=json.dumps([{
+                "mac_address": "00:11:22:33:44:55",
+                "vlan_id": 100,
+                "ip_address": "192.168.1.10",
+                "subnet_mask": "255.255.255.0",
+                "gateway": "192.168.1.1"}])
             )
             db.session.add(vm_instance)
             

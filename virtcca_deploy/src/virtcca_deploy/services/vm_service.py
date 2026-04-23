@@ -5,6 +5,7 @@
 import logging
 from typing import List, Tuple, Dict
 from http import HTTPStatus
+import json
 
 from gevent import monkey
 import gevent
@@ -21,6 +22,7 @@ from virtcca_deploy.common.data_model import (
 from virtcca_deploy.services.db_service import ComputeNode, VmInstance, VmDeploySpecModel, db
 from virtcca_deploy.services.network_service import NetworkService
 from virtcca_deploy.services.task_service import get_task_service
+from virtcca_deploy.services.dao import get_dao_registry
 import virtcca_deploy.services.util_service as util_service
 
 
@@ -101,18 +103,19 @@ class VmService:
                             task_service.update_task_status(node_task_id, "failed")
                         
                         for vm_name in success_vms:
-                            ips = cvm_spec_internal.vm_ip_dict.get(vm_name, []) if cvm_spec_internal.vm_ip_dict else []
-                            ip_list_str = ",".join(ips) if ips else ""
+                            iface_list = cvm_spec_internal.vm_iface.get(vm_name, []) if cvm_spec_internal.vm_iface else []
+                            iface_list_json = json.dumps([iface.to_dict() for iface in iface_list]) if iface_list else None
 
                             try:
-                                existing_vm = VmInstance.query.filter_by(vm_id=vm_name).first()
+                                vm_instance_dao = get_dao_registry().vm_instance_dao
+                                existing_vm = vm_instance_dao.get_by_vm_id(vm_name)
                                 if existing_vm:
                                     existing_vm.host_ip = node.ip
                                     existing_vm.host_name = node.nodename
                                     existing_vm.vm_spec_uuid = cvm_spec_internal.vm_spec.uuid
-                                    existing_vm.ip_list = ip_list_str
+                                    existing_vm.iface_list = iface_list_json
                                     existing_vm.os_version = "openEuler-2403LTS-SP2"
-                                    db.session.commit()
+                                    vm_instance_dao.update(existing_vm)
                                     self.logger.info(f"Successfully updated reused VM {vm_name} in database for node {node.ip}")
                                 else:
                                     vm_instance = VmInstance(
@@ -120,15 +123,13 @@ class VmService:
                                         host_ip=node.ip,
                                         host_name=node.nodename,
                                         vm_spec_uuid=cvm_spec_internal.vm_spec.uuid,
-                                        ip_list=ip_list_str,
+                                        iface_list=iface_list_json,
                                         os_version="openEuler-2403LTS-SP2"
                                     )
-                                    db.session.add(vm_instance)
-                                    db.session.commit()
+                                    vm_instance_dao.create(vm_instance)
                                     self.logger.info(f"Successfully recorded VM {vm_name} in database for node {node.ip}")
                             except Exception as e:
                                 self.logger.error(f"Failed to record VM instance {vm_name} to database: {e}")
-                                db.session.rollback()
                     else:
                         fail_vms = all_vms
                         task_params = {
@@ -200,10 +201,10 @@ class VmService:
                     )
                     allocResp = self.ip_allocator.allocate(request=allocReq)
                     if allocResp.success:
-                        cvm_spec_internal.vm_ip_dict = allocResp.vm_ip_map
-                    self.logger.info(f"Allocated IPs for node {node.nodename}: {cvm_spec_internal.vm_ip_dict}")
+                        cvm_spec_internal.vm_iface = allocResp.vm_iface_map
+                    self.logger.info(f"Allocated ifaces for node {node.nodename}: {cvm_spec_internal.vm_iface}")
                 except Exception as e:
-                    self.logger.error(f"Failed to allocate IPs for node {node.nodename}: {e}")
+                    self.logger.error(f"Failed to allocate ifaces for node {node.nodename}: {e}")
 
             node_to_spec[node.nodename] = cvm_spec_internal
 
@@ -233,10 +234,10 @@ class VmService:
                         )
                         allocResp = self.ip_allocator.allocate(request=allocReq)
                         if allocResp.success:
-                            cvm_spec_internal.vm_ip_dict = allocResp.vm_ip_map
-                        self.logger.info(f"Allocated IPs for node {node.nodename}: {cvm_spec_internal.vm_ip_dict}")
+                            cvm_spec_internal.vm_iface = allocResp.vm_iface_map
+                        self.logger.info(f"Allocated ifaces for node {node.nodename}: {cvm_spec_internal.vm_iface}")
                     except Exception as e:
-                        self.logger.error(f"Failed to allocate IPs for node {node.nodename}: {e}")
+                        self.logger.error(f"Failed to allocate ifaces for node {node.nodename}: {e}")
 
                 node_to_spec[node.nodename] = cvm_spec_internal
                 continue
@@ -247,7 +248,8 @@ class VmService:
 
             for vm_id in requested_vm_ids:
                 try:
-                    existing_vm = VmInstance.query.filter_by(vm_id=vm_id).first()
+                    vm_instance_dao = get_dao_registry().vm_instance_dao
+                    existing_vm = vm_instance_dao.get_by_vm_id(vm_id)
                 except Exception as e:
                     self.logger.error(f"Database query failed for vm_id '{vm_id}': {e}")
                     continue
@@ -272,24 +274,25 @@ class VmService:
                     )
                     allocResp = self.ip_allocator.allocate(request=allocReq)
                     if allocResp.success:
-                        if not cvm_spec_internal.vm_ip_dict:
-                            cvm_spec_internal.vm_ip_dict = {}
-                        cvm_spec_internal.vm_ip_dict.update(allocResp.vm_ip_map)
-                    self.logger.info(f"Allocated IPs for new VMs on node {node.nodename}: {allocResp.vm_ip_map}")
+                        if not cvm_spec_internal.vm_iface:
+                            cvm_spec_internal.vm_iface = {}
+                        cvm_spec_internal.vm_iface.update(allocResp.vm_iface_map)
+                    self.logger.info(f"Allocated ifaces for new VMs on node {node.nodename}: {allocResp.vm_iface_map}")
                 except Exception as e:
-                    self.logger.error(f"Failed to allocate IPs for new VMs on node {node.nodename}: {e}")
+                    self.logger.error(f"Failed to allocate ifaces for new VMs on node {node.nodename}: {e}")
 
             if reused_vm_ids:
                 try:
-                    reused_vms = VmInstance.query.filter(VmInstance.vm_id.in_(reused_vm_ids)).all()
-                    if not cvm_spec_internal.vm_ip_dict:
-                        cvm_spec_internal.vm_ip_dict = {}
+                    vm_instance_dao = get_dao_registry().vm_instance_dao
+                    reused_vms = vm_instance_dao.get_by_vm_ids(reused_vm_ids)
+                    if not cvm_spec_internal.vm_iface:
+                        cvm_spec_internal.vm_iface = {}
                     for vm in reused_vms:
-                        if vm.ip_list:
-                            cvm_spec_internal.vm_ip_dict[vm.vm_id] = vm.ip_list.split(",")
-                        self.logger.info(f"Reused IP for vm_id '{vm.vm_id}': {cvm_spec_internal.vm_ip_dict.get(vm.vm_id, [])}")
+                        if vm.iface_list:
+                            cvm_spec_internal.vm_iface[vm.vm_id] = VmDeploySpecInternal.vm_iface_from_json(vm.iface_list)
+                        self.logger.info(f"Reused iface for vm_id '{vm.vm_id}': {cvm_spec_internal.vm_iface.get(vm.vm_id, [])}")
                 except Exception as e:
-                    self.logger.error(f"Failed to query reused VM IPs for node {node.nodename}: {e}")
+                    self.logger.error(f"Failed to query reused VM ifaces for node {node.nodename}: {e}")
 
             node_to_spec[node.nodename] = cvm_spec_internal
 
@@ -304,20 +307,18 @@ class VmService:
         # Step 1: If no nodes provided, find nodes based on VM IDs
         if not deploy_nodes:
             try:
-                # 查询所有VM ID对应的节点IP
-                vm_instances_db = VmInstance.query.filter(VmInstance.vm_id.in_(vm_id_list)).all()
+                vm_instance_dao = get_dao_registry().vm_instance_dao
+                vm_instances_db = vm_instance_dao.get_by_vm_ids(vm_id_list)
                 if not vm_instances_db:
                     self.logger.warning(f"No VM instances found for IDs: {vm_id_list}")
                     return vm_instances
                 
-                # 按节点分组VM IDs
                 node_vm_map = {}
                 for vm in vm_instances_db:
                     if vm.host_ip not in node_vm_map:
                         node_vm_map[vm.host_ip] = []
                     node_vm_map[vm.host_ip].append(vm.vm_id)
                 
-                # 根据IP获取节点对象
                 deploy_nodes = []
                 for host_ip in node_vm_map.keys():
                     node = ComputeNode.query.filter_by(ip=host_ip).first()
@@ -332,10 +333,10 @@ class VmService:
         # Step 2: Create individual tasks for each node
         for node in deploy_nodes:
             try:
-                # Find VMs on this specific node
+                vm_instance_dao = get_dao_registry().vm_instance_dao
                 node_vm_ids = []
                 for vm_id in vm_id_list:
-                    if VmInstance.query.filter_by(vm_id=vm_id, host_ip=node.ip).first():
+                    if vm_instance_dao.get_by_vm_id_and_host(vm_id, node.ip):
                         node_vm_ids.append(vm_id)
                 
                 if not node_vm_ids:
@@ -438,20 +439,11 @@ class VmService:
                         self.logger.info(f"Releasing IPs for successfully undeployed VMs on {node.ip}: {success_vms}")
                         for vm_id in success_vms:
                             try:
-                                # Delete VM from database
-                                db_vm_instances = VmInstance.query.filter_by(
-                                    vm_id=vm_id,
-                                    host_ip=node.ip
-                                ).all()
-                                
-                                for vm_instance in db_vm_instances:
-                                    db.session.delete(vm_instance)
-                                
-                                db.session.commit()
-                                self.logger.info(f"Successfully deleted {len(db_vm_instances)} VM instances from database for VM ID {vm_id}")
+                                vm_instance_dao = get_dao_registry().vm_instance_dao
+                                vm_instance_dao.delete_by_vm_id(vm_id)
+                                self.logger.info(f"Successfully deleted VM instance from database for VM ID {vm_id}")
                             except Exception as e:
                                 self.logger.error(f"Failed to process undeployment cleanup for VM {vm_id} on {node.ip}: {e}")
-                                db.session.rollback()
                     
                     # 对于卸载失败的虚机，记录日志但不进行清理操作
                     if failed_vms:
@@ -477,10 +469,10 @@ class VmService:
         jobs = []
         for node in deploy_nodes:
             if node.nodename in node_task:
-                # Get node-specific VM IDs again
+                vm_instance_dao = get_dao_registry().vm_instance_dao
                 node_vm_ids = []
                 for vm_id in vm_id_list:
-                    if VmInstance.query.filter_by(vm_id=vm_id, host_ip=node.ip).first():
+                    if vm_instance_dao.get_by_vm_id_and_host(vm_id, node.ip):
                         node_vm_ids.append(vm_id)
                 
                 if node_vm_ids:
@@ -502,7 +494,8 @@ class VmService:
         task_service = get_task_service()
 
         try:
-            vm_instances_db = VmInstance.query.filter(VmInstance.vm_id.in_(vm_id_list)).all()
+            vm_instance_dao = get_dao_registry().vm_instance_dao
+            vm_instances_db = vm_instance_dao.get_by_vm_ids(vm_id_list)
             if not vm_instances_db:
                 self.logger.warning(f"No VM instances found for IDs: {vm_id_list}")
                 return vm_instances
@@ -643,7 +636,8 @@ class VmService:
         task_service = get_task_service()
 
         try:
-            vm_instances_db = VmInstance.query.filter(VmInstance.vm_id.in_(vm_id_list)).all()
+            vm_instance_dao = get_dao_registry().vm_instance_dao
+            vm_instances_db = vm_instance_dao.get_by_vm_ids(vm_id_list)
             if not vm_instances_db:
                 self.logger.warning(f"No VM instances found for IDs: {vm_id_list}")
                 return vm_instances
@@ -793,25 +787,25 @@ class VmService:
             "pagination": util_service.build_pagination_response(page, page_size, 0)
         }
         try:
-            # 构建查询条件
-            query = VmInstance.query
+            vm_instance_dao = get_dao_registry().vm_instance_dao
+            
+            host_ips = None
+            vm_id_filter = None
             
             if nodes and len(nodes) > 0:
-                # 根据节点名查询节点
                 nodes_db = ComputeNode.query.filter(ComputeNode.nodename.in_(nodes)).all()
                 if not nodes_db:
                     return response_data, "No nodes found"
-                
-                # 获取节点IP列表
-                node_ips = [node.ip for node in nodes_db]
-                query = query.filter(VmInstance.host_ip.in_(node_ips))
+                host_ips = [node.ip for node in nodes_db]
             elif vm_ids and len(vm_ids) > 0:
-                query = query.filter(VmInstance.vm_id.in_(vm_ids))
+                vm_id_filter = vm_ids
             
-            # 分页查询
-            total_vms = query.count()
-            offset = (page - 1) * page_size
-            vm_instances = query.offset(offset).limit(page_size).all()
+            total_vms, vm_instances = vm_instance_dao.query_with_filters(
+                host_ips=host_ips,
+                vm_ids=vm_id_filter,
+                page=page,
+                page_size=page_size
+            )
             
             if not vm_instances:
                 return response_data, "No VM instances found"
@@ -847,7 +841,7 @@ class VmService:
                             "state": "UNKNOWN",
                             "create_at": vm.created_at.isoformat() + "Z" if vm.created_at else "",
                             "os": vm.os_version or "Unknown",
-                            "ip_list": vm.ip_list.split(",") if vm.ip_list else [],
+                            "iface_list": json.loads(vm.iface_list) if vm.iface_list else [],
                             "mem_used": 0.0,
                             "host_ip": vm.host_ip
                         }
@@ -875,7 +869,6 @@ class VmService:
                                 vm_states = node_vm_data
                             elif isinstance(node_vm_data, str):
                                 # 如果是字符串，尝试解析为JSON
-                                import json
                                 try:
                                     vm_states = json.loads(node_vm_data)
                                 except json.JSONDecodeError:
@@ -890,12 +883,11 @@ class VmService:
                                     "state": vm_state,
                                     "create_at": vm.created_at.isoformat() + "Z" if vm.created_at else "",
                                     "os": vm.os_version or "Unknown",
-                                    "ip_list": vm.ip_list.split(",") if vm.ip_list else [],
-                                    "mem_used": 0.0,  # 从节点返回的数据中没有内存使用信息，使用默认值
+                                    "iface_list": json.loads(vm.iface_list) if vm.iface_list else [],
+                                    "mem_used": 0.0,
                                     "host_ip": vm.host_ip
                                 }
                         else:
-                            # 非标准响应格式，直接使用整个响应作为VM状态数据
                             self.logger.warning(f"Non-standard response format from node {node.ip}")
                             vm_states = response_data if isinstance(response_data, dict) else {}
                             
@@ -906,12 +898,11 @@ class VmService:
                                     "state": vm_state,
                                     "create_at": vm.created_at.isoformat() + "Z" if vm.created_at else "",
                                     "os": vm.os_version or "Unknown",
-                                    "ip_list": vm.ip_list.split(",") if vm.ip_list else [],
+                                    "iface_list": json.loads(vm.iface_list) if vm.iface_list else [],
                                     "mem_used": 0.0,
                                     "host_ip": vm.host_ip
                                 }
                     else:
-                        # 网络请求失败
                         status_code = getattr(result, 'status_code', 'Unknown')
                         self.logger.error(f"Failed to query CVM state from node {node.ip}, status code: {status_code}")
                         failed_nodes.append(node.ip)
@@ -920,7 +911,7 @@ class VmService:
                                 "state": "UNKNOWN",
                                 "create_at": vm.created_at.isoformat() + "Z" if vm.created_at else "",
                                 "os": vm.os_version or "Unknown",
-                                "ip_list": vm.ip_list.split(",") if vm.ip_list else [],
+                                "iface_list": json.loads(vm.iface_list) if vm.iface_list else [],
                                 "mem_used": 0.0,
                                 "host_ip": vm.host_ip
                             }
@@ -934,7 +925,7 @@ class VmService:
                             "state": "UNKNOWN",
                             "create_at": vm.created_at.isoformat() + "Z" if vm.created_at else "",
                             "os": vm.os_version or "Unknown",
-                            "ip_list": vm.ip_list.split(",") if vm.ip_list else [],
+                            "iface_list": json.loads(vm.iface_list) if vm.iface_list else [],
                             "mem_used": 0.0,
                             "host_ip": vm.host_ip
                         }

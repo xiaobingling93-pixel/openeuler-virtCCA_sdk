@@ -50,7 +50,12 @@ class TestManagerApi:
                 host_ip=node.ip,
                 host_name=node.nodename,
                 vm_spec_uuid="spec-123",
-                ip_list="192.168.1.10"
+                iface_list=json.dumps([{
+                "mac_address": "00:11:22:33:44:55",
+                "vlan_id": 100,
+                "ip_address": "192.168.1.10",
+                "subnet_mask": "255.255.255.0",
+                "gateway": "192.168.1.1"}])
             )
             db.session.add(vm)
             db.session.commit()
@@ -225,7 +230,7 @@ class TestManagerApi:
         # 验证响应
         assert response.status_code == HTTPStatus.BAD_REQUEST
         response_data = response.get_json()
-        assert "Invalid nodes parameter, expected list." in response_data["message"]
+        assert "Invalid nodes parameter, expected list" in response_data["message"]
         
         # 发送请求 - vm_ids不是列表
         response = authenticated_client.post(
@@ -241,7 +246,7 @@ class TestManagerApi:
         # 验证响应
         assert response.status_code == HTTPStatus.BAD_REQUEST
         response_data = response.get_json()
-        assert "Invalid vm_ids parameter, expected list." in response_data["message"]
+        assert "Invalid vm_ids parameter, expected list" in response_data["message"]
         
         # 发送请求 - 分页参数不是整数
         response = authenticated_client.post(

@@ -114,7 +114,7 @@ def create_app():
                         message = "Content-Type must be application/json"
                     ).to_dict()), HTTPStatus.BAD_REQUEST
         
-        required_fields = ['vm_id_list', 'vm_spec', 'vm_ip_dict']
+        required_fields = ['vm_id_list', 'vm_spec', 'vm_iface']
         for field in required_fields:
             if field not in cvm_spec_json:
                 g_logger.error(f"Invalid param: missing required field {field}")
@@ -136,11 +136,11 @@ def create_app():
                         message = "vm_spec must be a dictionary"
                     ).to_dict()), HTTPStatus.BAD_REQUEST
         
-        vm_ip_dict = cvm_spec_json['vm_ip_dict']
-        if not isinstance(vm_ip_dict, dict):
-            g_logger.error("Invalid param: vm_ip_dict must be a dictionary")
+        vm_iface = cvm_spec_json['vm_iface']
+        if not isinstance(vm_iface, dict):
+            g_logger.error("Invalid param: vm_iface must be a dictionary")
             return flask.jsonify(ApiResponse(
-                        message = "vm_ip_dict must be a dictionary"
+                        message = "vm_iface must be a dictionary"
                     ).to_dict()), HTTPStatus.BAD_REQUEST
         
         try:
@@ -148,7 +148,7 @@ def create_app():
             cvm_deploy_spec_internal = VmDeploySpecInternal(
                 vm_id_list=vm_id_list, 
                 vm_spec=vm_spec, 
-                vm_ip_dict=vm_ip_dict
+                vm_iface=vm_iface
             )
             
             if not cvm_deploy_spec_internal.is_valid():
@@ -277,7 +277,6 @@ def create_app():
 
         g_logger.info("upload_cvm_software_internal: %s", flask.request.files)
 
-        # 防止路径穿越攻击，只保留文件名部分
         filename = os.path.basename(upload_file.filename)
 
         os.makedirs(constants.CVM_COMPUTE_SOFTWARE_PATH, exist_ok=True)

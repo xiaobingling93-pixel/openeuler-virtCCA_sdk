@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-from enum import Enum
 from typing import Dict, List
+import json
 
 class VirtCcaError(Exception):
     """基础异常类"""
@@ -251,7 +251,7 @@ class VmStateBuilder:
             "state": state,
             "create_at": vm.created_at.isoformat() + "Z" if vm.created_at else "",
             "os": vm.os_version or "Unknown",
-            "ip_list": vm.ip_list.split(",") if vm.ip_list else [],
+            "iface_list": json.loads(vm.iface_list) if vm.iface_list else [],
             "mem_used": 0.0,
             "host_ip": vm.host_ip
         }

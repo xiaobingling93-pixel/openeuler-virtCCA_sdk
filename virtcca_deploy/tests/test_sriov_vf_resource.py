@@ -267,7 +267,7 @@ class TestDeployCvmSriovIntegration:
         spec = MagicMock()
         spec.vm_spec = vm_spec
         spec.vm_id_list = ["cvm-test-1"]
-        spec.vm_ip_dict = {}
+        spec.vm_iface = {}
         return spec
 
     @patch('virtcca_deploy.services.virt_service.cvm_numa_check')

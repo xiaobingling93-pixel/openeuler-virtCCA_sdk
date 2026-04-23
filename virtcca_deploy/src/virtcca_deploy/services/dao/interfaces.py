@@ -7,7 +7,7 @@ Defines abstract interfaces for database operations
 
 from abc import ABC, abstractmethod
 from typing import List, Optional, Dict
-from virtcca_deploy.services.db_service import NetworkConfig, VmInstance, VmSoftware
+from virtcca_deploy.services.db_service import NetworkConfig, VmInstance, VmSoftware, DeviceAllocation
 
 
 class NetworkConfigDAOInterface(ABC):
@@ -193,4 +193,13 @@ class VmSoftwareDAOInterface(ABC):
     @abstractmethod
     def count(self) -> int:
         """Count total software records"""
+        pass
+
+
+class DeviceAllocationDAOInterface(ABC):
+    """Interface for DeviceAllocation database operations"""
+
+    @abstractmethod
+    def get_by_mac_address(self, mac_address: str) -> Optional[DeviceAllocation]:
+        """Get device allocation by MAC address"""
         pass
