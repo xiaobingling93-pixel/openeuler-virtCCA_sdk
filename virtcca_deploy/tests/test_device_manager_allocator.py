@@ -15,6 +15,180 @@ from virtcca_deploy.services.resource_allocator import DeviceManagerAllocator
 from virtcca_deploy.services.db_service import db, DeviceAllocation
 
 
+class TestDeviceAllocReqValidation:
+
+    def test_valid_mac_address_format(self):
+        req = DeviceAllocReq(
+            vm_id="test-vm",
+            pf_num=0,
+            vf_num=0,
+            iface=["00:11:22:33:44:55"]
+        )
+        assert req.is_mac_based_allocation() is True
+        assert req.get_mac_addresses() == ["00:11:22:33:44:55"]
+
+    def test_multiple_valid_mac_addresses(self):
+        req = DeviceAllocReq(
+            vm_id="test-vm",
+            pf_num=0,
+            vf_num=0,
+            iface=["00:11:22:33:44:55", "AA:BB:CC:DD:EE:FF"]
+        )
+        assert req.is_mac_based_allocation() is True
+        assert len(req.get_mac_addresses()) == 2
+
+    def test_mac_addresses_normalized_to_lowercase(self):
+        req = DeviceAllocReq(
+            vm_id="test-vm",
+            pf_num=0,
+            vf_num=0,
+            iface=["AA:BB:CC:DD:EE:FF"]
+        )
+        assert req.get_mac_addresses() == ["aa:bb:cc:dd:ee:ff"]
+
+    def test_invalid_mac_address_raises_error(self):
+        with pytest.raises(ValueError, match="Invalid MAC address format"):
+            DeviceAllocReq(
+                vm_id="test-vm",
+                pf_num=0,
+                vf_num=0,
+                iface=["invalid-mac"]
+            )
+
+    def test_empty_iface_list(self):
+        req = DeviceAllocReq(
+            vm_id="test-vm",
+            pf_num=1,
+            vf_num=0,
+            iface=[]
+        )
+        assert req.is_mac_based_allocation() is False
+        assert req.get_mac_addresses() == []
+
+    def test_none_iface_uses_traditional_allocation(self):
+        req = DeviceAllocReq(
+            vm_id="test-vm",
+            pf_num=1,
+            vf_num=0,
+            iface=None
+        )
+        assert req.is_mac_based_allocation() is False
+        assert req.get_mac_addresses() == []
+
+    def test_mixed_valid_invalid_mac_raises_error(self):
+        with pytest.raises(ValueError, match="Invalid MAC address format"):
+            DeviceAllocReq(
+                vm_id="test-vm",
+                pf_num=0,
+                vf_num=0,
+                iface=["00:11:22:33:44:55", "invalid"]
+            )
+
+
+class TestMacBasedAllocation:
+
+    @patch('virtcca_deploy.services.resource_allocator.db')
+    def test_allocate_by_mac_single_device(self, mock_db, allocator):
+        mock_allocated = {
+            "00:11:22:33:44:55": "0000:3b:00.0"
+        }
+
+        with patch.object(allocator._dao, 'allocate_devices_by_mac', return_value=mock_allocated):
+            req = DeviceAllocReq(
+                vm_id="test-vm-1",
+                pf_num=0,
+                vf_num=0,
+                iface=["00:11:22:33:44:55"]
+            )
+            result = allocator.allocate(req)
+
+            assert result.success is True
+            assert "00:11:22:33:44:55" in result.device_dict
+            assert result.device_dict["00:11:22:33:44:55"] == "0000:3b:00.0"
+
+    @patch('virtcca_deploy.services.resource_allocator.db')
+    def test_allocate_by_mac_multiple_devices(self, mock_db, allocator):
+        mock_allocated = {
+            "00:11:22:33:44:55": "0000:3b:00.0",
+            "aa:bb:cc:dd:ee:ff": "0000:3b:00.1"
+        }
+
+        with patch.object(allocator._dao, 'allocate_devices_by_mac', return_value=mock_allocated):
+            req = DeviceAllocReq(
+                vm_id="test-vm-1",
+                pf_num=0,
+                vf_num=0,
+                iface=["00:11:22:33:44:55", "AA:BB:CC:DD:EE:FF"]
+            )
+            result = allocator.allocate(req)
+
+            assert result.success is True
+            assert len(result.device_dict) == 2
+            assert result.device_dict["00:11:22:33:44:55"] == "0000:3b:00.0"
+            assert result.device_dict["aa:bb:cc:dd:ee:ff"] == "0000:3b:00.1"
+
+    @patch('virtcca_deploy.services.resource_allocator.db')
+    def test_allocate_by_mac_device_not_found(self, mock_db, allocator):
+        with patch.object(allocator._dao, 'allocate_devices_by_mac', return_value={}):
+            req = DeviceAllocReq(
+                vm_id="test-vm-1",
+                pf_num=0,
+                vf_num=0,
+                iface=["00:11:22:33:44:55"]
+            )
+            result = allocator.allocate(req)
+
+            assert result.success is False
+            assert len(result.device_dict) == 0
+
+    @patch('virtcca_deploy.services.resource_allocator.db')
+    def test_allocate_by_mac_device_not_available(self, mock_db, allocator):
+        with patch.object(allocator._dao, 'allocate_devices_by_mac', return_value={}):
+            req = DeviceAllocReq(
+                vm_id="test-vm-1",
+                pf_num=0,
+                vf_num=0,
+                iface=["00:11:22:33:44:55"]
+            )
+            result = allocator.allocate(req)
+
+            assert result.success is False
+            assert len(result.device_dict) == 0
+
+    @patch('virtcca_deploy.services.resource_allocator.db')
+    def test_allocate_by_mac_partial_failure_with_exclusion(self, mock_db, allocator):
+        mock_allocated = {
+            "00:11:22:33:44:55": "0000:3b:00.0"
+        }
+
+        with patch.object(allocator._dao, 'allocate_devices_by_mac', return_value=mock_allocated):
+            req = DeviceAllocReq(
+                vm_id="test-vm-1",
+                pf_num=0,
+                vf_num=0,
+                iface=["00:11:22:33:44:55", "AA:BB:CC:DD:EE:FF"]
+            )
+            result = allocator.allocate(req)
+
+            assert result.success is True
+            assert len(result.device_dict) == 1
+            assert "00:11:22:33:44:55" in result.device_dict
+
+    @patch('virtcca_deploy.services.resource_allocator.db')
+    def test_allocate_by_mac_commit_failure_rollback(self, mock_db, allocator):
+        with patch.object(allocator._dao, 'allocate_devices_by_mac', side_effect=RuntimeError("Database commit error")):
+            req = DeviceAllocReq(
+                vm_id="test-vm-1",
+                pf_num=0,
+                vf_num=0,
+                iface=["00:11:22:33:44:55", "AA:BB:CC:DD:EE:FF"]
+            )
+            result = allocator.allocate(req)
+
+            assert result.success is False
+            assert len(result.device_dict) == 0
+
+
 def _mock_lspci_output(lines):
     result = mock.MagicMock()
     result.returncode = 0
@@ -392,6 +566,7 @@ class TestDeviceAllocationCRUD:
     @patch('virtcca_deploy.services.resource_allocator.db')
     def test_allocate_pf_device(self, mock_db, allocator):
         mock_device = MagicMock()
+        mock_device.mac_address = "00:11:22:33:44:55"
         mock_device.bdf = "0000:3b:00.0"
         mock_device.status = DeviceAllocation.DEVICE_STATUS_AVAILABLE
         mock_device.device_type = DeviceTypeConfig.DEVICE_TYPE_NET_PF
@@ -410,7 +585,8 @@ class TestDeviceAllocationCRUD:
         result = allocator.allocate(req)
 
         assert result.success is True
-        assert "0000:3b:00.0" in result.device_list
+        assert "00:11:22:33:44:55" in result.device_dict
+        assert result.device_dict["00:11:22:33:44:55"] == "0000:3b:00.0"
 
     @patch('virtcca_deploy.services.resource_allocator.db')
     def test_release_device(self, mock_db, allocator):
@@ -456,7 +632,7 @@ class TestDeviceAllocationCRUD:
         result = allocator.allocate(req)
 
         assert result.success is False
-        assert len(result.device_list) == 0
+        assert len(result.device_dict) == 0
 
     @patch('virtcca_deploy.services.resource_allocator.db')
     def test_get_available_devices(self, mock_db, allocator):

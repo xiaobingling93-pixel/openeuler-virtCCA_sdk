@@ -129,7 +129,7 @@ class TestConfig:
 
             def allocate(self, request):
                 from virtcca_deploy.common.data_model import DeviceAllocResp
-                return DeviceAllocResp(success=True, device_list=[])
+                return DeviceAllocResp(success=True, device_dict={})
 
             def release(self, request):
                 from virtcca_deploy.common.data_model import DeviceReleaseResp

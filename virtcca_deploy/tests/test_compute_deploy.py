@@ -242,10 +242,10 @@ class TestComputeDeploy:
 
 class TestVirtServiceDeploy:
     def test_deploy_cvm_with_vm_id_list(self, monkeypatch):
-        """测试virt_service.deploy_cvm函数处理vm_id_list"""
+        """Test virt_service.deploy_cvm function handles vm_id_list with concurrent deployment"""
         from virtcca_deploy.common.data_model import VmDeploySpecInternal, VmDeploySpec
+        from virtcca_deploy.services.virt_service import VmDeploymentContext
         
-        # 创建测试数据
         vm_spec = VmDeploySpec(
             max_vm_num=2,
             memory=8192,
@@ -266,32 +266,29 @@ class TestVirtServiceDeploy:
         
         server_config = MagicMock()
         
-        # 补丁依赖函数
-        with patch('virtcca_deploy.services.virt_service.cvm_numa_check') as mock_numa_check:
+        mock_ctx = VmDeploymentContext(
+            cvm_name="test",
+            vm_spec=vm_spec,
+            host_numa_id=0,
+            success=True
+        )
+        
+        with patch('virtcca_deploy.services.virt_service.cvm_numa_check') as mock_numa_check, \
+             patch('virtcca_deploy.services.virt_service._deploy_single_vm', return_value=mock_ctx) as mock_deploy_single:
             mock_numa_check.return_value = ([0], None)
             
-            with patch('virtcca_deploy.services.virt_service.cvm_device_check') as mock_device_check:
-                mock_device_check.return_value = (['device1'], None)
-                
-                with patch('virtcca_deploy.services.virt_service._execute_deploy_cvm') as mock_execute_deploy:
-                    mock_execute_deploy.return_value = None
-                    
-                    with patch('virtcca_deploy.services.virt_service.cvm_net_check') as mock_net_check:
-                        mock_net_check.return_value = []
-                        
-                        # 调用函数
-                        result, err_msg = deploy_cvm(cvm_deploy_spec_internal, server_config)
-                        
-                        # 验证结果
-                        assert err_msg is None
-                        assert result == ['compute01-1', 'compute01-2']
-                        assert mock_execute_deploy.call_count == 2
+            result, err_msg = deploy_cvm(cvm_deploy_spec_internal, server_config)
+            
+            assert err_msg is None
+            assert 'compute01-1' in result
+            assert 'compute01-2' in result
+            assert mock_deploy_single.call_count == 2
 
     def test_deploy_cvm_with_empty_vm_iface(self, monkeypatch):
-        """测试virt_service.deploy_cvm函数处理空的vm_iface"""
+        """Test virt_service.deploy_cvm function handles empty vm_iface"""
         from virtcca_deploy.common.data_model import VmDeploySpecInternal, VmDeploySpec
+        from virtcca_deploy.services.virt_service import VmDeploymentContext
         
-        # 创建测试数据
         vm_spec = VmDeploySpec(
             max_vm_num=1,
             memory=8192,
@@ -307,28 +304,154 @@ class TestVirtServiceDeploy:
         cvm_deploy_spec_internal = VmDeploySpecInternal(
             vm_id_list=['compute01-1'],
             vm_spec=vm_spec,
-            vm_iface={}  # 空的IP字典
+            vm_iface={}
+        )
+        
+        server_config = MagicMock()
+        
+        mock_ctx = VmDeploymentContext(
+            cvm_name="compute01-1",
+            vm_spec=vm_spec,
+            host_numa_id=0,
+            success=True
+        )
+        
+        with patch('virtcca_deploy.services.virt_service.cvm_numa_check') as mock_numa_check, \
+             patch('virtcca_deploy.services.virt_service._deploy_single_vm', return_value=mock_ctx) as mock_deploy_single:
+            mock_numa_check.return_value = ([0], None)
+            
+            result, err_msg = deploy_cvm(cvm_deploy_spec_internal, server_config)
+            
+            assert err_msg is None
+            assert result == ['compute01-1']
+            mock_deploy_single.assert_called_once()
+            call_args = mock_deploy_single.call_args
+            assert call_args[0][3] == []
+
+    def test_deploy_cvm_concurrent_execution(self, monkeypatch):
+        """Test that deploy_cvm executes VM deployments concurrently"""
+        from virtcca_deploy.common.data_model import VmDeploySpecInternal, VmDeploySpec
+        from virtcca_deploy.services.virt_service import VmDeploymentContext
+        
+        vm_spec = VmDeploySpec(
+            max_vm_num=3,
+            memory=8192,
+            core_num=4,
+            vlan_id=0,
+            gateway_ip=['192.168.100.1'],
+            net_pf_num=1,
+            net_vf_num=0,
+            disk_size=10,
+            uuid='74260cba-197f-42d1-9af5-4247d182edd5'
+        )
+        
+        cvm_deploy_spec_internal = VmDeploySpecInternal(
+            vm_id_list=['compute01-1', 'compute01-2', 'compute01-3'],
+            vm_spec=vm_spec,
+            vm_iface={}
+        )
+        
+        server_config = MagicMock()
+        
+        mock_ctx = VmDeploymentContext(
+            cvm_name="test",
+            vm_spec=vm_spec,
+            host_numa_id=0,
+            success=True
+        )
+        
+        with patch('virtcca_deploy.services.virt_service.cvm_numa_check') as mock_numa_check, \
+             patch('virtcca_deploy.services.virt_service._deploy_single_vm', return_value=mock_ctx) as mock_deploy_single:
+            mock_numa_check.return_value = ([0, 1], None)
+            
+            result, err_msg = deploy_cvm(cvm_deploy_spec_internal, server_config)
+            
+            assert err_msg is None
+            assert len(result) == 3
+            assert mock_deploy_single.call_count == 3
+
+    def test_deploy_cvm_phase1_resource_check_failure(self, monkeypatch):
+        """Test that deploy_cvm returns error when phase 1 resource check fails"""
+        from virtcca_deploy.common.data_model import VmDeploySpecInternal, VmDeploySpec
+        
+        vm_spec = VmDeploySpec(
+            max_vm_num=2,
+            memory=8192,
+            core_num=4,
+            vlan_id=0,
+            gateway_ip=['192.168.100.1'],
+            net_pf_num=1,
+            net_vf_num=0,
+            disk_size=10,
+            uuid='74260cba-197f-42d1-9af5-4247d182edd5'
+        )
+        
+        cvm_deploy_spec_internal = VmDeploySpecInternal(
+            vm_id_list=['compute01-1', 'compute01-2'],
+            vm_spec=vm_spec,
+            vm_iface={}
         )
         
         server_config = MagicMock()
         
         with patch('virtcca_deploy.services.virt_service.cvm_numa_check') as mock_numa_check:
+            mock_numa_check.return_value = (None, "Insufficient NUMA resources")
+            
+            result, err_msg = deploy_cvm(cvm_deploy_spec_internal, server_config)
+            
+            assert result == []
+            assert "Insufficient NUMA resources" in err_msg
+
+    def test_deploy_cvm_single_vm_failure_with_cleanup(self, monkeypatch):
+        """Test that deploy_cvm handles single VM failure and performs cleanup"""
+        from virtcca_deploy.common.data_model import VmDeploySpecInternal, VmDeploySpec
+        from virtcca_deploy.services.virt_service import VmDeploymentContext
+        
+        vm_spec = VmDeploySpec(
+            max_vm_num=2,
+            memory=8192,
+            core_num=4,
+            vlan_id=0,
+            gateway_ip=['192.168.100.1'],
+            net_pf_num=1,
+            net_vf_num=0,
+            disk_size=10,
+            uuid='74260cba-197f-42d1-9af5-4247d182edd5'
+        )
+        
+        cvm_deploy_spec_internal = VmDeploySpecInternal(
+            vm_id_list=['compute01-1', 'compute01-2'],
+            vm_spec=vm_spec,
+            vm_iface={}
+        )
+        
+        server_config = MagicMock()
+        
+        def mock_deploy_single_vm(cvm_name, *args, **kwargs):
+            if cvm_name == "compute01-2":
+                return VmDeploymentContext(
+                    cvm_name="compute01-2",
+                    vm_spec=vm_spec,
+                    host_numa_id=0,
+                    success=False,
+                    error_message="Failed to allocate resources for compute01-2"
+                )
+            else:
+                return VmDeploymentContext(
+                    cvm_name=cvm_name,
+                    vm_spec=vm_spec,
+                    host_numa_id=0,
+                    success=True
+                )
+        
+        with patch('virtcca_deploy.services.virt_service.cvm_numa_check') as mock_numa_check, \
+             patch('virtcca_deploy.services.virt_service._deploy_single_vm', side_effect=mock_deploy_single_vm) as mock_deploy_single, \
+             patch('virtcca_deploy.services.virt_service.cvm_resource_reclaim') as mock_reclaim:
             mock_numa_check.return_value = ([0], None)
             
-            with patch('virtcca_deploy.services.virt_service.cvm_device_check') as mock_device_check:
-                mock_device_check.return_value = (['device1'], None)
-                
-                with patch('virtcca_deploy.services.virt_service._execute_deploy_cvm') as mock_execute_deploy:
-                    mock_execute_deploy.return_value = None
-                    
-                    with patch('virtcca_deploy.services.virt_service.cvm_net_check') as mock_net_check:
-                        mock_net_check.return_value = []
-                        
-                        result, err_msg = deploy_cvm(cvm_deploy_spec_internal, server_config)
-                        
-                        assert err_msg is None
-                        assert result == ['compute01-1']
-                        # 验证_execute_deploy_cvm被调用时使用了空列表作为IP
-                        mock_execute_deploy.assert_called_once()
-                        call_args = mock_execute_deploy.call_args
-                        assert call_args[0][4] == []  # IP列表应该是空的
+            result, err_msg = deploy_cvm(cvm_deploy_spec_internal, server_config)
+            
+            assert "Failed to allocate resources" in err_msg
+            mock_reclaim.assert_called_once_with("compute01-2", server_config)
+            mock_deploy_single.assert_called()
+            assert mock_deploy_single.call_count >= 1
