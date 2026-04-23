@@ -128,10 +128,22 @@ class VmDeploySpec:
         return json.dumps(self.to_dict())
 
 @dataclass
+class VmInterface:
+    node_name: str
+    mac_address: str
+    vlan_id: int
+    ip_address: str
+    subnet_mask: str
+    gateway: str
+
+    def to_dict(self) -> Dict:
+        return asdict(self)
+
+@dataclass
 class VmDeploySpecInternal:
     vm_id_list: List[str] = field(default_factory=list)
     vm_spec: VmDeploySpec = field(default_factory=VmDeploySpec)
-    vm_ip_dict: dict = field(default_factory=dict)
+    vm_iface: Dict[str, List[VmInterface]] = field(default_factory=dict)
 
     def is_valid(self) -> bool:
         if not self.vm_spec.is_valid():
@@ -154,10 +166,50 @@ class VmDeploySpecInternal:
     def to_dict(self) -> Dict:
         result = asdict(self)
         result['vm_spec'] = self.vm_spec.to_dict()
+        result['vm_iface'] = {
+            vm_id: [iface.to_dict() for iface in iface_list]
+            for vm_id, iface_list in self.vm_iface.items()
+        }
         return result
     
     def to_json(self) -> str:
         return json.dumps(self.to_dict())
+
+    def iface_list_to_json(self) -> Optional[str]:
+        if not self.vm_iface:
+            return None
+        return json.dumps({
+            vm_id: [iface.to_dict() for iface in iface_list]
+            for vm_id, iface_list in self.vm_iface.items()
+        })
+
+    def vm_iface_to_json(self, vm_id: str) -> Optional[str]:
+        if vm_id not in self.vm_iface or not self.vm_iface[vm_id]:
+            return None
+        return json.dumps([iface.to_dict() for iface in self.vm_iface[vm_id]])
+
+    @classmethod
+    def vm_iface_from_json(cls, iface_list_json: Optional[str]) -> List[VmInterface]:
+        if not iface_list_json:
+            return []
+
+        iface_list = json.loads(iface_list_json)
+
+        if not isinstance(iface_list, list):
+            raise ValueError("iface_list_json must be a JSON list")
+
+        return [
+            VmInterface(
+                node_name=iface.get('node_name'),
+                mac_address=iface.get('mac_address'),
+                vlan_id=iface.get('vlan_id'),
+                ip_address=iface.get('ip_address'),
+                subnet_mask=iface.get('subnet_mask'),
+                gateway=iface.get('gateway')
+            )
+            for iface in iface_list
+        ]
+
 
 @dataclass
 class ApiResponse:
@@ -189,6 +241,7 @@ class NetReleaseReq:
 class NetAllocResp:
     success: bool
     vm_ip_map: Dict[str, List[str]] = field(default_factory=dict)
+    vm_iface_map: Dict[str, List[VmInterface]] = field(default_factory=dict)
     failed_vms: Dict[str, str] = field(default_factory=dict)
     message: Optional[str] = None
 

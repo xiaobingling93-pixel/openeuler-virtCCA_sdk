@@ -8,8 +8,8 @@ Concrete implementations of database operations
 import logging
 from typing import List, Optional
 
-from virtcca_deploy.services.db_service import db, NetworkConfig, VmInstance, VmSoftware
-from virtcca_deploy.services.dao.interfaces import NetworkConfigDAOInterface, VmInstanceDAOInterface, VmSoftwareDAOInterface
+from virtcca_deploy.services.db_service import db, NetworkConfig, VmInstance, VmSoftware, DeviceAllocation
+from virtcca_deploy.services.dao.interfaces import NetworkConfigDAOInterface, VmInstanceDAOInterface, VmSoftwareDAOInterface, DeviceAllocationDAOInterface
 
 logger = logging.getLogger(__name__)
 
@@ -388,4 +388,16 @@ class VmSoftwareDAO(VmSoftwareDAOInterface):
             return VmSoftware.query.count()
         except Exception as e:
             logger.error(f"Failed to count software records: {e}")
+            raise
+
+
+class DeviceAllocationDAO(DeviceAllocationDAOInterface):
+    """Implementation of DeviceAllocation database operations"""
+
+    def get_by_mac_address(self, mac_address: str) -> Optional[DeviceAllocation]:
+        """Get device allocation by MAC address"""
+        try:
+            return DeviceAllocation.query.filter_by(mac_address=mac_address).first()
+        except Exception as e:
+            logger.error(f"Failed to get device allocation by mac_address {mac_address}: {e}")
             raise

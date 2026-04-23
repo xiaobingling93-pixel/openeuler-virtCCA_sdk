@@ -6,6 +6,7 @@ Handles upload, validation, storage, and IP allocation from database
 """
 
 import logging
+import json
 from typing import Dict, List, Tuple
 
 from virtcca_deploy.common.constants import ValidationError
@@ -68,18 +69,34 @@ class NetworkConfigService:
         self, node_name: str, pf_num: int, vm_id_list: List[str]
     ) -> Tuple[bool, Dict, Dict, str]:
         """
-        Allocate IPs for VM deployment from database
+        Allocate IPs for VM deployment from database with VLAN ID grouping
 
-        :param node_name: Target node name
-        :param pf_num: Number of PF interfaces per VM
+        This method implements a VLAN-aware allocation strategy that ensures
+        all VMs deployed on the same node receive network interfaces with
+        identical VLAN ID sets. This is critical for maintaining consistent
+        network topology across VMs in a deployment group.
+
+        Allocation Strategy:
+        1. Group available interfaces by VLAN ID
+        2. Validate that each VLAN group has sufficient interfaces for all VMs
+        3. Allocate interfaces ensuring each VM gets the same VLAN ID distribution
+        4. Mark allocated interfaces as used in database
+
+        :param node_name: Target node name for interface allocation
+        :param pf_num: Number of PF interfaces per VM (determines total interfaces needed)
         :param vm_id_list: List of VM IDs to allocate IPs for
-        :return: (success, vm_ip_map, vm_iface_map, error_message)
+        :return: Tuple of (success, vm_ip_map, vm_iface_map, error_message)
+                 - success: Boolean indicating allocation success
+                 - vm_ip_map: Dict mapping VM ID to list of allocated IP addresses
+                 - vm_iface_map: Dict mapping VM ID to list of interface config dicts
+                 - error_message: Error description if allocation failed, empty string otherwise
         """
         with self._lock:
             vm_ip_map = {}
             vm_iface_map = {}
 
             try:
+                # 步骤 1：获取目标节点的所有未使用网络配置
                 unused_configs = self._get_unused_configs_by_node(node_name)
 
                 if not unused_configs:
@@ -87,6 +104,7 @@ class NetworkConfigService:
                         f"No network configuration found for node '{node_name}'"
                     )
 
+                # 步骤 2：计算总接口需求
                 total_required = len(vm_id_list) * pf_num
 
                 if len(unused_configs) < total_required:
@@ -95,29 +113,20 @@ class NetworkConfigService:
                         f"available {len(unused_configs)}"
                     )
 
-                allocated_configs = []
-                for i, vm_id in enumerate(vm_id_list):
-                    vm_start = i * pf_num
-                    vm_end = vm_start + pf_num
-                    vm_configs = unused_configs[vm_start:vm_end]
+                # 步骤 3：委托给 VLAN 感知分配逻辑
+                success, vm_ip_map, vm_iface_map, allocated_configs, error_msg = (
+                    self._allocate_single_node_with_vlan_grouping(
+                        unused_configs=unused_configs,
+                        node_name=node_name,
+                        pf_num=pf_num,
+                        vm_id_list=vm_id_list
+                    )
+                )
 
-                    vm_ips = []
-                    vm_ifaces = []
+                if not success:
+                    return False, vm_ip_map, vm_iface_map, error_msg
 
-                    for config in vm_configs:
-                        vm_ips.append(config.ip_address)
-                        vm_ifaces.append({
-                            "mac_address": config.mac_address,
-                            "vlan_id": config.vlan_id,
-                            "ip_address": config.ip_address,
-                            "subnet_mask": config.subnet_mask,
-                            "gateway": config.gateway
-                        })
-                        allocated_configs.append(config)
-
-                    vm_ip_map[vm_id] = vm_ips
-                    vm_iface_map[vm_id] = vm_ifaces
-
+                # 步骤 4：在数据库中将已分配的配置标记为已使用
                 self._mark_configs_as_used(allocated_configs)
 
                 logger.info(
@@ -136,19 +145,169 @@ class NetworkConfigService:
                 logger.error(error_msg)
                 return False, vm_ip_map, vm_iface_map, error_msg
 
+    def _group_configs_by_vlan(
+        self, configs: List[NetworkConfig]
+    ) -> Dict[int, List[NetworkConfig]]:
+        """
+        按 VLAN ID 分组网络配置
+
+        此方法将可用的网络接口按 VLAN 分组，这是 VLAN 感知分配的基础。
+        每个分组包含所有共享相同 VLAN ID 的接口。
+
+        设计原理：
+        - VLAN 分组支持在不同 VLAN 之间均衡分配
+        - 确保每台虚拟机从相同的 VLAN ID 集合获得接口
+        - 在虚拟机部署之间保持网络拓扑一致性
+
+        :param configs: 需要分组的 NetworkConfig 对象列表
+        :return: 映射 VLAN ID 到 NetworkConfig 对象列表的字典
+                 示例：{100: [config1, config2], 200: [config3, config4]}
+        """
+        vlan_groups = {}
+
+        for config in configs:
+            vlan_id = config.vlan_id
+            if vlan_id not in vlan_groups:
+                vlan_groups[vlan_id] = []
+            vlan_groups[vlan_id].append(config)
+
+        logger.debug(
+            f"Grouped {len(configs)} configs into {len(vlan_groups)} VLAN groups: "
+            f"{ {vlan_id: len(cfgs) for vlan_id, cfgs in vlan_groups.items()} }"
+        )
+
+        return vlan_groups
+
+    def _allocate_single_node_with_vlan_grouping(
+        self,
+        unused_configs: List[NetworkConfig],
+        node_name: str,
+        pf_num: int,
+        vm_id_list: List[str]
+    ) -> Tuple[bool, Dict, Dict, List[NetworkConfig], str]:
+        """
+        基于 VLAN ID 分组为单节点上的虚拟机分配网络接口
+
+        核心分配策略：
+        - 每台虚拟机分配 pf_num 个接口，每个接口来自不同的 VLAN ID
+        - 所有虚拟机获得相同的 VLAN ID 集合，确保网络拓扑一致性
+        - 如果可用 VLAN ID 数量少于 pf_num，则分配失败
+
+        分配算法：
+        1. 按 VLAN ID 分组可用接口
+        2. 验证 VLAN ID 数量 >= pf_num（否则失败）
+        3. 选择前 pf_num 个 VLAN ID（按 VLAN ID 排序）
+        4. 验证每个选中的 VLAN 组有足够的接口（>= 虚拟机数量）
+        5. 为每台虚拟机从每个 VLAN 组分配 1 个接口
+
+        示例：
+        - 2 台虚拟机，pf_num=2，VLAN 组：{100: [3 configs], 200: [3 configs], 300: [3 configs]}
+        - 选择 VLAN ID：[100, 200]（前 2 个）
+        - 每台虚拟机：从 VLAN 100 取 1 个接口，从 VLAN 200 取 1 个接口
+        - 结果：两台虚拟机都有相同的 VLAN ID 集合 {100, 200}
+
+        :param unused_configs: 可用于分配的 NetworkConfig 对象列表
+        :param node_name: 目标节点名称（用于日志记录）
+        :param pf_num: 每台虚拟机需要分配的 PF 接口数量
+        :param vm_id_list: 需要分配接口的虚拟机 ID 列表
+        :return: 元组 (success, vm_ip_map, vm_iface_map, allocated_configs, error_message)
+        """
+        num_vms = len(vm_id_list)
+        vm_ip_map = {}
+        vm_iface_map = {}
+        allocated_configs = []
+
+        # 步骤 1：按 VLAN ID 分组可用接口
+        vlan_groups = self._group_configs_by_vlan(unused_configs)
+
+        if not vlan_groups:
+            return False, vm_ip_map, vm_iface_map, [], (
+                f"No valid VLAN groups found for node '{node_name}'"
+            )
+
+        # 步骤 2：验证 VLAN ID 数量是否满足要求
+        # 每台虚拟机需要 pf_num 个不同 VLAN 的接口，因此至少需要 pf_num 个 VLAN ID
+        vlan_ids = sorted(vlan_groups.keys())
+        num_vlans = len(vlan_ids)
+
+        if num_vlans < pf_num:
+            return False, vm_ip_map, vm_iface_map, [], (
+                f"Insufficient VLAN IDs: need {pf_num} different VLAN IDs, "
+                f"but node '{node_name}' only has {num_vlans} VLAN IDs "
+                f"(available VLANs: {vlan_ids})"
+            )
+
+        # 步骤 3：选择前 pf_num 个 VLAN ID 用于分配
+        # 按 VLAN ID 排序后选择，确保分配的可预测性和一致性
+        selected_vlan_ids = vlan_ids[:pf_num]
+
+        logger.debug(
+            f"VLAN allocation plan for node '{node_name}': "
+            f"{num_vms} VM(s), {pf_num} interface(s)/VM, "
+            f"selecting {len(selected_vlan_ids)} VLAN(s) from {num_vlans} VLANs: {selected_vlan_ids}"
+        )
+
+        # 步骤 4：验证每个选中的 VLAN 组有足够的接口
+        # 每个 VLAN 组需要至少 num_vms 个接口（每台虚拟机 1 个）
+        for vlan_id in selected_vlan_ids:
+            available_in_vlan = len(vlan_groups[vlan_id])
+            if available_in_vlan < num_vms:
+                return False, vm_ip_map, vm_iface_map, [], (
+                    f"Insufficient interfaces in VLAN {vlan_id}: "
+                    f"need {num_vms} interface(s) (1 per VM), "
+                    f"but only {available_in_vlan} available"
+                )
+
+        # 步骤 5：为每台虚拟机分配接口
+        # 跟踪每个 VLAN 组的分配索引，避免重复分配
+        vlan_allocation_index = {vlan_id: 0 for vlan_id in selected_vlan_ids}
+
+        for vm_id in vm_id_list:
+            vm_ips = []
+            vm_ifaces = []
+
+            # 从每个选中的 VLAN 组为当前虚拟机分配 1 个接口
+            for vlan_id in selected_vlan_ids:
+                # 获取当前 VLAN 组中下一个可用的接口配置
+                config_index = vlan_allocation_index[vlan_id]
+                config = vlan_groups[vlan_id][config_index]
+
+                # 记录分配的接口信息
+                vm_ips.append(config.ip_address)
+                vm_ifaces.append({
+                    "mac_address": config.mac_address,
+                    "vlan_id": config.vlan_id,
+                    "ip_address": config.ip_address,
+                    "subnet_mask": config.subnet_mask,
+                    "gateway": config.gateway
+                })
+                allocated_configs.append(config)
+
+                # 更新分配索引，指向下一个可用接口
+                vlan_allocation_index[vlan_id] = config_index + 1
+
+            vm_ip_map[vm_id] = vm_ips
+            vm_iface_map[vm_id] = vm_ifaces
+
+            logger.debug(
+                f"Allocated {len(vm_ifaces)} interface(s) for VM '{vm_id}', "
+                f"VLAN ID set: {[iface['vlan_id'] for iface in vm_ifaces]}"
+            )
+
+        return True, vm_ip_map, vm_iface_map, allocated_configs, ""
+
     def release_ips_for_vms(self, vm_id_list: List[str]) -> Tuple[bool, str]:
         """
-        Release IPs for VMs (mark configs as unused)
+        释放虚拟机的 IP 地址（将配置标记为未使用）
 
-        :param vm_id_list: List of VM IDs to release
-        :return: (success, error_message)
+        :param vm_id_list: 需要释放的虚拟机 ID 列表
+        :return: (success, error_message) 元组
         """
         with self._lock:
             try:
                 from virtcca_deploy.services.db_service import VmInstance
                 from virtcca_deploy.services.dao import get_dao_registry
                 vm_instance_dao = get_dao_registry().vm_instance_dao
-                import json
 
                 mac_addresses_to_release = []
                 for vm_id in vm_id_list:

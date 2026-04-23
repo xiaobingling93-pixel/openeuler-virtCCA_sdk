@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import subprocess
+import traceback
 from datetime import datetime
 from typing import List, Dict, Optional
 
@@ -19,6 +20,7 @@ from virtcca_deploy.common.data_model import (
     SriovVfSetupResp
 )
 from virtcca_deploy.services.db_service import db, DeviceAllocation
+from virtcca_deploy.services.dao import get_dao_registry
 
 
 # ========== 资源分配器接口 ==========
@@ -96,6 +98,282 @@ class SimpleIpAllocator(NetworkResourceAllocator):
             return None
 
 
+class IpAllocator(NetworkResourceAllocator):
+    """
+    基于数据库的 IP 分配器
+    Manager 层使用，为 VM 分配 IP 地址
+    从数据库读取网络配置，根据节点和网络接口信息分配 IP
+    """
+
+    def __init__(self):
+        """
+        :raises ValidationError: 配置文件无效时
+        """
+        from virtcca_deploy.services.network_config_service import (
+            get_network_config_service
+        )
+
+        self._lock = __import__('gevent').lock.RLock()
+        self.logger = logging.getLogger(__name__)
+        self._network_config_service = get_network_config_service()
+        self._vm_allocation_tracker: Dict[str, Dict] = {}
+
+    def allocate(self, request: NetAllocReq) -> NetAllocResp:
+        """
+        基于数据库配置为 VM 分配网络接口和 IP 地址
+
+        从数据库读取状态为"unused"的网络配置，
+        根据 node_name 精确匹配可用的网络interface配置，
+        根据 pf_num 参数验证匹配到的interface数量是否满足需求。
+
+        :param request: 网络分配请求，包含 vm_id_list、pf_num、node_ip
+        :return: 分配结果，包含 vm_iface_map、failed_vms
+        """
+        vm_iface_map = {}
+        failed_vms = {}
+
+        with self._lock:
+            from virtcca_deploy.services.db_service import ComputeNode
+
+            node = ComputeNode.query.filter_by(ip=request.node_ip).first()
+
+            if not node:
+                self.logger.warning(
+                    f"Node {request.node_ip} not found in database"
+                )
+                for vm_id in request.vm_id_list:
+                    failed_vms[vm_id] = f"Node {request.node_ip} not found"
+                return NetAllocResp(
+                    success=False,
+                    vm_iface_map=vm_iface_map,
+                    failed_vms=failed_vms,
+                    message=f"Node {request.node_ip} not found in database"
+                )
+
+            node_name = node.nodename
+
+            if request.pf_num <= 0:
+                self.logger.error(
+                    f"Invalid pf_num: {request.pf_num}, must be > 0"
+                )
+                for vm_id in request.vm_id_list:
+                    failed_vms[vm_id] = f"Invalid pf_num: {request.pf_num}"
+                return NetAllocResp(
+                    success=False,
+                    vm_iface_map=vm_iface_map,
+                    failed_vms=failed_vms,
+                    message=f"pf_num must be greater than 0"
+                )
+
+            
+            try:
+                # 调用方法并捕获原始返回值
+                raw_result = self._network_config_service.allocate_ips_for_deployment(
+                    node_name=node_name,
+                    pf_num=request.pf_num,
+                    vm_id_list=request.vm_id_list
+                )
+                
+                # 调试日志：记录原始返回值的类型和值
+                self.logger.debug(
+                    f"[DEBUG:L{165}] Raw return value type: {type(raw_result)}, "
+                    f"value: {raw_result}"
+                )
+                
+                # 验证返回值是否可迭代
+                if not hasattr(raw_result, '__iter__'):
+                    error_msg = (
+                        f"allocate_ips_for_deployment returned non-iterable type: "
+                        f"{type(raw_result).__name__}"
+                    )
+                    self.logger.error(f"[DEBUG:L{172}] {error_msg}")
+                    for vm_id in request.vm_id_list:
+                        failed_vms[vm_id] = error_msg
+                    return NetAllocResp(
+                        success=False,
+                        vm_iface_map=vm_iface_map,
+                        failed_vms=failed_vms,
+                        message=error_msg
+                    )
+                
+                # 转换为列表以检查长度
+                result_list = list(raw_result) if not isinstance(raw_result, list) else raw_result
+                result_length = len(result_list)
+                
+                self.logger.debug(
+                    f"[DEBUG:L{187}] Return value has {result_length} elements: {result_list}"
+                )
+                
+                # 验证预期的返回值数量
+                expected_values = 4  # (success, vm_ip_map, vm_iface_map, error_message)
+                if result_length != expected_values:
+                    error_msg = (
+                        f"allocate_ips_for_deployment returned {result_length} values, "
+                        f"expected {expected_values}. Values: {result_list}"
+                    )
+                    self.logger.error(f"[DEBUG:L{196}] {error_msg}")
+                    self.logger.error(
+                        f"[DEBUG:L{197}] Stack trace:\n{traceback.format_stack()}"
+                    )
+                    for vm_id in request.vm_id_list:
+                        failed_vms[vm_id] = error_msg
+                    return NetAllocResp(
+                        success=False,
+                        vm_iface_map=vm_iface_map,
+                        failed_vms=failed_vms,
+                        message=error_msg
+                    )
+                
+                # 使用已验证的长度安全解包
+                success, vm_ip_map, vm_iface_map, error_msg = result_list
+                
+                self.logger.debug(
+                    f"[DEBUG:L{212}] Unpacked successfully: "
+                    f"success={success}, vm_ip_map keys={list(vm_ip_map.keys()) if vm_ip_map else None}, "
+                    f"vm_iface_map keys={list(vm_iface_map.keys()) if vm_iface_map else None}, "
+                    f"error_msg={error_msg}"
+                )
+                
+            except ValueError as unpack_error:
+                # 专门捕获解包错误
+                error_details = str(unpack_error)
+                self.logger.error(
+                    f"[DEBUG:L{221}] Unpacking error at line 157: {error_details}"
+                )
+                self.logger.error(
+                    f"[DEBUG:L{223}] Full stack trace:\n{traceback.format_exc()}"
+                )
+                
+                # 尝试获取原始结果以进行调试
+                try:
+                    self.logger.error(
+                        f"[DEBUG:L{228}] Attempting to diagnose unpacking error..."
+                    )
+                    self.logger.error(
+                        f"[DEBUG:L{229}] This error typically occurs when the number of "
+                        f"values returned doesn't match the number of variables"
+                    )
+                except Exception:
+                    pass
+                
+                for vm_id in request.vm_id_list:
+                    failed_vms[vm_id] = f"IP allocation unpacking error: {error_details}"
+                
+                return NetAllocResp(
+                    success=False,
+                    vm_iface_map=vm_iface_map,
+                    failed_vms=failed_vms,
+                    message=f"Internal error during IP allocation: {error_details}"
+                )
+            except Exception as alloc_error:
+                # 捕获分配过程中的任何其他错误
+                self.logger.error(
+                    f"[DEBUG:L{247}] Unexpected error during allocation: {alloc_error}"
+                )
+                self.logger.error(
+                    f"[DEBUG:L{249}] Stack trace:\n{traceback.format_exc()}"
+                )
+                
+                for vm_id in request.vm_id_list:
+                    failed_vms[vm_id] = f"IP allocation error: {str(alloc_error)}"
+                
+                return NetAllocResp(
+                    success=False,
+                    vm_iface_map=vm_iface_map,
+                    failed_vms=failed_vms,
+                    message=f"IP allocation failed: {str(alloc_error)}"
+                )
+
+            if not success:
+                self.logger.error(f"IP allocation failed: {error_msg}")
+                for vm_id in request.vm_id_list:
+                    if vm_id not in failed_vms:
+                        failed_vms[vm_id] = error_msg
+
+                return NetAllocResp(
+                    success=False,
+                    vm_iface_map=vm_iface_map,
+                    failed_vms=failed_vms,
+                    message=error_msg
+                )
+
+            for vm_id in request.vm_id_list:
+                self._vm_allocation_tracker[vm_id] = {
+                    "node_ip": request.node_ip,
+                    "node_name": node_name,
+                    "interfaces": vm_iface_map.get(vm_id, []),
+                    "pf_num": request.pf_num
+                }
+
+                self.logger.info(
+                    f"Allocated {request.pf_num} interface(s) to VM {vm_id} "
+                    f"on node {node_name}"
+                )
+
+        return NetAllocResp(
+            success=True,
+            vm_iface_map=vm_iface_map,
+            failed_vms=failed_vms,
+            message=None
+        )
+
+    def release(self, request: NetReleaseReq) -> NetReleaseResp:
+        """
+        释放 VM 占用的 IP 地址
+
+        :param request: 网络释放请求
+        :return: 释放结果
+        """
+        released_vms = []
+        failed_vms = {}
+
+        with self._lock:
+            for vm_id in request.vm_id_list:
+                if vm_id in self._vm_allocation_tracker:
+                    del self._vm_allocation_tracker[vm_id]
+                    released_vms.append(vm_id)
+                    self.logger.info(f"Released IP allocation for VM {vm_id}")
+                else:
+                    self.logger.warning(
+                        f"VM {vm_id} has no allocated IP to release"
+                    )
+
+            success, error_msg = self._network_config_service.release_ips_for_vms(
+                request.vm_id_list
+            )
+
+            if not success:
+                self.logger.error(f"Failed to release IPs in database: {error_msg}")
+
+        return NetReleaseResp(
+            success=True,
+            released_vms=released_vms,
+            failed_vms=failed_vms
+        )
+
+    def get_allocated_ip(self, vm_id: str) -> Optional[List[str]]:
+        """
+        查询 VM 已分配的 IP
+
+        :param vm_id: VM ID
+        :return: IP 地址列表，如果未分配则返回 None
+        """
+        with self._lock:
+            if vm_id in self._vm_allocation_tracker:
+                return self._vm_allocation_tracker[vm_id]["ip_list"]
+            return None
+
+    def get_allocation_details(self, vm_id: str) -> Optional[Dict]:
+        """
+        获取 VM 的完整 IP 分配详情
+
+        :param vm_id: VM ID
+        :return: 分配详情字典，包含 IP、VLAN、子网掩码、网关等
+        """
+        with self._lock:
+            return self._vm_allocation_tracker.get(vm_id)
+
+
 class DeviceManagerAllocator(DeviceAllocator):
     """
     基于 SQLite 持久化的设备分配器
@@ -120,6 +398,7 @@ class DeviceManagerAllocator(DeviceAllocator):
         self._discovered_devices: List[Dict] = []
         self._lock = __import__('gevent').lock.RLock()
         self.logger = logging.getLogger(__name__)
+        self._dao = get_dao_registry().device_allocation_dao
 
     # ========== 设备发现 ==========
 
@@ -373,6 +652,15 @@ class DeviceManagerAllocator(DeviceAllocator):
         """
         return [device.to_dict() for device in DeviceAllocation.query.all()]
 
+    def find_device_by_mac(self, mac_address: str) -> Optional[DeviceAllocation]:
+        """
+        根据 MAC 地址查找设备分配记录
+
+        :param mac_address: MAC 地址（如 "00:11:22:33:44:55"）
+        :return: DeviceAllocation 记录；未找到返回 None
+        """
+        return self._dao.get_by_mac_address(mac_address)
+
     # ========== 内部方法：数据库操作 ==========
 
     def _allocate_devices_by_type(self, vm_id: str, device_type: str,
@@ -435,6 +723,7 @@ class DeviceManagerAllocator(DeviceAllocator):
             numa_node=dev_info.get('numa_node', -1),
             device_type=device_type,
             device_name=dev_info.get('device_name'),
+            mac_address=dev_info.get('mac_address'),
             status=initial_status,
         )
         db.session.add(record)
@@ -456,6 +745,7 @@ class DeviceManagerAllocator(DeviceAllocator):
         record.vendor_id = dev_info['vendor_id']
         record.device_id = dev_info['device_id']
         record.device_name = dev_info.get('device_name')
+        record.mac_address = dev_info.get('mac_address')
 
         if (record.device_type == DeviceTypeConfig.DEVICE_TYPE_NET_PF
                 and record.status == DeviceAllocation.DEVICE_STATUS_AVAILABLE):
@@ -585,6 +875,7 @@ class DeviceManagerAllocator(DeviceAllocator):
                 "device_id": device_id,
                 "numa_node": self._read_numa_node(bdf),
                 "device_name": self._read_device_name(bdf),
+                "mac_address": self._read_mac_address(bdf),
             })
 
         self.logger.info(f"Enumerated {len(devices)} PCI device(s) via lspci")
@@ -679,6 +970,33 @@ class DeviceManagerAllocator(DeviceAllocator):
                     return entries[0]
         except OSError as e:
             self.logger.warning(f"Failed to read device name for {bdf}: {e}")
+        return None
+
+    def _read_mac_address(self, bdf: str) -> Optional[str]:
+        """
+        从 sysfs 读取 PCI 网络设备的 MAC 地址
+
+        对于网络设备，读取 /sys/bus/pci/devices/{BDF}/net/{iface}/address 文件
+        获取 MAC 地址。对于非网络设备，该目录不存在。
+
+        :param bdf: PCI 设备的 BDF 地址（如 "0000:3b:00.0"）
+        :return: MAC 地址（如 "00:11:22:33:44:55"）；非网络设备或读取失败返回 None
+        """
+        net_dir = os.path.join(self.SYSFS_PCI_DEVICES, bdf, "net")
+        try:
+            if os.path.isdir(net_dir):
+                entries = os.listdir(net_dir)
+                if entries:
+                    iface = entries[0]
+                    mac_path = os.path.join(net_dir, iface, "address")
+                    with open(mac_path, 'r') as f:
+                        mac = f.read().strip()
+                        if mac and mac != "00:00:00:00:00:00":
+                            return mac
+        except FileNotFoundError:
+            self.logger.debug(f"MAC address sysfs entry not found for {bdf}")
+        except OSError as e:
+            self.logger.warning(f"Failed to read MAC address for {bdf}: {e}")
         return None
 
     # ========== SR-IOV VF 设置 ==========
