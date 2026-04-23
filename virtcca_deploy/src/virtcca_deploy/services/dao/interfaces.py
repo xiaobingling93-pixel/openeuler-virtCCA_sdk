@@ -203,3 +203,23 @@ class DeviceAllocationDAOInterface(ABC):
     def get_by_mac_address(self, mac_address: str) -> Optional[DeviceAllocation]:
         """Get device allocation by MAC address"""
         pass
+
+    @abstractmethod
+    def allocate_devices_by_mac(
+        self,
+        mac_addresses: List[str],
+        vm_id: str
+    ) -> dict:
+        """
+        Allocate devices based on MAC addresses with concurrency protection.
+
+        This method allocates devices for the given VM by checking the status of each MAC address.
+        If any device is unavailable, the entire allocation fails and no devices are allocated.
+
+        :param mac_addresses: List of MAC addresses to allocate devices for.
+        :param vm_id: The VM ID to assign to the allocated devices.
+        :return: A dictionary mapping MAC addresses to BDF addresses for successfully allocated devices.
+                Returns an empty dictionary if any allocation fails.
+        :raises RuntimeError: If the allocation process fails or an error occurs.
+        """
+        pass

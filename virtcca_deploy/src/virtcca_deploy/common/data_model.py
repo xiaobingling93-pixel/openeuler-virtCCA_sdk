@@ -258,12 +258,35 @@ class DeviceAllocReq:
     vm_id: str
     pf_num: int
     vf_num: int
+    iface: Optional[list[str]] = None
     numa_node: Optional[int] = None
+
+    def __post_init__(self):
+        if self.iface is not None and len(self.iface) > 0:
+            self._validate_iface()
+
+    def _validate_iface(self):
+        import re
+        mac_pattern = re.compile(r'^([0-9A-Fa-f]{2}[:]){5}([0-9A-Fa-f]{2})$')
+        for item in self.iface:
+            if not mac_pattern.match(item):
+                raise ValueError(
+                    f"Invalid MAC address format in iface: {item}. "
+                    f"Expected format: XX:XX:XX:XX:XX:XX"
+                )
+
+    def get_mac_addresses(self) -> list[str]:
+        if self.iface is None or len(self.iface) == 0:
+            return []
+        return [mac.lower() for mac in self.iface]
+
+    def is_mac_based_allocation(self) -> bool:
+        return len(self.get_mac_addresses()) > 0
 
 @dataclass
 class DeviceAllocResp:
     success: bool
-    device_list: List[str]
+    device_dict: dict = field(default_factory=dict)
 
 @dataclass
 class DeviceReleaseReq:

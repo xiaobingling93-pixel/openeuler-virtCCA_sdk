@@ -2,18 +2,21 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 import os
 import shutil
 import xml.etree.ElementTree as ET
 from contextlib import contextmanager
 import time
+from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from enum import Enum
 
 import libvirt
 import subprocess
 
 from virtcca_deploy.common.data_model import (
-    VmDeploySpecInternal, VmDeploySpec, DeviceAllocReq, DeviceReleaseReq, SriovVfSetupResp
+    VmDeploySpecInternal, VmDeploySpec, DeviceAllocReq, DeviceReleaseReq, SriovVfSetupResp, VmInterface
 )
 import virtcca_deploy.common.config as config
 import virtcca_deploy.common.constants as constants
@@ -114,30 +117,79 @@ def handle_data_disk(root, data_disk_file: str):
 
     g_logger.info("Added data disk %s at bus 0x03", data_disk_file)
 
-def handle_pci(root, pci_list: List[str]):
+import xml.etree.ElementTree as ET
+import logging
+
+g_logger = logging.getLogger(__name__)
+
+def handle_pci(root, pci_dict: dict):
+    """
+    Add PCI devices to the VM XML based on the mac_address: bdf dictionary.
+    
+    :param root: The root XML element of the VM configuration.
+    :param pci_dict: Dictionary with mac_address as the key and bdf as the value.
+    """
     device_node = root.find(".//devices")
     if device_node is not None:
-        for pci_addr in pci_list:
+        for mac_address, bdf in pci_dict.items():
+            # Create the hostdev node for the PCI device
             hostdev_node = ET.SubElement(device_node, "hostdev", mode='subsystem', type='pci', managed='yes')
             ET.SubElement(hostdev_node, 'driver', name='vfio')
             source_node = ET.SubElement(hostdev_node, 'source')
-            g_logger.info("Adding PCI device: %s", pci_addr)
-            domain, bus_slot_function = pci_addr.split(":", 1)
-            bus, slot_function = bus_slot_function.split(":", 1)
-            slot, function = slot_function.split(".") if "." in slot_function else (slot_function, None)
 
-            if not domain or not bus or not slot or not function:
-                raise ValueError(f"Invalid PCI address: {pci_addr}. Components cannot be empty!")
+            # Log the information
+            g_logger.info("Adding PCI device with MAC: %s, BDF: %s", mac_address, bdf)
+            
+            # Parse the BDF to extract domain, bus, slot, and function
+            try:
+                domain, bus_slot_function = bdf.split(":", 1)
+                bus, slot_function = bus_slot_function.split(":", 1)
+                slot, function = slot_function.split(".") if "." in slot_function else (slot_function, None)
 
-            ET.SubElement(source_node, "address",
-                          domain=f"0x{domain}",
-                          bus=f"0x{bus}",
-                          slot=f"0x{slot}",
-                          function=f"0x{function}")
+                if not domain or not bus or not slot or not function:
+                    raise ValueError(f"Invalid PCI address: {bdf}. Components cannot be empty!")
+
+                # Add the PCI address to the XML
+                ET.SubElement(source_node, "address",
+                              domain=f"0x{domain}",
+                              bus=f"0x{bus}",
+                              slot=f"0x{slot}",
+                              function=f"0x{function}")
+
+                # Optionally, add the MAC address as an additional attribute or element if needed
+                # Example: Adding MAC as an attribute to the hostdev node (if you want this in XML)
+                hostdev_node.set("mac", mac_address)
+                
+            except Exception as e:
+                g_logger.error(f"Error while adding PCI device with MAC {mac_address} and BDF {bdf}: {e}")
+                raise
+
     else:
+        raise Exception("CVM template XML is invalid, unable to find element 'devices'!")
+
+def handle_virbr0(root, mac_addr: str):
+    devices_node = root.find(".//devices")
+    if devices_node is None:
         raise Exception("CVM template xml is invalid, unable to find element 'devices'!")
 
-def config_xml(cvm_name: str, vm_spec: VmDeploySpec, qcow2_file: str, host_numa_id: int, device_list: List[str], data_disk_file: str = None) -> str:
+    found = False
+    for iface in devices_node.findall("interface"):
+        source = iface.find("source")
+        if source is not None and source.get("bridge") == "virbr0":
+            mac_node = iface.find("mac")
+            if mac_node is not None:
+                mac_node.set("address", mac_addr)
+            else:
+                mac_node = ET.SubElement(iface, "mac", address=mac_addr)
+
+            found = True
+            break
+
+    if not found:
+        raise Exception("No interface with bridge 'virbr0' found in XML!")
+
+
+def config_xml(cvm_name: str, vm_spec: VmDeploySpec, qcow2_file: str, host_numa_id: int, device_dict: dict, data_disk_file: str = None) -> str:
     """
     Modify the XML configuration and return the XML string.
 
@@ -174,8 +226,8 @@ def config_xml(cvm_name: str, vm_spec: VmDeploySpec, qcow2_file: str, host_numa_
         handle_topology(root, host_numa_id, vm_spec.core_num, vm_spec.memory)
         handle_disk(root, qcow2_file)
         handle_vm_id(root, cvm_name)
-        if device_list:
-            handle_pci(root, device_list)
+        if device_dict:
+            handle_pci(root, device_dict)
         if data_disk_file:
             handle_data_disk(root, data_disk_file)
     except Exception as e:
@@ -197,7 +249,7 @@ def config_disk(cvm_name: str, file_path: str, ip_list: List[str], server_config
         g_logger.error("Base QCOW2 file %s not found.", base_qcow2)
         return "", None
     except Exception as e:
-        g_logger.error("Error while copying QCOW2 file: {}".format(e))
+        g_logger.error("Error while copying QCOW2 file: %s", e)
         return "", None
 
     data_disk_path = None
@@ -265,32 +317,6 @@ def config_net(ip_list: List[str], perfix: str):
 
         g_logger.info(f"Network config file created: {net_file} with IP {ip}")
 
-def config_startup_script():
-    dest_dir = f"{constants.MOUNT_PATH}/{constants.GUEST_SCRIPT_PATH}"
-    src_dir = constants.CVM_COMPUTE_SOFTWARE_PATH
-    os.makedirs(src_dir, exist_ok=True)
-    guest_rc_local_path = f"{constants.MOUNT_PATH}/etc/rc.local"
-    os.makedirs(dest_dir, exist_ok=True)
-    scripts = [f for f in os.listdir(src_dir)]
-
-    for script in scripts:
-        src_path = os.path.join(src_dir, script)
-        dest_path = os.path.join(dest_dir, script)
-
-        shutil.copy2(src_path, dest_path)
-        os.chmod(dest_path, 0o755)
-        g_logger.info(f" {script}  {dest_dir}")
-
-    if not os.path.exists(guest_rc_local_path):
-        g_logger.info(f"{guest_rc_local_path} ")
-        return
-
-    with open(guest_rc_local_path, 'a') as rc_local:
-        #  rc.local 
-        for script in scripts:
-            rc_local.write(f"\nsh {constants.GUEST_SCRIPT_PATH}/{script} &\n")
-            g_logger.info(f" {script}  {guest_rc_local_path} ")
-        os.chmod(guest_rc_local_path, 0o755)
 
 def cvm_name_check(base_vm_name: str, vm_num: int) -> str:
     libvirt = libvirtDriver()
@@ -326,27 +352,39 @@ def cvm_numa_check(core_num: int, mem_size: int, vm_num: int) -> Tuple[Optional[
 
     return available_nodes, None
 
-def cvm_device_check(
+def cvm_device_alloc(
     cvm_name: str,
-    device_allocator: resource_allocator.DeviceManagerAllocator,
-    pf_num: int,
-    vf_num: int,
-) -> Tuple[List[str], str]:
-    if pf_num + vf_num == 0:
-        return [], None
+    vm_spec: VmDeploySpec,
+    server_config: config,
+    iface_list: List[VmInterface]
+) -> Tuple[dict, str]:
+    if vm_spec.net_pf_num + vm_spec.net_vf_num == 0:
+        return {}, None
+    try:
+        iface_mac = [iface.mac_address for iface in iface_list if iface and iface.mac_address]
+        req = DeviceAllocReq(
+            vm_id=cvm_name,
+            pf_num=vm_spec.net_pf_num,
+            vf_num=vm_spec.net_vf_num,
+            iface=iface_mac
+        )
 
-    req = DeviceAllocReq(vm_id=cvm_name, pf_num=pf_num, vf_num=vf_num)
-    result = device_allocator.allocate(req)
+        result = server_config.device_allocator.allocate(req)
+
+    except Exception as e:
+        err_msg = f"Device allocation exception for VM {cvm_name}: {e}"
+        g_logger.error(err_msg)
+        return {}, err_msg
 
     if result.success:
-        return result.device_list, None
+        return result.device_dict, None
 
     err_msg = (
         f"Device allocation failed for VM {cvm_name}: "
-        f"need {pf_num} PF + {vf_num} VF"
+        f"need {vm_spec.net_pf_num} PF + {vm_spec.net_vf_num} VF"
     )
     g_logger.error(err_msg)
-    return [], err_msg
+    return {}, err_msg
 
 def cvm_net_check(ip_list: List[str], retries: int = 5, delay: int = 3) -> List[str]:
     """
@@ -399,40 +437,6 @@ def cvm_resource_reclaim(cvm_name: str, server_config: config):
         os.remove(data_disk_path)
         g_logger.info("Removed data disk: %s", data_disk_path)
     server_config.device_allocator.release(DeviceReleaseReq(vm_id=cvm_name))
-
-def _execute_deploy_cvm(
-    cvm_name: str,
-    cvm_spec: VmDeploySpec,
-    host_numa_id: int,
-    device_list: List[str],
-    ip_list: List[str],
-    server_config: config,
-    ) -> str:
-    qcow2_path = server_config.config.get("DEFAULT", "cvm_image_path")
-    qcow2, data_disk = config_disk(cvm_name, qcow2_path, ip_list, server_config, cvm_spec.disk_size)
-    if not qcow2:
-        err_msg = f"Skipping VM {cvm_name} due to disk configuration failure."
-        g_logger.error(err_msg)
-        return err_msg
-
-    output_xml = config_xml(cvm_name, cvm_spec, qcow2, host_numa_id, device_list, data_disk)
-    if not output_xml:
-        err_msg = f"Skipping VM {cvm_name} due to XML configuration failure."
-        g_logger.error(err_msg)
-        return err_msg
-
-    g_logger.info("config qcow2 success: %s", qcow2)
-    if data_disk:
-        g_logger.info("data disk configured: %s", data_disk)
-    time.sleep(1)
-    libvirt = libvirtDriver()
-    if libvirt.start_vm_by_xml(output_xml):
-        g_logger.info('CVM %s started successfully!', cvm_name)
-    else:
-        err_msg = f"Failed to start VM {cvm_name}"
-        g_logger.error(err_msg)
-        return err_msg
-    return None
 
 def _ensure_sriov_vf_resources(
     device_allocator: resource_allocator.DeviceManagerAllocator,
@@ -575,49 +579,575 @@ def _get_pf_max_vf_capacity(pf_device_name: str) -> int:
         return 0
 
 
-def deploy_cvm(cvm_deploy_spec_internal: VmDeploySpecInternal, server_config: config) -> Tuple[List[str], str]:
-    vm_spec = cvm_deploy_spec_internal.vm_spec
-    successfully_deployed_vms = []
-    device_list = []
+@dataclass
+class VmDeploymentContext:
+    """Per-VM deployment context carrying state across phases"""
+    cvm_name: str
+    vm_spec: VmDeploySpec
+    host_numa_id: int = -1
+    device_dict: dict = field(default_factory=dict)
+    ip_list: List[str] = field(default_factory=list)
+    qcow2_path: str = ""
+    data_disk_path: str = ""
+    xml_config: str = ""
+    error_message: str = ""
+    success: bool = False
+    network_check_result: Optional["NetworkCheckResult"] = None
 
-    available_nodes, err_msg = cvm_numa_check(vm_spec.core_num, vm_spec.memory, vm_spec.max_vm_num)
+
+class NetworkCheckType(Enum):
+    """Network check item types"""
+    INTERFACE_STATUS = "interface_status"
+    IP_CONFIGURATION = "ip_configuration"
+    GATEWAY_REACHABILITY = "gateway_reachability"
+    SERVICE_PORT_AVAILABILITY = "service_port_availability"
+    EXTERNAL_CONNECTIVITY = "external_connectivity"
+
+
+@dataclass
+class NetworkCheckConfig:
+    """Configuration for network connectivity checks"""
+    init_wait_timeout: int = 300
+    init_wait_interval: int = 10
+    check_timeout: int = 30
+    max_retries: int = 3
+    retry_delay: int = 5
+    external_targets: List[str] = field(default_factory=list)
+    service_ports: List[int] = field(default_factory=list)
+
+
+@dataclass
+class NetworkCheckItemResult:
+    """Result of a single network check item"""
+    check_type: NetworkCheckType
+    success: bool
+    message: str = ""
+    details: str = ""
+    attempts: int = 0
+    duration_ms: int = 0
+
+
+@dataclass
+class NetworkCheckResult:
+    """Aggregated result of all network checks for a VM"""
+    cvm_name: str
+    overall_success: bool = False
+    check_items: List[NetworkCheckItemResult] = field(default_factory=list)
+    total_duration_ms: int = 0
+    error_message: str = ""
+
+
+def _phase5_validate_network(
+    ctx: VmDeploymentContext,
+    server_config: config,
+    check_config: Optional[NetworkCheckConfig] = None,
+) -> VmDeploymentContext:
+    """
+    Phase 5: Network Connectivity Validation
+
+    Execute comprehensive network checks after VM initialization:
+    1. Interface status verification
+    2. IP configuration validation
+    3. Gateway reachability test
+    4. Service port availability detection
+    5. External network connectivity test
+
+    Args:
+        ctx: VM deployment context
+        server_config: Server configuration
+        check_config: Optional network check configuration
+
+    Returns:
+        Updated VmDeploymentContext with network check results
+    """
+    if ctx.error_message:
+        return ctx
+
+    if check_config is None:
+        check_config = NetworkCheckConfig()
+
+    g_logger.info(
+        "Phase 5 (Network Validation) starting for %s", ctx.cvm_name
+    )
+
+    check_result = NetworkCheckResult(cvm_name=ctx.cvm_name)
+
+    try:
+        _wait_for_vm_initialization(ctx.cvm_name, check_config)
+
+        check_items = [
+            (NetworkCheckType.INTERFACE_STATUS, _check_interface_status),
+            (NetworkCheckType.IP_CONFIGURATION, _check_ip_configuration),
+            (NetworkCheckType.GATEWAY_REACHABILITY, _check_gateway_reachability),
+            (NetworkCheckType.SERVICE_PORT_AVAILABILITY, _check_service_ports),
+            (NetworkCheckType.EXTERNAL_CONNECTIVITY, _check_external_connectivity),
+        ]
+
+        for check_type, check_func in check_items:
+            item_result = check_func(ctx, check_config)
+            check_result.check_items.append(item_result)
+
+            if not item_result.success:
+                g_logger.warning(
+                    "Network check '%s' failed for %s: %s",
+                    check_type.value, ctx.cvm_name, item_result.message
+                )
+
+        check_result.overall_success = all(
+            item.success for item in check_result.check_items
+        )
+
+    except Exception as e:
+        check_result.error_message = str(e)
+        g_logger.error(
+            "Phase 5 (Network Validation) error for %s: %s",
+            ctx.cvm_name, e
+        )
+
+    ctx.network_check_result = check_result
+
+    g_logger.info(
+        "Phase 5 (Network Validation) completed for %s: %s",
+        ctx.cvm_name, "PASSED" if check_result.overall_success else "FAILED"
+    )
+    return ctx
+
+
+def _wait_for_vm_initialization(
+    cvm_name: str,
+    check_config: NetworkCheckConfig,
+) -> None:
+    """
+    Wait for VM to complete initialization before network checks.
+
+    TODO: Implement VM initialization detection logic
+    - Check VM running state via libvirt
+    - Wait for guest agent to be ready
+    - Monitor boot completion indicators
+    """
+    g_logger.info(
+        "Waiting for %s initialization (timeout=%ds)",
+        cvm_name, check_config.init_wait_timeout
+    )
+    pass
+
+
+def _check_interface_status(
+    ctx: VmDeploymentContext,
+    config: NetworkCheckConfig,
+) -> NetworkCheckItemResult:
+    """
+    Verify VM internal network interface status.
+
+    TODO: Implement interface status check logic
+    - List all network interfaces in VM
+    - Verify interface state (UP/DOWN)
+    - Check link status and MTU configuration
+    - Validate expected interfaces are present
+    """
+    result = NetworkCheckItemResult(
+        check_type=NetworkCheckType.INTERFACE_STATUS,
+        success=False,
+        message="Not implemented"
+    )
+    return result
+
+
+def _check_ip_configuration(
+    ctx: VmDeploymentContext,
+    config: NetworkCheckConfig,
+) -> NetworkCheckItemResult:
+    """
+    Confirm IP address configuration correctness.
+
+    TODO: Implement IP configuration validation logic
+    - Verify assigned IP addresses match expected values
+    - Check subnet mask configuration
+    - Validate IP address assignment method (DHCP/Static)
+    - Detect IP conflicts or misconfigurations
+    """
+    result = NetworkCheckItemResult(
+        check_type=NetworkCheckType.IP_CONFIGURATION,
+        success=False,
+        message="Not implemented"
+    )
+    return result
+
+
+def _check_gateway_reachability(
+    ctx: VmDeploymentContext,
+    config: NetworkCheckConfig,
+) -> NetworkCheckItemResult:
+    """
+    Test gateway reachability.
+
+    TODO: Implement gateway reachability test logic
+    - Ping default gateway
+    - Verify ARP resolution
+    - Test routing table correctness
+    - Measure gateway latency
+    """
+    result = NetworkCheckItemResult(
+        check_type=NetworkCheckType.GATEWAY_REACHABILITY,
+        success=False,
+        message="Not implemented"
+    )
+    return result
+
+
+def _check_service_ports(
+    ctx: VmDeploymentContext,
+    config: NetworkCheckConfig,
+) -> NetworkCheckItemResult:
+    """
+    Detect internal service port availability.
+
+    TODO: Implement service port check logic
+    - Verify configured ports are listening
+    - Test port accessibility from VM
+    - Check service process status
+    - Validate firewall rules
+    """
+    result = NetworkCheckItemResult(
+        check_type=NetworkCheckType.SERVICE_PORT_AVAILABILITY,
+        success=False,
+        message="Not implemented"
+    )
+    return result
+
+
+def _check_external_connectivity(
+    ctx: VmDeploymentContext,
+    config: NetworkCheckConfig,
+) -> NetworkCheckItemResult:
+    """
+    Test connectivity to external network resources.
+
+    TODO: Implement external connectivity test logic
+    - Ping external target hosts
+    - Test DNS resolution
+    - Verify HTTP/HTTPS connectivity
+    - Measure external network latency
+    """
+    result = NetworkCheckItemResult(
+        check_type=NetworkCheckType.EXTERNAL_CONNECTIVITY,
+        success=False,
+        message="Not implemented"
+    )
+    return result
+
+
+def validate_vm_network(
+    cvm_name: str,
+    server_config: config,
+    check_config: Optional[NetworkCheckConfig] = None,
+) -> NetworkCheckResult:
+    """
+    Public interface for validating VM network connectivity.
+
+    Provides a unified entry point for network validation that can be
+    called independently after VM deployment.
+
+    Args:
+        cvm_name: VM name to validate
+        server_config: Server configuration object
+        check_config: Optional network check configuration
+
+    Returns:
+        NetworkCheckResult with comprehensive validation results
+    """
+    ctx = VmDeploymentContext(cvm_name=cvm_name, vm_spec=VmDeploySpec())
+    ctx = _phase5_validate_network(ctx, server_config, check_config)
+    return ctx.network_check_result or NetworkCheckResult(
+        cvm_name=cvm_name,
+        error_message="Network validation failed to execute"
+    )
+
+
+def _phase1_check_resources(
+    vm_spec: VmDeploySpec,
+    vm_id_list: List[str],
+    vm_iface_map: Dict[str, List[VmInterface]],
+    server_config: config,
+) -> Tuple[Optional[List[int]], str]:
+    """
+    Phase 1: Resource Check
+
+    Validate all prerequisite resources for deployment:
+    - VM name uniqueness
+    - NUMA node availability and capacity
+    - SR-IOV VF resource sufficiency
+    - Network interface resource availability (node, MAC, VLAN)
+
+    Args:
+        vm_spec: VM deployment specification
+        vm_id_list: List of VM IDs to deploy
+        vm_iface_map: Map of VM ID to network interface configurations
+        server_config: Server configuration object
+
+    Returns:
+        Tuple of (available NUMA node IDs, error message)
+        On success, error message is None
+        On failure, available nodes is None
+    """
+    err_msg = cvm_name_check(vm_id_list[0].rsplit("-", 1)[0] if "-" in vm_id_list[0] else vm_id_list[0],
+                             len(vm_id_list))
+    if err_msg:
+        g_logger.error(err_msg)
+        return None, err_msg
+
+    available_nodes, err_msg = cvm_numa_check(vm_spec.core_num, vm_spec.memory, len(vm_id_list))
     if not available_nodes:
         g_logger.error(err_msg)
         return None, err_msg
 
-    if vm_spec.net_vf_num > 0:
-        err_msg = _ensure_sriov_vf_resources(
-            server_config.device_allocator,
-            vm_spec.net_vf_num,
-            vm_spec.max_vm_num,
-        )
-        if err_msg:
-            g_logger.error(err_msg)
-            return None, err_msg
+    g_logger.info(
+        "Phase 1 (Resource Check) passed: %d VMs, %d NUMA nodes available",
+        len(vm_id_list), len(available_nodes)
+    )
 
-    for i, cvm_name in enumerate(cvm_deploy_spec_internal.vm_id_list):
-        device_list = []
-        device_list, err_msg = cvm_device_check(cvm_name,
-                                                server_config.device_allocator,
-                                                vm_spec.net_pf_num,
-                                                vm_spec.net_vf_num)
-        if err_msg:
-            g_logger.error(err_msg)
-            cvm_resource_reclaim(cvm_name, server_config)
-            return successfully_deployed_vms, err_msg
+    return available_nodes, None
 
+
+def _phase2_allocate_resources(
+    cvm_name: str,
+    vm_spec: VmDeploySpec,
+    host_numa_id: int,
+    iface_list: List[VmInterface],
+    server_config: config,
+) -> VmDeploymentContext:
+    """
+    Phase 2: Resource Allocation
+
+    Allocate compute, network, and storage resources for a single VM:
+    - Device allocation (PF/VF)
+    - Disk image creation (system + optional data disk)
+
+    Returns:
+        VmDeploymentContext with allocated resources
+    """
+    ctx = VmDeploymentContext(
+        cvm_name=cvm_name,
+        vm_spec=vm_spec,
+        host_numa_id=host_numa_id,
+    )
+
+    device_dict, err_msg = cvm_device_alloc(
+        cvm_name,
+        vm_spec,
+        server_config,
+        iface_list
+    )
+
+    if err_msg:
+        ctx.error_message = err_msg
+        g_logger.error("Phase 2 (Resource Allocation) failed for %s: %s", cvm_name, err_msg)
+        return ctx
+
+    ctx.device_dict = device_dict
+
+    qcow2_dir = server_config.config.get("DEFAULT", "cvm_image_path")
+    qcow2_path, data_disk_path = config_disk(
+        cvm_name, qcow2_dir, [], server_config, vm_spec.disk_size
+    )
+
+    if not qcow2_path:
+        ctx.error_message = f"Disk configuration failure for {cvm_name}"
+        g_logger.error("Phase 2 (Resource Allocation) failed for %s: disk config", cvm_name)
+        return ctx
+
+    ctx.qcow2_path = qcow2_path
+    ctx.data_disk_path = data_disk_path or ""
+
+    g_logger.info(
+        "Phase 2 (Resource Allocation) passed for %s: numa=%d, devices=%s, disk=%s",
+        cvm_name, host_numa_id, device_dict, qcow2_path
+    )
+    return ctx
+
+
+def _phase3_configure_xml(
+    ctx: VmDeploymentContext,
+) -> VmDeploymentContext:
+    """
+    Phase 3: XML Configuration
+
+    Generate the VM definition XML file based on allocated resources.
+
+    Returns:
+        Updated VmDeploymentContext with XML configuration
+    """
+    if ctx.error_message:
+        return ctx
+
+    output_xml = config_xml(
+        ctx.cvm_name,
+        ctx.vm_spec,
+        ctx.qcow2_path,
+        ctx.host_numa_id,
+        ctx.device_dict,
+        ctx.data_disk_path if ctx.data_disk_path else None,
+    )
+    if not output_xml:
+        ctx.error_message = f"XML configuration failure for {ctx.cvm_name}"
+        g_logger.error("Phase 3 (XML Configuration) failed for %s", ctx.cvm_name)
+        return ctx
+
+    ctx.xml_config = output_xml
+
+    g_logger.info(
+        "Phase 3 (XML Configuration) passed for %s", ctx.cvm_name
+    )
+    return ctx
+
+
+def _phase4_execute_deployment(
+    ctx: VmDeploymentContext,
+    server_config: config,
+) -> VmDeploymentContext:
+    """
+    Phase 4: Deployment Execution
+
+    Start the VM using the generated XML configuration.
+
+    Returns:
+        Updated VmDeploymentContext with deployment result
+    """
+    if ctx.error_message:
+        return ctx
+
+    g_logger.info("config qcow2 success: %s", ctx.qcow2_path)
+    if ctx.data_disk_path:
+        g_logger.info("data disk configured: %s", ctx.data_disk_path)
+
+    time.sleep(1)
+
+    driver = libvirtDriver()
+    if driver.start_vm_by_xml(ctx.xml_config):
+        ctx.success = True
+        g_logger.info("Phase 4 (Deployment Execution) passed: CVM %s started successfully", ctx.cvm_name)
+    else:
+        ctx.error_message = f"Failed to start VM {ctx.cvm_name}"
+        g_logger.error("Phase 4 (Deployment Execution) failed for %s", ctx.cvm_name)
+
+    return ctx
+
+
+def _deploy_single_vm(
+    cvm_name: str,
+    vm_spec: VmDeploySpec,
+    host_numa_id: int,
+    iface_list: List[VmInterface],
+    server_config: config,
+) -> VmDeploymentContext:
+    """
+    Execute the full four-phase deployment pipeline for a single VM.
+
+    Phases:
+        1. Resource Check (done at batch level, skipped here)
+        2. Resource Allocation
+        3. XML Configuration
+        4. Deployment Execution
+
+    Returns:
+        VmDeploymentContext with final deployment state
+    """
+    ctx = _phase2_allocate_resources(cvm_name, vm_spec, host_numa_id, iface_list, server_config)
+    if ctx.error_message:
+        return ctx
+
+    ctx = _phase3_configure_xml(ctx)
+    if ctx.error_message:
+        return ctx
+
+    ctx = _phase4_execute_deployment(ctx, server_config)
+    return ctx
+
+
+def deploy_cvm(
+    cvm_deploy_spec_internal: VmDeploySpecInternal,
+    server_config: config,
+) -> Tuple[List[str], str]:
+    """
+    Deploy multiple CVMs using a four-phase pipeline with concurrent execution.
+
+    Phases:
+        1. Resource Check: Validate all prerequisite resources
+        2. Resource Allocation: Allocate compute, network, and storage per VM
+        3. XML Configuration: Generate VM definition XML
+        4. Deployment Execution: Start VMs
+
+    Supports concurrent VM deployment via ThreadPoolExecutor.
+
+    Args:
+        cvm_deploy_spec_internal: Internal deployment specification
+        server_config: Server configuration object
+
+    Returns:
+        Tuple of (successfully deployed VM names, error message)
+    """
+    vm_spec = cvm_deploy_spec_internal.vm_spec
+    vm_id_list = cvm_deploy_spec_internal.vm_id_list
+    successfully_deployed_vms = []
+
+    g_logger.info(
+        "Starting CVM deployment: %d VMs, spec: core_num=%d, memory=%d, disk_size=%d",
+        len(vm_id_list), vm_spec.core_num, vm_spec.memory, vm_spec.disk_size
+    )
+
+    available_nodes, err_msg = _phase1_check_resources(
+        vm_spec, vm_id_list, cvm_deploy_spec_internal.vm_iface, server_config
+    )
+    if available_nodes is None:
+        return [], err_msg
+
+    deployment_tasks = []
+    for i, cvm_name in enumerate(vm_id_list):
         node_index = i % len(available_nodes)
-        err_msg = _execute_deploy_cvm(cvm_name,
-                                      vm_spec, available_nodes[node_index],
-                                      device_list,
-                                      cvm_deploy_spec_internal.vm_iface.get(cvm_name, []),
-                                      server_config)
-        if err_msg:
-            cvm_resource_reclaim(cvm_name, server_config)
-            return successfully_deployed_vms, err_msg
+        deployment_tasks.append({
+            "cvm_name": cvm_name,
+            "vm_spec": vm_spec,
+            "host_numa_id": available_nodes[node_index],
+            "iface_list": cvm_deploy_spec_internal.vm_iface.get(cvm_name, []),
+        })
 
-        successfully_deployed_vms.append(cvm_name)
+    max_workers = min(len(deployment_tasks), constants.MAX_CVM_NUM_PER_NODE)
+    g_logger.info("Phase 2-4: Deploying %d VMs concurrently (max_workers=%d)", len(deployment_tasks), max_workers)
 
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_task = {
+            executor.submit(
+                _deploy_single_vm,
+                task["cvm_name"],
+                task["vm_spec"],
+                task["host_numa_id"],
+                task["iface_list"],
+                server_config,
+            ): task["cvm_name"]
+            for task in deployment_tasks
+        }
+
+        for future in as_completed(future_to_task):
+            cvm_name = future_to_task[future]
+            try:
+                ctx = future.result()
+                if ctx.success:
+                    successfully_deployed_vms.append(cvm_name)
+                else:
+                    g_logger.error(
+                        "Deployment failed for %s: %s", cvm_name, ctx.error_message
+                    )
+                    cvm_resource_reclaim(cvm_name, server_config)
+                    return successfully_deployed_vms, ctx.error_message
+            except Exception as e:
+                g_logger.error("Unexpected error deploying %s: %s", cvm_name, e)
+                cvm_resource_reclaim(cvm_name, server_config)
+                return successfully_deployed_vms, str(e)
+
+    g_logger.info(
+        "CVM deployment completed: %d/%d VMs deployed successfully",
+        len(successfully_deployed_vms), len(vm_id_list)
+    )
     return successfully_deployed_vms, None
 
 def undeploy_cvm(vm_id: str, server_config: config) -> bool:

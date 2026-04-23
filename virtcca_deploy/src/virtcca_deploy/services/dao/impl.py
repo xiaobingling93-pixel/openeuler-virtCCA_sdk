@@ -401,3 +401,56 @@ class DeviceAllocationDAO(DeviceAllocationDAOInterface):
         except Exception as e:
             logger.error(f"Failed to get device allocation by mac_address {mac_address}: {e}")
             raise
+
+    def allocate_devices_by_mac(self, mac_addresses: List[str], vm_id: str) -> dict:
+        if not mac_addresses:
+            raise ValueError("mac_addresses list cannot be empty")
+        if not vm_id:
+            raise ValueError("vm_id cannot be empty")
+
+        allocated_devices = {}
+        try:
+            for mac_address in mac_addresses:
+                updated = (
+                    DeviceAllocation.query
+                    .filter(
+                        DeviceAllocation.mac_address == mac_address,
+                        DeviceAllocation.status == DeviceAllocation.DEVICE_STATUS_AVAILABLE
+                    )
+                    .update({
+                        "status": DeviceAllocation.DEVICE_STATUS_ALLOCATED,
+                        "allocated_vm_id": vm_id,
+                        "allocated_at": db.func.current_timestamp(),
+                        "released_at": None
+                    }, synchronize_session=False)
+                )
+
+                if updated != 1:
+                    logger.error(
+                        f"Device with MAC {mac_address} is not available "
+                        f"(already allocated or not exists) for VM {vm_id}"
+                    )
+                    db.session.rollback()
+                    return {}
+
+                device = DeviceAllocation.query.filter_by(mac_address=mac_address).first()
+                allocated_devices[mac_address] = device.bdf
+
+            db.session.commit()
+
+            logger.info(
+                f"Allocated {len(allocated_devices)} device(s) by MAC for VM {vm_id}: "
+                f"{allocated_devices}"
+            )
+
+            return allocated_devices
+
+        except Exception as e:
+            db.session.rollback()
+
+            logger.error(
+                f"Batch allocation failed for VM {vm_id}: {str(e)}. "
+                f"Transaction rolled back."
+            )
+
+            raise RuntimeError(f"Batch allocation failed: {e}") from e
