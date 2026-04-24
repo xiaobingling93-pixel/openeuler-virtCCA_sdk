@@ -136,17 +136,33 @@ class NetworkConfigDAO(NetworkConfigDAOInterface):
             logger.error(f"Failed to count network configs by status {status}: {e}")
             raise
 
-    def mark_as_used(self, configs: List[NetworkConfig]) -> bool:
-        """Mark network configs as used"""
-        return self.update_status_batch(configs, NetworkConfig.STATUS_USED)
+    def mark_as_used(self, configs: List[NetworkConfig], vm_id: Optional[str] = None) -> bool:
+        """Mark network configs as used and optionally associate with a VM ID"""
+        try:
+            for config in configs:
+                config.status = NetworkConfig.STATUS_USED
+                config.updated_at = db.func.current_timestamp()
+                if vm_id is not None:
+                    config.vm_id = vm_id
+            db.session.commit()
+            logger.info(
+                f"Marked {len(configs)} network configs as used"
+                f"{f' for VM {vm_id}' if vm_id else ''}"
+            )
+            return True
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Failed to mark network configs as used: {e}")
+            raise
 
     def mark_as_unused_by_mac(self, mac_addresses: List[str]) -> bool:
-        """Mark network configs as unused by MAC addresses"""
+        """Mark network configs as unused by MAC addresses and clear vm_id"""
         try:
             for mac in mac_addresses:
                 config = NetworkConfig.query.filter_by(mac_address=mac).first()
                 if config:
                     config.status = NetworkConfig.STATUS_UNUSED
+                    config.vm_id = None
                     config.updated_at = db.func.current_timestamp()
                     logger.info(f"Marked config as unused for MAC {mac}")
             db.session.commit()
@@ -155,6 +171,36 @@ class NetworkConfigDAO(NetworkConfigDAOInterface):
         except Exception as e:
             db.session.rollback()
             logger.error(f"Failed to mark configs as unused: {e}")
+            raise
+
+    def get_by_vm_id(self, vm_id: str) -> List[NetworkConfig]:
+        """Get network configs associated with a specific VM ID"""
+        try:
+            return NetworkConfig.query.filter_by(vm_id=vm_id).all()
+        except Exception as e:
+            logger.error(f"Failed to get network configs by vm_id {vm_id}: {e}")
+            raise
+
+    def mark_as_unused_by_vm_id(self, vm_id: str) -> bool:
+        """Mark network configs as unused by VM ID and clear vm_id field"""
+        try:
+            configs = NetworkConfig.query.filter_by(vm_id=vm_id).all()
+            if not configs:
+                logger.warning(f"No network configs found for VM ID {vm_id}")
+                return True
+
+            for config in configs:
+                config.status = NetworkConfig.STATUS_UNUSED
+                config.vm_id = None
+                config.updated_at = db.func.current_timestamp()
+                logger.info(f"Marked config as unused for VM {vm_id}, MAC: {config.mac_address}")
+
+            db.session.commit()
+            logger.info(f"Marked {len(configs)} configs as unused for VM {vm_id}")
+            return True
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Failed to mark configs as unused for VM {vm_id}: {e}")
             raise
 
 
@@ -401,3 +447,56 @@ class DeviceAllocationDAO(DeviceAllocationDAOInterface):
         except Exception as e:
             logger.error(f"Failed to get device allocation by mac_address {mac_address}: {e}")
             raise
+
+    def allocate_devices_by_mac(self, mac_addresses: List[str], vm_id: str) -> dict:
+        if not mac_addresses:
+            raise ValueError("mac_addresses list cannot be empty")
+        if not vm_id:
+            raise ValueError("vm_id cannot be empty")
+
+        allocated_devices = {}
+        try:
+            for mac_address in mac_addresses:
+                updated = (
+                    DeviceAllocation.query
+                    .filter(
+                        DeviceAllocation.mac_address == mac_address,
+                        DeviceAllocation.status == DeviceAllocation.DEVICE_STATUS_AVAILABLE
+                    )
+                    .update({
+                        "status": DeviceAllocation.DEVICE_STATUS_ALLOCATED,
+                        "allocated_vm_id": vm_id,
+                        "allocated_at": db.func.current_timestamp(),
+                        "released_at": None
+                    }, synchronize_session=False)
+                )
+
+                if updated != 1:
+                    logger.error(
+                        f"Device with MAC {mac_address} is not available "
+                        f"(already allocated or not exists) for VM {vm_id}"
+                    )
+                    db.session.rollback()
+                    return {}
+
+                device = DeviceAllocation.query.filter_by(mac_address=mac_address).first()
+                allocated_devices[mac_address] = device.bdf
+
+            db.session.commit()
+
+            logger.info(
+                f"Allocated {len(allocated_devices)} device(s) by MAC for VM {vm_id}: "
+                f"{allocated_devices}"
+            )
+
+            return allocated_devices
+
+        except Exception as e:
+            db.session.rollback()
+
+            logger.error(
+                f"Batch allocation failed for VM {vm_id}: {str(e)}. "
+                f"Transaction rolled back."
+            )
+
+            raise RuntimeError(f"Batch allocation failed: {e}") from e

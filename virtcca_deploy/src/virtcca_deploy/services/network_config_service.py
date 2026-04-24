@@ -7,7 +7,7 @@ Handles upload, validation, storage, and IP allocation from database
 
 import logging
 import json
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 from virtcca_deploy.common.constants import ValidationError
 from virtcca_deploy.services.db_service import db, NetworkConfig
@@ -80,7 +80,7 @@ class NetworkConfigService:
         1. Group available interfaces by VLAN ID
         2. Validate that each VLAN group has sufficient interfaces for all VMs
         3. Allocate interfaces ensuring each VM gets the same VLAN ID distribution
-        4. Mark allocated interfaces as used in database
+        4. Mark allocated interfaces as used in database with associated vm_id
 
         :param node_name: Target node name for interface allocation
         :param pf_num: Number of PF interfaces per VM (determines total interfaces needed)
@@ -114,7 +114,7 @@ class NetworkConfigService:
                     )
 
                 # 步骤 3：委托给 VLAN 感知分配逻辑
-                success, vm_ip_map, vm_iface_map, allocated_configs, error_msg = (
+                success, vm_ip_map, vm_iface_map, vm_configs_map, error_msg = (
                     self._allocate_single_node_with_vlan_grouping(
                         unused_configs=unused_configs,
                         node_name=node_name,
@@ -126,11 +126,13 @@ class NetworkConfigService:
                 if not success:
                     return False, vm_ip_map, vm_iface_map, error_msg
 
-                # 步骤 4：在数据库中将已分配的配置标记为已使用
-                self._mark_configs_as_used(allocated_configs)
+                # 步骤 4：在数据库中将已分配的配置标记为已使用，并关联 vm_id
+                for vm_id, configs in vm_configs_map.items():
+                    self._mark_configs_as_used(configs, vm_id)
 
+                total_allocated = sum(len(configs) for configs in vm_configs_map.values())
                 logger.info(
-                    f"Allocated {len(allocated_configs)} interface(s) for "
+                    f"Allocated {total_allocated} interface(s) for "
                     f"{len(vm_id_list)} VM(s) on node {node_name}"
                 )
                 return True, vm_ip_map, vm_iface_map, ""
@@ -210,18 +212,19 @@ class NetworkConfigService:
         :param node_name: 目标节点名称（用于日志记录）
         :param pf_num: 每台虚拟机需要分配的 PF 接口数量
         :param vm_id_list: 需要分配接口的虚拟机 ID 列表
-        :return: 元组 (success, vm_ip_map, vm_iface_map, allocated_configs, error_message)
+        :return: 元组 (success, vm_ip_map, vm_iface_map, vm_configs_map, error_message)
+                 - vm_configs_map: Dict mapping VM ID to list of allocated NetworkConfig objects
         """
         num_vms = len(vm_id_list)
         vm_ip_map = {}
         vm_iface_map = {}
-        allocated_configs = []
+        vm_configs_map = {}
 
         # 步骤 1：按 VLAN ID 分组可用接口
         vlan_groups = self._group_configs_by_vlan(unused_configs)
 
         if not vlan_groups:
-            return False, vm_ip_map, vm_iface_map, [], (
+            return False, vm_ip_map, vm_iface_map, {}, (
                 f"No valid VLAN groups found for node '{node_name}'"
             )
 
@@ -231,7 +234,7 @@ class NetworkConfigService:
         num_vlans = len(vlan_ids)
 
         if num_vlans < pf_num:
-            return False, vm_ip_map, vm_iface_map, [], (
+            return False, vm_ip_map, vm_iface_map, {}, (
                 f"Insufficient VLAN IDs: need {pf_num} different VLAN IDs, "
                 f"but node '{node_name}' only has {num_vlans} VLAN IDs "
                 f"(available VLANs: {vlan_ids})"
@@ -252,7 +255,7 @@ class NetworkConfigService:
         for vlan_id in selected_vlan_ids:
             available_in_vlan = len(vlan_groups[vlan_id])
             if available_in_vlan < num_vms:
-                return False, vm_ip_map, vm_iface_map, [], (
+                return False, vm_ip_map, vm_iface_map, {}, (
                     f"Insufficient interfaces in VLAN {vlan_id}: "
                     f"need {num_vms} interface(s) (1 per VM), "
                     f"but only {available_in_vlan} available"
@@ -265,6 +268,7 @@ class NetworkConfigService:
         for vm_id in vm_id_list:
             vm_ips = []
             vm_ifaces = []
+            vm_configs = []
 
             # 从每个选中的 VLAN 组为当前虚拟机分配 1 个接口
             for vlan_id in selected_vlan_ids:
@@ -281,69 +285,100 @@ class NetworkConfigService:
                     "subnet_mask": config.subnet_mask,
                     "gateway": config.gateway
                 })
-                allocated_configs.append(config)
+                vm_configs.append(config)
 
                 # 更新分配索引，指向下一个可用接口
                 vlan_allocation_index[vlan_id] = config_index + 1
 
             vm_ip_map[vm_id] = vm_ips
             vm_iface_map[vm_id] = vm_ifaces
+            vm_configs_map[vm_id] = vm_configs
 
             logger.debug(
                 f"Allocated {len(vm_ifaces)} interface(s) for VM '{vm_id}', "
                 f"VLAN ID set: {[iface['vlan_id'] for iface in vm_ifaces]}"
             )
 
-        return True, vm_ip_map, vm_iface_map, allocated_configs, ""
+        return True, vm_ip_map, vm_iface_map, vm_configs_map, ""
 
     def release_ips_for_vms(self, vm_id_list: List[str]) -> Tuple[bool, str]:
         """
         释放虚拟机的 IP 地址（将配置标记为未使用）
+
+        直接从 NetworkConfig 表中根据 vm_id 查找对应的网络配置，
+        然后将配置标记为未使用，并清空 vm_id 字段。
 
         :param vm_id_list: 需要释放的虚拟机 ID 列表
         :return: (success, error_message) 元组
         """
         with self._lock:
             try:
-                from virtcca_deploy.services.db_service import VmInstance
-                from virtcca_deploy.services.dao import get_dao_registry
-                vm_instance_dao = get_dao_registry().vm_instance_dao
+                if not vm_id_list:
+                    logger.warning("Empty VM ID list for release")
+                    return True, ""
 
-                mac_addresses_to_release = []
+                total_released = 0
                 for vm_id in vm_id_list:
-                    vm_instance = vm_instance_dao.get_by_vm_id(vm_id)
-                    if not vm_instance:
-                        logger.warning(f"VM {vm_id} not found, skipping IP release")
+                    configs = self._network_config_dao.get_by_vm_id(vm_id)
+                    if not configs:
+                        logger.warning(f"No network configs found for VM {vm_id}")
                         continue
 
-                    if not vm_instance.iface_list:
-                        logger.warning(f"VM {vm_id} has no iface_list, skipping IP release")
-                        continue
+                    success = self._network_config_dao.mark_as_unused_by_vm_id(vm_id)
+                    if not success:
+                        error_msg = f"Failed to release IPs for VM {vm_id}"
+                        logger.error(error_msg)
+                        return False, error_msg
 
-                    try:
-                        iface_list = json.loads(vm_instance.iface_list)
-                        for iface_info in iface_list:
-                            mac = iface_info.get("mac_address")
-                            if mac:
-                                mac_addresses_to_release.append(mac)
-                                logger.info(
-                                    f"Queued IP release for MAC {mac} from VM {vm_id}"
-                                )
-                    except json.JSONDecodeError as e:
-                        logger.error(
-                            f"Failed to parse iface_list for VM {vm_id}: {e}"
-                        )
-                        continue
+                    total_released += len(configs)
+                    logger.info(
+                        f"Released {len(configs)} interface(s) for VM {vm_id}"
+                    )
 
-                if mac_addresses_to_release:
-                    self._network_config_dao.mark_as_unused_by_mac(mac_addresses_to_release)
-                
-                logger.info(f"Released IPs for {len(vm_id_list)} VM(s)")
+                logger.info(
+                    f"Released {total_released} interface(s) for {len(vm_id_list)} VM(s)"
+                )
                 return True, ""
 
             except Exception as e:
                 db.session.rollback()
                 error_msg = f"Failed to release IPs: {str(e)}"
+                logger.error(error_msg)
+                return False, error_msg
+
+    def _release_macs(self, mac_addresses: List[str]):
+        """
+        将指定的 MAC 地址对应的网络配置标记为未使用
+
+        :param mac_addresses: MAC 地址列表
+        """
+        self._network_config_dao.mark_as_unused_by_mac(mac_addresses)
+        logger.info(f"Marked {len(mac_addresses)} MAC addresses as unused")
+
+    def release_interfaces_by_macs(self, mac_addresses: List[str]) -> Tuple[bool, str]:
+        """
+        释放指定的网络接口（用于虚机部署失败时回滚）
+
+        当虚机部署失败时，已分配但未使用的网络接口需要释放回资源池。
+        此方法直接将指定的 MAC 地址对应的网络配置标记为未使用。
+
+        :param mac_addresses: 需要释放的 MAC 地址列表
+        :return: (success, error_message) 元组
+        """
+        with self._lock:
+            try:
+                if not mac_addresses:
+                    logger.warning("Empty MAC address list provided")
+                    return True, ""
+
+                self._release_macs(mac_addresses)
+
+                logger.info(f"Released {len(mac_addresses)} interface(s) for failed deployment")
+                return True, ""
+
+            except Exception as e:
+                db.session.rollback()
+                error_msg = f"Failed to release interfaces: {str(e)}"
                 logger.error(error_msg)
                 return False, error_msg
 
@@ -435,13 +470,16 @@ class NetworkConfigService:
         """
         return self._network_config_dao.get_unused_by_node(node_name)
 
-    def _mark_configs_as_used(self, configs: List[NetworkConfig]):
+    def _mark_configs_as_used(
+        self, configs: List[NetworkConfig], vm_id: Optional[str] = None
+    ):
         """
-        Mark network configs as used
+        Mark network configs as used and optionally associate with a VM ID
 
         :param configs: List of NetworkConfig objects to mark
+        :param vm_id: Optional VM ID to associate with the configs
         """
-        self._network_config_dao.mark_as_used(configs)
+        self._network_config_dao.mark_as_used(configs, vm_id)
 
 
 g_network_config_service = None

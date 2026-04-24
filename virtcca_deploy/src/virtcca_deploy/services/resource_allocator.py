@@ -116,7 +116,6 @@ class IpAllocator(NetworkResourceAllocator):
         self._lock = __import__('gevent').lock.RLock()
         self.logger = logging.getLogger(__name__)
         self._network_config_service = get_network_config_service()
-        self._vm_allocation_tracker: Dict[str, Dict] = {}
 
     def allocate(self, request: NetAllocReq) -> NetAllocResp:
         """
@@ -165,118 +164,20 @@ class IpAllocator(NetworkResourceAllocator):
                     message=f"pf_num must be greater than 0"
                 )
 
-            
             try:
-                # 调用方法并捕获原始返回值
-                raw_result = self._network_config_service.allocate_ips_for_deployment(
-                    node_name=node_name,
-                    pf_num=request.pf_num,
-                    vm_id_list=request.vm_id_list
-                )
-                
-                # 调试日志：记录原始返回值的类型和值
-                self.logger.debug(
-                    f"[DEBUG:L{165}] Raw return value type: {type(raw_result)}, "
-                    f"value: {raw_result}"
-                )
-                
-                # 验证返回值是否可迭代
-                if not hasattr(raw_result, '__iter__'):
-                    error_msg = (
-                        f"allocate_ips_for_deployment returned non-iterable type: "
-                        f"{type(raw_result).__name__}"
+                success, vm_ip_map, vm_iface_map, error_msg = (
+                    self._network_config_service.allocate_ips_for_deployment(
+                        node_name=node_name,
+                        pf_num=request.pf_num,
+                        vm_id_list=request.vm_id_list
                     )
-                    self.logger.error(f"[DEBUG:L{172}] {error_msg}")
-                    for vm_id in request.vm_id_list:
-                        failed_vms[vm_id] = error_msg
-                    return NetAllocResp(
-                        success=False,
-                        vm_iface_map=vm_iface_map,
-                        failed_vms=failed_vms,
-                        message=error_msg
-                    )
-                
-                # 转换为列表以检查长度
-                result_list = list(raw_result) if not isinstance(raw_result, list) else raw_result
-                result_length = len(result_list)
-                
-                self.logger.debug(
-                    f"[DEBUG:L{187}] Return value has {result_length} elements: {result_list}"
-                )
-                
-                # 验证预期的返回值数量
-                expected_values = 4  # (success, vm_ip_map, vm_iface_map, error_message)
-                if result_length != expected_values:
-                    error_msg = (
-                        f"allocate_ips_for_deployment returned {result_length} values, "
-                        f"expected {expected_values}. Values: {result_list}"
-                    )
-                    self.logger.error(f"[DEBUG:L{196}] {error_msg}")
-                    self.logger.error(
-                        f"[DEBUG:L{197}] Stack trace:\n{traceback.format_stack()}"
-                    )
-                    for vm_id in request.vm_id_list:
-                        failed_vms[vm_id] = error_msg
-                    return NetAllocResp(
-                        success=False,
-                        vm_iface_map=vm_iface_map,
-                        failed_vms=failed_vms,
-                        message=error_msg
-                    )
-                
-                # 使用已验证的长度安全解包
-                success, vm_ip_map, vm_iface_map, error_msg = result_list
-                
-                self.logger.debug(
-                    f"[DEBUG:L{212}] Unpacked successfully: "
-                    f"success={success}, vm_ip_map keys={list(vm_ip_map.keys()) if vm_ip_map else None}, "
-                    f"vm_iface_map keys={list(vm_iface_map.keys()) if vm_iface_map else None}, "
-                    f"error_msg={error_msg}"
-                )
-                
-            except ValueError as unpack_error:
-                # 专门捕获解包错误
-                error_details = str(unpack_error)
-                self.logger.error(
-                    f"[DEBUG:L{221}] Unpacking error at line 157: {error_details}"
-                )
-                self.logger.error(
-                    f"[DEBUG:L{223}] Full stack trace:\n{traceback.format_exc()}"
-                )
-                
-                # 尝试获取原始结果以进行调试
-                try:
-                    self.logger.error(
-                        f"[DEBUG:L{228}] Attempting to diagnose unpacking error..."
-                    )
-                    self.logger.error(
-                        f"[DEBUG:L{229}] This error typically occurs when the number of "
-                        f"values returned doesn't match the number of variables"
-                    )
-                except Exception:
-                    pass
-                
-                for vm_id in request.vm_id_list:
-                    failed_vms[vm_id] = f"IP allocation unpacking error: {error_details}"
-                
-                return NetAllocResp(
-                    success=False,
-                    vm_iface_map=vm_iface_map,
-                    failed_vms=failed_vms,
-                    message=f"Internal error during IP allocation: {error_details}"
                 )
             except Exception as alloc_error:
-                # 捕获分配过程中的任何其他错误
                 self.logger.error(
-                    f"[DEBUG:L{247}] Unexpected error during allocation: {alloc_error}"
+                    f"Unexpected error during allocation: {alloc_error}"
                 )
-                self.logger.error(
-                    f"[DEBUG:L{249}] Stack trace:\n{traceback.format_exc()}"
-                )
-                
                 for vm_id in request.vm_id_list:
                     failed_vms[vm_id] = f"IP allocation error: {str(alloc_error)}"
-                
                 return NetAllocResp(
                     success=False,
                     vm_iface_map=vm_iface_map,
@@ -289,7 +190,6 @@ class IpAllocator(NetworkResourceAllocator):
                 for vm_id in request.vm_id_list:
                     if vm_id not in failed_vms:
                         failed_vms[vm_id] = error_msg
-
                 return NetAllocResp(
                     success=False,
                     vm_iface_map=vm_iface_map,
@@ -298,13 +198,6 @@ class IpAllocator(NetworkResourceAllocator):
                 )
 
             for vm_id in request.vm_id_list:
-                self._vm_allocation_tracker[vm_id] = {
-                    "node_ip": request.node_ip,
-                    "node_name": node_name,
-                    "interfaces": vm_iface_map.get(vm_id, []),
-                    "pf_num": request.pf_num
-                }
-
                 self.logger.info(
                     f"Allocated {request.pf_num} interface(s) to VM {vm_id} "
                     f"on node {node_name}"
@@ -321,57 +214,43 @@ class IpAllocator(NetworkResourceAllocator):
         """
         释放 VM 占用的 IP 地址
 
-        :param request: 网络释放请求
-        :return: 释放结果
+        支持部分释放成功：某些 VM 释放成功，某些失败。
+        对于每个 VM，如果其 iface_list 解析失败，立即跳过该 VM 并记录错误。
+
+        :param request: 网络释放请求，包含 vm_id_list
+        :return: 释放结果，包含 released_vms、failed_vms
         """
         released_vms = []
         failed_vms = {}
 
         with self._lock:
-            for vm_id in request.vm_id_list:
-                if vm_id in self._vm_allocation_tracker:
-                    del self._vm_allocation_tracker[vm_id]
-                    released_vms.append(vm_id)
-                    self.logger.info(f"Released IP allocation for VM {vm_id}")
-                else:
-                    self.logger.warning(
-                        f"VM {vm_id} has no allocated IP to release"
+            try:
+                success, error_msg = self._network_config_service.release_ips_for_vms(
+                    vm_id_list=request.vm_id_list
+                )
+
+                if success:
+                    released_vms = request.vm_id_list
+                    self.logger.info(
+                        f"Released IPs for {len(released_vms)} VM(s)"
                     )
+                else:
+                    for vm_id in request.vm_id_list:
+                        failed_vms[vm_id] = error_msg
+                    self.logger.error(f"Failed to release IPs: {error_msg}")
 
-            success, error_msg = self._network_config_service.release_ips_for_vms(
-                request.vm_id_list
-            )
-
-            if not success:
-                self.logger.error(f"Failed to release IPs in database: {error_msg}")
+            except Exception as release_error:
+                self.logger.error(
+                    f"Unexpected error during release: {release_error}"
+                )
+                for vm_id in request.vm_id_list:
+                    failed_vms[vm_id] = f"IP release error: {str(release_error)}"
 
         return NetReleaseResp(
-            success=True,
+            success=len(failed_vms) == 0,
             released_vms=released_vms,
             failed_vms=failed_vms
         )
-
-    def get_allocated_ip(self, vm_id: str) -> Optional[List[str]]:
-        """
-        查询 VM 已分配的 IP
-
-        :param vm_id: VM ID
-        :return: IP 地址列表，如果未分配则返回 None
-        """
-        with self._lock:
-            if vm_id in self._vm_allocation_tracker:
-                return self._vm_allocation_tracker[vm_id]["ip_list"]
-            return None
-
-    def get_allocation_details(self, vm_id: str) -> Optional[Dict]:
-        """
-        获取 VM 的完整 IP 分配详情
-
-        :param vm_id: VM ID
-        :return: 分配详情字典，包含 IP、VLAN、子网掩码、网关等
-        """
-        with self._lock:
-            return self._vm_allocation_tracker.get(vm_id)
 
 
 class DeviceManagerAllocator(DeviceAllocator):
@@ -486,40 +365,101 @@ class DeviceManagerAllocator(DeviceAllocator):
         """
         为 VM 分配 PCI 设备
 
-        从数据库中查询可用设备，按 PF/VF 类型和 NUMA 亲和性匹配，
-        在事务中完成分配标记，保证原子性。
+        支持两种分配模式：
+        1. MAC 地址分配：当 request.iface 非空时，根据 MAC 地址列表分配设备
+           - 从 iface 中提取 MAC 地址
+           - 根据 MAC 地址查找对应设备
+           - 返回 {MAC: BDF} 字典结构
+        2. 传统分配：当 request.iface 为空时，按 PF/VF 数量分配
+           - 从数据库中查询可用设备
+           - 按 PF/VF 类型和 NUMA 亲和性匹配
+           - 返回 BDF 列表（保持向后兼容）
 
-        :param request: 设备分配请求，包含 vm_id、pf_num、vf_num、numa_node
-        :return: 分配结果，包含成功标志和分配的设备 BDF 列表
+        :param request: 设备分配请求，包含 vm_id、pf_num、vf_num、iface、numa_node
+        :return: 分配结果，包含成功标志和分配的设备列表
         """
-        allocated_devices = []
+        try:
+            if request.is_mac_based_allocation():
+                return self._allocate_by_mac(request)
+            else:
+                return self._allocate_by_count(request)
+        except Exception as e:
+            db.session.rollback()
+            self.logger.error(f"Failed to allocate devices for VM {request.vm_id}: {e}")
+            return DeviceAllocResp(success=False, device_dict={})
+
+    def _allocate_by_mac(self, request: DeviceAllocReq) -> DeviceAllocResp:
+        """
+        根据 MAC 地址列表分配设备
+
+        通过 DAO 层执行批量分配操作，确保：
+        1. 所有数据库操作通过 DAO 层抽象进行
+        2. 检索所有可用设备
+        3. 在更新前立即验证设备状态（防止并发竞争）
+        4. 执行批量更新操作
+        5. 完整的错误处理和事务管理
+
+        :param request: 包含 MAC 地址的分配请求
+        :return: 分配结果，device_dict 为 {MAC: BDF} 字典
+        """
+        mac_addresses = request.get_mac_addresses()
+
+        try:
+            allocated_devices = self._dao.allocate_devices_by_mac(
+                mac_addresses=mac_addresses,
+                vm_id=request.vm_id
+            )
+
+            if allocated_devices:
+                return DeviceAllocResp(success=True, device_dict=allocated_devices)
+            else:
+                self.logger.warning(
+                    f"No devices allocated for VM {request.vm_id} "
+                    f"(all devices unavailable or excluded)"
+                )
+                return DeviceAllocResp(success=False, device_dict={})
+
+        except Exception as e:
+            self.logger.error(
+                f"MAC-based allocation failed for VM {request.vm_id}: {e}"
+            )
+            return DeviceAllocResp(success=False, device_dict={})
+
+    def _allocate_by_count(self, request: DeviceAllocReq) -> DeviceAllocResp:
+        """
+        按 PF/VF 数量分配设备（传统模式）
+
+        :param request: 包含 pf_num、vf_num 的分配请求
+        :return: 分配结果，device_dict 为 {MAC: BDF} 字典
+        """
+        allocated_devices = {}
         try:
             pf_num = request.pf_num
             vf_num = request.vf_num
 
             if pf_num > 0:
-                pf_list = self._allocate_devices_by_type(
+                pf_dict = self._allocate_devices_by_type(
                     request.vm_id, DeviceTypeConfig.DEVICE_TYPE_NET_PF, pf_num, request.numa_node
                 )
-                allocated_devices.extend(pf_list)
+                allocated_devices.update(pf_dict)
 
             if vf_num > 0:
-                vf_list = self._allocate_devices_by_type(
+                vf_dict = self._allocate_devices_by_type(
                     request.vm_id, DeviceTypeConfig.DEVICE_TYPE_NET_VF, vf_num, request.numa_node
                 )
-                allocated_devices.extend(vf_list)
+                allocated_devices.update(vf_dict)
 
             db.session.commit()
             self.logger.info(
                 f"Allocated {len(allocated_devices)} device(s) for VM {request.vm_id}: "
                 f"{allocated_devices}"
             )
-            return DeviceAllocResp(success=True, device_list=allocated_devices)
+            return DeviceAllocResp(success=True, device_dict=allocated_devices)
 
         except Exception as e:
             db.session.rollback()
             self.logger.error(f"Failed to allocate devices for VM {request.vm_id}: {e}")
-            return DeviceAllocResp(success=False, device_list=[])
+            return DeviceAllocResp(success=False, device_dict={})
 
     def release(self, request: DeviceReleaseReq) -> DeviceReleaseResp:
         """
@@ -664,7 +604,7 @@ class DeviceManagerAllocator(DeviceAllocator):
     # ========== 内部方法：数据库操作 ==========
 
     def _allocate_devices_by_type(self, vm_id: str, device_type: str,
-                                  count: int, numa_node: Optional[int] = None) -> List[str]:
+                                  count: int, numa_node: Optional[int] = None) -> Dict[str, str]:
         """
         按类型分配指定数量的设备
 
@@ -672,7 +612,7 @@ class DeviceManagerAllocator(DeviceAllocator):
         :param device_type: 设备类型（如 DeviceTypeConfig.DEVICE_TYPE_NET_PF）
         :param count: 需要分配的数量
         :param numa_node: 可选的 NUMA 节点过滤
-        :return: 分配的设备 BDF 列表
+        :return: {MAC: BDF} 字典
         :raises RuntimeError: 可用设备不足时
         """
         query = DeviceAllocation.query.filter_by(
@@ -691,15 +631,16 @@ class DeviceManagerAllocator(DeviceAllocator):
                 f"{f' on NUMA node {numa_node}' if numa_node is not None else ''}"
             )
 
-        allocated_bdfs = []
+        allocated_dict = {}
         for device in available:
             device.status = DeviceAllocation.DEVICE_STATUS_ALLOCATED
             device.allocated_vm_id = vm_id
             device.allocated_at = datetime.now()
             device.released_at = None
-            allocated_bdfs.append(device.bdf)
+            mac_addr = device.mac_address if device.mac_address else f"unknown_{device.bdf}"
+            allocated_dict[mac_addr] = device.bdf
 
-        return allocated_bdfs
+        return allocated_dict
 
     def _insert_device_record(self, dev_info: Dict):
         """
