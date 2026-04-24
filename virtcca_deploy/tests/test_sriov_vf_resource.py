@@ -273,7 +273,7 @@ class TestDeployCvmSriovIntegration:
     @patch('virtcca_deploy.services.virt_service.cvm_numa_check')
     @patch('virtcca_deploy.services.virt_service._deploy_single_vm')
     def test_deploy_cvm_with_vf_required(
-        self, mock_deploy_single, mock_numa_check, deploy_spec, mock_config
+        self, mock_deploy_single, mock_numa_check, deploy_spec, mock_config, app
     ):
         from virtcca_deploy.services.virt_service import VmDeploymentContext
         from virtcca_deploy.common.data_model import VmDeploySpec
@@ -292,7 +292,8 @@ class TestDeployCvmSriovIntegration:
 
         with patch('virtcca_deploy.services.virt_service.cvm_device_alloc') as mock_device_alloc:
             mock_device_alloc.return_value = ([], None)
-            virt_service.deploy_cvm(deploy_spec, mock_config)
+            with app.app_context():
+                virt_service.deploy_cvm(deploy_spec, mock_config)
 
         mock_deploy_single.assert_called_once()
 
@@ -310,7 +311,7 @@ class TestDeployCvmSriovIntegration:
     @patch('virtcca_deploy.services.virt_service.cvm_numa_check')
     @patch('virtcca_deploy.services.virt_service._deploy_single_vm')
     def test_deploy_cvm_with_pf_required(
-        self, mock_deploy_single, mock_numa_check, deploy_spec, mock_config, vm_spec
+        self, mock_deploy_single, mock_numa_check, deploy_spec, mock_config, vm_spec, app
     ):
         from virtcca_deploy.services.virt_service import VmDeploymentContext
         from virtcca_deploy.common.data_model import VmDeploySpec
@@ -328,14 +329,15 @@ class TestDeployCvmSriovIntegration:
 
         with patch('virtcca_deploy.services.virt_service.cvm_device_alloc') as mock_device_alloc:
             mock_device_alloc.return_value = (["0000:3b:00.0"], None)
-            virt_service.deploy_cvm(deploy_spec, mock_config)
+            with app.app_context():
+                virt_service.deploy_cvm(deploy_spec, mock_config)
 
         mock_deploy_single.assert_called_once()
 
     @patch('virtcca_deploy.services.virt_service.cvm_numa_check')
     @patch('virtcca_deploy.services.virt_service._deploy_single_vm')
     def test_deploy_cvm_with_no_device_required(
-        self, mock_deploy_single, mock_numa_check, deploy_spec, mock_config, vm_spec
+        self, mock_deploy_single, mock_numa_check, deploy_spec, mock_config, vm_spec, app
     ):
         from virtcca_deploy.services.virt_service import VmDeploymentContext
         from virtcca_deploy.common.data_model import VmDeploySpec
@@ -353,6 +355,7 @@ class TestDeployCvmSriovIntegration:
 
         with patch('virtcca_deploy.services.virt_service.cvm_device_alloc') as mock_device_alloc:
             mock_device_alloc.return_value = ([], None)
-            virt_service.deploy_cvm(deploy_spec, mock_config)
+            with app.app_context():
+                virt_service.deploy_cvm(deploy_spec, mock_config)
 
         mock_deploy_single.assert_called_once()

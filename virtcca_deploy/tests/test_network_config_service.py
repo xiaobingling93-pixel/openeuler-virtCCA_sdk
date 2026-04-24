@@ -247,9 +247,14 @@ class TestNetworkConfigService:
             assert "compute01-1" in vm_ip_map
             assert "compute01-2" in vm_ip_map
 
-            assert len(NetworkConfig.query.filter_by(
+            used_configs = NetworkConfig.query.filter_by(
                 status=NetworkConfig.STATUS_USED
-            ).all()) == 2
+            ).all()
+            assert len(used_configs) == 2
+
+            vm_id_set = {config.vm_id for config in used_configs}
+            assert "compute01-1" in vm_id_set
+            assert "compute01-2" in vm_id_set
 
     def test_allocate_ips_node_not_found(self, app, yaml_config_file):
         """Test IP allocation with non-existent node"""
