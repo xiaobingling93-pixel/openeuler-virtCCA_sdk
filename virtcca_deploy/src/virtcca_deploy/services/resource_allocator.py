@@ -525,9 +525,7 @@ class DeviceManagerAllocator(DeviceAllocator):
             return
 
         try:
-            existing_bdfs = {
-                row.bdf for row in DeviceAllocation.query.with_entities(DeviceAllocation.bdf).all()
-            }
+            existing_bdfs = self._dao.get_all_bdfs()
 
             current_bdfs = set()
             for dev_info in devices:
@@ -667,28 +665,38 @@ class DeviceManagerAllocator(DeviceAllocator):
             mac_address=dev_info.get('mac_address'),
             status=initial_status,
         )
-        db.session.add(record)
+        self._dao.insert_device(record)
 
     def _update_device_record(self, dev_info: Dict):
         """
         更新数据库中已有设备的动态属性
 
         仅更新可能变化的字段（numa_node），不覆盖分配状态。
+        当无法获取 MAC 地址或 MAC 地址为 None 时，保留原有 MAC 地址。
         但对于 PF 设备，若其下已有 VF 记录，需确保状态为 sriov_used。
 
         :param dev_info: 设备信息字典
         """
-        record = DeviceAllocation.query.filter_by(bdf=dev_info['bdf']).first()
-        if record is None:
+        new_mac = dev_info.get('mac_address')
+        preserve_mac = new_mac is None
+
+        updated = self._dao.update_device(
+            bdf=dev_info['bdf'],
+            numa_node=dev_info.get('numa_node', -1),
+            vendor_id=dev_info['vendor_id'],
+            device_id=dev_info['device_id'],
+            device_name=dev_info.get('device_name'),
+            mac_address=new_mac,
+            preserve_mac=preserve_mac
+        )
+
+        if not updated:
             return
 
-        record.numa_node = dev_info.get('numa_node', -1)
-        record.vendor_id = dev_info['vendor_id']
-        record.device_id = dev_info['device_id']
-        record.device_name = dev_info.get('device_name')
-        record.mac_address = dev_info.get('mac_address')
+        record = self._dao.get_by_bdf(dev_info['bdf'])
 
-        if (record.device_type == DeviceTypeConfig.DEVICE_TYPE_NET_PF
+        if (record is not None and
+                record.device_type == DeviceTypeConfig.DEVICE_TYPE_NET_PF
                 and record.status == DeviceAllocation.DEVICE_STATUS_AVAILABLE):
             if self._has_vf_under_pf(record.bdf):
                 record.status = DeviceAllocation.DEVICE_STATUS_SRIOV_USED

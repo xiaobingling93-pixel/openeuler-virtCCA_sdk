@@ -696,41 +696,34 @@ class TestSyncDiscoveredToDb:
     @patch.object(DeviceManagerAllocator, '_update_device_record')
     @patch('virtcca_deploy.services.resource_allocator.db.session')
     def test_sync_inserts_new_devices(self, mock_session, mock_update, mock_insert, allocator):
-        mock_query = MagicMock()
-        mock_query.with_entities.return_value = mock_query
-        mock_query.all.return_value = []
-        DeviceAllocation.query = mock_query
+        with patch.object(allocator._dao, 'get_all_bdfs', return_value=set()):
+            discovered = [
+                {"bdf": "0000:3b:00.0", "vendor_id": 0x19e5, "device_id": 0x1822, "numa_node": 0},
+                {"bdf": "0000:3b:00.1", "vendor_id": 0x19e5, "device_id": 0x1821, "numa_node": 0},
+            ]
 
-        discovered = [
-            {"bdf": "0000:3b:00.0", "vendor_id": 0x19e5, "device_id": 0x1822, "numa_node": 0},
-            {"bdf": "0000:3b:00.1", "vendor_id": 0x19e5, "device_id": 0x1821, "numa_node": 0},
-        ]
+            allocator.sync_discovered_to_db(discovered)
 
-        allocator.sync_discovered_to_db(discovered)
-
-        assert mock_insert.call_count == 2
-        mock_session.commit.assert_called_once()
+            assert mock_insert.call_count == 2
+            mock_session.commit.assert_called_once()
 
     @patch('virtcca_deploy.services.resource_allocator.db')
     def test_sync_updates_existing_devices(self, mock_db, allocator):
-        mock_existing = MagicMock()
-        mock_existing.bdf = "0000:3b:00.0"
+        with patch.object(allocator._dao, 'get_all_bdfs', return_value={"0000:3b:00.0"}):
+            with patch.object(allocator._dao, 'update_device', return_value=True):
+                with patch.object(allocator._dao, 'get_by_bdf', return_value=MagicMock(
+                    device_type=DeviceTypeConfig.DEVICE_TYPE_PCI,
+                    status=DeviceAllocation.DEVICE_STATUS_AVAILABLE,
+                    bdf="0000:3b:00.0"
+                )):
+                    discovered = [
+                        {"bdf": "0000:3b:00.0", "vendor_id": 0x19e5, "device_id": 0x0222, "numa_node": 1},
+                    ]
 
-        mock_query = MagicMock()
-        mock_query.with_entities.return_value = mock_query
-        mock_query.all.return_value = [mock_existing]
-        mock_query.filter_by.return_value = mock_query
-        mock_query.first.return_value = mock_existing
-        DeviceAllocation.query = mock_query
+                    allocator.sync_discovered_to_db(discovered)
 
-        discovered = [
-            {"bdf": "0000:3b:00.0", "vendor_id": 0x19e5, "device_id": 0x1822, "numa_node": 1},
-        ]
-
-        allocator.sync_discovered_to_db(discovered)
-
-        mock_db.session.add.assert_not_called()
-        mock_db.session.commit.assert_called_once()
+                    allocator._dao.update_device.assert_called_once()
+                    mock_db.session.commit.assert_called_once()
 
     @patch('virtcca_deploy.services.resource_allocator.db')
     def test_sync_empty_discovered_list(self, mock_db, allocator):
@@ -740,14 +733,104 @@ class TestSyncDiscoveredToDb:
 
     @patch('virtcca_deploy.services.resource_allocator.db')
     def test_sync_rollback_on_error(self, mock_db, allocator):
-        mock_query = MagicMock()
-        mock_query.with_entities.return_value = mock_query
-        mock_query.all.side_effect = Exception("db error")
-        DeviceAllocation.query = mock_query
+        with patch.object(allocator._dao, 'get_all_bdfs', side_effect=Exception("db error")):
+            allocator.sync_discovered_to_db([{"bdf": "x", "vendor_id": 1, "device_id": 2}])
 
-        allocator.sync_discovered_to_db([{"bdf": "x", "vendor_id": 1, "device_id": 2}])
+            mock_db.session.rollback.assert_called_once()
 
-        mock_db.session.rollback.assert_called_once()
+
+class TestMacAddressPreservation:
+
+    @patch('virtcca_deploy.services.resource_allocator.db')
+    def test_update_device_preserves_mac_when_new_mac_is_none(self, mock_db, allocator):
+        with patch.object(allocator._dao, 'update_device') as mock_update:
+            with patch.object(allocator._dao, 'get_by_bdf', return_value=MagicMock(
+                device_type=DeviceTypeConfig.DEVICE_TYPE_NET_PF,
+                status=DeviceAllocation.DEVICE_STATUS_AVAILABLE,
+                bdf="0000:3b:00.0"
+            )):
+                with patch.object(allocator, '_has_vf_under_pf', return_value=False):
+                    dev_info = {
+                        "bdf": "0000:3b:00.0",
+                        "vendor_id": 0x19e5,
+                        "device_id": 0x1822,
+                        "numa_node": 0,
+                        "device_name": "enp59s0",
+                        "mac_address": None
+                    }
+
+                    allocator._update_device_record(dev_info)
+
+                    mock_update.assert_called_once()
+                    call_kwargs = mock_update.call_args[1]
+                    assert call_kwargs['preserve_mac'] is True
+                    assert call_kwargs['mac_address'] is None
+
+    @patch('virtcca_deploy.services.resource_allocator.db')
+    def test_update_device_overwrites_mac_when_new_mac_exists(self, mock_db, allocator):
+        with patch.object(allocator._dao, 'update_device') as mock_update:
+            with patch.object(allocator._dao, 'get_by_bdf', return_value=MagicMock(
+                device_type=DeviceTypeConfig.DEVICE_TYPE_NET_PF,
+                status=DeviceAllocation.DEVICE_STATUS_AVAILABLE,
+                bdf="0000:3b:00.0"
+            )):
+                with patch.object(allocator, '_has_vf_under_pf', return_value=False):
+                    dev_info = {
+                        "bdf": "0000:3b:00.0",
+                        "vendor_id": 0x19e5,
+                        "device_id": 0x1822,
+                        "numa_node": 0,
+                        "device_name": "enp59s0",
+                        "mac_address": "00:11:22:33:44:55"
+                    }
+
+                    allocator._update_device_record(dev_info)
+
+                    mock_update.assert_called_once()
+                    call_kwargs = mock_update.call_args[1]
+                    assert call_kwargs['preserve_mac'] is False
+                    assert call_kwargs['mac_address'] == "00:11:22:33:44:55"
+
+    @patch('virtcca_deploy.services.resource_allocator.db')
+    def test_update_device_preserves_mac_when_mac_key_missing(self, mock_db, allocator):
+        with patch.object(allocator._dao, 'update_device') as mock_update:
+            with patch.object(allocator._dao, 'get_by_bdf', return_value=MagicMock(
+                device_type=DeviceTypeConfig.DEVICE_TYPE_NET_PF,
+                status=DeviceAllocation.DEVICE_STATUS_AVAILABLE,
+                bdf="0000:3b:00.0"
+            )):
+                with patch.object(allocator, '_has_vf_under_pf', return_value=False):
+                    dev_info = {
+                        "bdf": "0000:3b:00.0",
+                        "vendor_id": 0x19e5,
+                        "device_id": 0x1822,
+                        "numa_node": 0,
+                        "device_name": "enp59s0"
+                    }
+
+                    allocator._update_device_record(dev_info)
+
+                    mock_update.assert_called_once()
+                    call_kwargs = mock_update.call_args[1]
+                    assert call_kwargs['preserve_mac'] is True
+                    assert call_kwargs['mac_address'] is None
+
+    @patch('virtcca_deploy.services.resource_allocator.db')
+    def test_update_device_skips_when_record_not_found(self, mock_db, allocator):
+        with patch.object(allocator._dao, 'update_device', return_value=False):
+            with patch.object(allocator._dao, 'get_by_bdf', return_value=None):
+                dev_info = {
+                    "bdf": "0000:3b:00.0",
+                    "vendor_id": 0x19e5,
+                    "device_id": 0x1822,
+                    "numa_node": 0,
+                    "mac_address": None
+                }
+
+                allocator._update_device_record(dev_info)
+
+                allocator._dao.update_device.assert_called_once()
+                allocator._dao.get_by_bdf.assert_not_called()
 
 
 # ========== SR-IOV VF 设置测试 ==========
