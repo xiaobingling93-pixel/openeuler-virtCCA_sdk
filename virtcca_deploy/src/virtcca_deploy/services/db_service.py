@@ -150,6 +150,7 @@ class NetworkConfig(db.Model):
     __tablename__ = 'network_config'
 
     id = db.Column(db.Integer, primary_key=True)
+    vm_id = db.Column(db.String(80), nullable=True, index=True)
     node_name = db.Column(db.String(80), nullable=False, index=True)
     mac_address = db.Column(db.String(20), nullable=False)
     vlan_id = db.Column(db.Integer, nullable=False)
@@ -169,6 +170,7 @@ class NetworkConfig(db.Model):
 
     def to_dict(self):
         return {
+            "vm_id": self.vm_id,
             "node_name": self.node_name,
             "mac_address": self.mac_address,
             "vlan_id": self.vlan_id,
@@ -180,9 +182,9 @@ class NetworkConfig(db.Model):
 
     def __repr__(self):
         return (
-            "<NetworkConfig(node_name: {}, mac: {}, ip: {}, status: {})>"
+            "<NetworkConfig(vm_id: {}, node_name: {}, mac: {}, ip: {}, status: {})>"
         ).format(
-            self.node_name, self.mac_address, self.ip_address, self.status
+            self.vm_id, self.node_name, self.mac_address, self.ip_address, self.status
         )
 
 

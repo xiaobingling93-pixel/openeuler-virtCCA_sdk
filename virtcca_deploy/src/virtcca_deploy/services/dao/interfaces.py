@@ -69,13 +69,27 @@ class NetworkConfigDAOInterface(ABC):
         pass
 
     @abstractmethod
-    def mark_as_used(self, configs: List[NetworkConfig]) -> bool:
-        """Mark network configs as used"""
+    def mark_as_used(self, configs: List[NetworkConfig], vm_id: Optional[str] = None) -> bool:
+        """Mark network configs as used
+        
+        :param configs: List of NetworkConfig objects to mark as used
+        :param vm_id: Optional VM ID to associate with the configs
+        """
         pass
 
     @abstractmethod
     def mark_as_unused_by_mac(self, mac_addresses: List[str]) -> bool:
         """Mark network configs as unused by MAC addresses"""
+        pass
+
+    @abstractmethod
+    def get_by_vm_id(self, vm_id: str) -> List[NetworkConfig]:
+        """Get network configs associated with a specific VM ID"""
+        pass
+
+    @abstractmethod
+    def mark_as_unused_by_vm_id(self, vm_id: str) -> bool:
+        """Mark network configs as unused by VM ID and clear vm_id field"""
         pass
 
 

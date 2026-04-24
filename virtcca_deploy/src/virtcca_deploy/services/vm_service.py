@@ -3,9 +3,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 import logging
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional
 from http import HTTPStatus
 import json
+from dataclasses import dataclass
 
 from gevent import monkey
 import gevent
@@ -26,11 +27,179 @@ from virtcca_deploy.services.dao import get_dao_registry
 import virtcca_deploy.services.util_service as util_service
 
 
+@dataclass
+class DeploymentConflict:
+    node_name: str
+    node_ip: str
+    conflict_type: str
+    details: str
+
+
+class PreDeploymentChecker:
+    def __init__(self, logger):
+        self.logger = logger
+
+    def check_nodes(self, nodes: List[ComputeNode]) -> Tuple[bool, List[DeploymentConflict]]:
+        conflicts = []
+        for node in nodes:
+            vm_conflict = self._check_existing_vms(node)
+            if vm_conflict:
+                conflicts.append(vm_conflict)
+
+            task_conflict = self._check_ongoing_tasks(node)
+            if task_conflict:
+                conflicts.append(task_conflict)
+
+        has_conflicts = len(conflicts) > 0
+        return has_conflicts, conflicts
+
+    def check_nodes_with_vm_ids(self, nodes: List[ComputeNode],
+                                 vm_id_dict: Dict) -> Tuple[bool, List[DeploymentConflict]]:
+        conflicts = []
+        for node in nodes:
+            if node.nodename not in vm_id_dict:
+                continue
+
+            requested_vm_ids = vm_id_dict[node.nodename]
+
+            vm_conflict = self._check_existing_vms_by_ids(node, requested_vm_ids)
+            if vm_conflict:
+                conflicts.append(vm_conflict)
+
+            task_conflict = self._check_ongoing_tasks_by_ids(node, requested_vm_ids)
+            if task_conflict:
+                conflicts.append(task_conflict)
+
+        has_conflicts = len(conflicts) > 0
+        return has_conflicts, conflicts
+
+    def _check_existing_vms(self, node: ComputeNode) -> Optional[DeploymentConflict]:
+        try:
+            vm_instance_dao = get_dao_registry().vm_instance_dao
+            existing_vms = vm_instance_dao.get_by_host_ip(node.ip)
+            if existing_vms:
+                vm_ids = [vm.vm_id for vm in existing_vms[:5]]
+                details = f"Found {len(existing_vms)} deployed VMs: {', '.join(vm_ids)}"
+                return DeploymentConflict(
+                    node_name=node.nodename,
+                    node_ip=node.ip,
+                    conflict_type="existing_vms",
+                    details=details
+                )
+        except Exception as e:
+            self.logger.error(f"Failed to check existing VMs on node {node.nodename}: {e}")
+        return None
+
+    def _check_existing_vms_by_ids(self, node: ComputeNode,
+                                    vm_ids: List[str]) -> Optional[DeploymentConflict]:
+        try:
+            vm_instance_dao = get_dao_registry().vm_instance_dao
+            existing_vms = vm_instance_dao.get_by_vm_ids(vm_ids)
+
+            conflict_vm_ids = []
+            for vm in existing_vms:
+                if vm.host_ip == node.ip:
+                    conflict_vm_ids.append(vm.vm_id)
+
+            if conflict_vm_ids:
+                details = (
+                    f"VM IDs already deployed on this node: {', '.join(conflict_vm_ids)}"
+                )
+                return DeploymentConflict(
+                    node_name=node.nodename,
+                    node_ip=node.ip,
+                    conflict_type="existing_vms",
+                    details=details
+                )
+        except Exception as e:
+            self.logger.error(
+                f"Failed to check existing VMs by IDs on node {node.nodename}: {e}"
+            )
+        return None
+
+    def _check_ongoing_tasks(self, node: ComputeNode) -> Optional[DeploymentConflict]:
+        try:
+            task_service = get_task_service()
+            pending_tasks = task_service.get_tasks_by_status("created")
+            running_tasks = task_service.get_tasks_by_status("running")
+
+            active_tasks = [t for t in pending_tasks + running_tasks
+                           if t.task_type == TASK_TYPE_VM_CREATE]
+
+            if active_tasks:
+                task_ids = [t.task_id for t in active_tasks[:3]]
+                details = f"Found {len(active_tasks)} ongoing deployment tasks: {', '.join(task_ids)}"
+                return DeploymentConflict(
+                    node_name=node.nodename,
+                    node_ip=node.ip,
+                    conflict_type="ongoing_deployment_task",
+                    details=details
+                )
+        except Exception as e:
+            self.logger.error(f"Failed to check ongoing tasks on node {node.nodename}: {e}")
+        return None
+
+    def _check_ongoing_tasks_by_ids(self, node: ComputeNode,
+                                     vm_ids: List[str]) -> Optional[DeploymentConflict]:
+        try:
+            task_service = get_task_service()
+            pending_tasks = task_service.get_tasks_by_status("created")
+            running_tasks = task_service.get_tasks_by_status("running")
+
+            active_tasks = [t for t in pending_tasks + running_tasks
+                           if t.task_type == TASK_TYPE_VM_CREATE]
+
+            conflict_task_ids = []
+            for task in active_tasks:
+                task_params = task.get_task_params()
+                if task_params and "total_vms" in task_params:
+                    total_vms = task_params["total_vms"]
+                    if isinstance(total_vms, list):
+                        matching_vms = [vm_id for vm_id in total_vms if vm_id in vm_ids]
+                        if matching_vms:
+                            conflict_task_ids.append({
+                                "task_id": task.task_id,
+                                "matching_vms": matching_vms
+                            })
+
+            if conflict_task_ids:
+                task_details = []
+                for item in conflict_task_ids[:3]:
+                    vms_str = ", ".join(item["matching_vms"])
+                    task_details.append(f"Task {item['task_id']} ({vms_str})")
+
+                details = (
+                    f"VM IDs are being deployed in ongoing tasks: {'; '.join(task_details)}"
+                )
+                return DeploymentConflict(
+                    node_name=node.nodename,
+                    node_ip=node.ip,
+                    conflict_type="ongoing_deployment_task",
+                    details=details
+                )
+        except Exception as e:
+            self.logger.error(
+                f"Failed to check ongoing tasks by IDs on node {node.nodename}: {e}"
+            )
+        return None
+
+
+def format_conflict_error(conflicts: List[DeploymentConflict]) -> str:
+    error_parts = []
+    for conflict in conflicts:
+        error_parts.append(
+            f"Node {conflict.node_name} ({conflict.node_ip}): "
+            f"[{conflict.conflict_type}] {conflict.details}"
+        )
+    return "Deployment aborted due to conflicts:\n" + "\n".join(error_parts)
+
+
 class VmService:
     def __init__(self, ssl_cert, ip_allocator=None):
         self.ssl_cert = ssl_cert
         self.ip_allocator = ip_allocator
         self.logger = logging.getLogger(__name__)
+        self.pre_deployment_checker = PreDeploymentChecker(self.logger)
 
     def execute_deployment(self, deploy_nodes: List[ComputeNode],
                            deploy_config: VmDeploySpecModel, vm_id_dict: Dict) -> Dict:
@@ -40,9 +209,13 @@ class VmService:
         task_service = get_task_service()
         
         if not vm_id_dict:
-            node_to_spec = self._prepare_default_deployment(deploy_nodes, deploy_config)
+            node_to_spec, error_msg = self._prepare_default_deployment(deploy_nodes, deploy_config)
         else:
-            node_to_spec = self._prepare_specified_deployment(deploy_nodes, deploy_config, vm_id_dict)
+            node_to_spec, error_msg = self._prepare_specified_deployment(deploy_nodes, deploy_config, vm_id_dict)
+
+        if error_msg:
+            self.logger.error(f"Deployment preparation failed: {error_msg}")
+            raise Exception(error_msg)
 
         for node in deploy_nodes:
             if node.nodename not in node_to_spec:
@@ -181,9 +354,16 @@ class VmService:
         return vm_instances
 
     def _prepare_default_deployment(self, deploy_nodes: List[ComputeNode],
-                                     deploy_config: VmDeploySpecModel) -> Dict[str, VmDeploySpecInternal]:
+                                     deploy_config: VmDeploySpecModel) -> Tuple[Dict[str, VmDeploySpecInternal], str]:
         """vm_id_dict为空时的默认部署准备：自动生成vm_id并分配IP"""
         self.logger.info("vm_id_dict is empty, using default naming convention (nodename-number)")
+
+        has_conflicts, conflicts = self.pre_deployment_checker.check_nodes(deploy_nodes)
+        if has_conflicts:
+            error_msg = format_conflict_error(conflicts)
+            self.logger.error(error_msg)
+            return {}, error_msg
+
         node_to_spec = {}
 
         for node in deploy_nodes:
@@ -202,46 +382,44 @@ class VmService:
                     allocResp = self.ip_allocator.allocate(request=allocReq)
                     if allocResp.success:
                         cvm_spec_internal.vm_iface = allocResp.vm_iface_map
-                    self.logger.info(f"Allocated ifaces for node {node.nodename}: {cvm_spec_internal.vm_iface}")
+                        self.logger.info(f"Allocated ifaces for node {node.nodename}: {cvm_spec_internal.vm_iface}")
+                    else:
+                        error_msg = (
+                            f"Deployment failed due to insufficient resources."
+                            f"- Failed to allocate the IP address to node {node.nodename} (IP address: {node.ip})."
+                        )
+                        self.logger.error(error_msg)
+                        return {}, error_msg
                 except Exception as e:
-                    self.logger.error(f"Failed to allocate ifaces for node {node.nodename}: {e}")
+                    error_msg = (
+                        f"Deployment failed due to insufficient resources. The IP address of"
+                    f" node {node.nodename} (IP address: {node.ip}) failed to be allocated. Error: {e}"
+                )
+                    self.logger.error(error_msg)
+                    return {}, error_msg
 
             node_to_spec[node.nodename] = cvm_spec_internal
 
-        return node_to_spec
+        return node_to_spec, ""
 
     def _prepare_specified_deployment(self, deploy_nodes: List[ComputeNode],
                                        deploy_config: VmDeploySpecModel,
-                                       vm_id_dict: Dict) -> Dict[str, VmDeploySpecInternal]:
+                                       vm_id_dict: Dict) -> Tuple[Dict[str, VmDeploySpecInternal], str]:
         """vm_id_dict非空时的指定部署准备：区分已有VM(复用资源)和新VM(分配资源)"""
         self.logger.info(f"vm_id_dict is not empty, processing specified VM IDs: {vm_id_dict}")
+
+        has_conflicts, conflicts = self.pre_deployment_checker.check_nodes_with_vm_ids(
+            deploy_nodes, vm_id_dict
+        )
+        if has_conflicts:
+            error_msg = format_conflict_error(conflicts)
+            self.logger.error(error_msg)
+            return {}, error_msg
+
         node_to_spec = {}
 
         for node in deploy_nodes:
             cvm_spec_internal = VmDeploySpecInternal.from_db_model(deploy_config)
-
-            if node.nodename not in vm_id_dict:
-                self.logger.info(f"Node {node.nodename} not in vm_id_dict, using default naming")
-                cvm_spec_internal.vm_id_list = [f"{node.nodename}-{i + 1}" for i in range(cvm_spec_internal.vm_spec.max_vm_num)]
-
-                if self.ip_allocator:
-                    try:
-                        allocReq = NetAllocReq(cvm_spec_internal.vm_id_list,
-                            cvm_spec_internal.vm_spec.vlan_id,
-                            cvm_spec_internal.vm_spec.net_pf_num,
-                            cvm_spec_internal.vm_spec.net_vf_num,
-                            node.ip
-                        )
-                        allocResp = self.ip_allocator.allocate(request=allocReq)
-                        if allocResp.success:
-                            cvm_spec_internal.vm_iface = allocResp.vm_iface_map
-                        self.logger.info(f"Allocated ifaces for node {node.nodename}: {cvm_spec_internal.vm_iface}")
-                    except Exception as e:
-                        self.logger.error(f"Failed to allocate ifaces for node {node.nodename}: {e}")
-
-                node_to_spec[node.nodename] = cvm_spec_internal
-                continue
-
             requested_vm_ids = vm_id_dict[node.nodename]
             new_vm_ids = []
             reused_vm_ids = []
@@ -277,9 +455,20 @@ class VmService:
                         if not cvm_spec_internal.vm_iface:
                             cvm_spec_internal.vm_iface = {}
                         cvm_spec_internal.vm_iface.update(allocResp.vm_iface_map)
-                    self.logger.info(f"Allocated ifaces for new VMs on node {node.nodename}: {allocResp.vm_iface_map}")
+                        self.logger.info(f"Allocated ifaces for new VMs on node {node.nodename}: {allocResp.vm_iface_map}")
+                    else:
+                        error_msg = (
+                            f"Deployment failed due to insufficient resources. Failed to"
+                            f" allocate the new VM IP address to node {node.nodename} (IP address: {node.ip})."
+                        )
+                        self.logger.error(error_msg)
+                        return {}, error_msg
                 except Exception as e:
-                    self.logger.error(f"Failed to allocate ifaces for new VMs on node {node.nodename}: {e}")
+                    error_msg = (
+                        f"Deployment failed due to insufficient resources. Failed to allocate"
+                        f" the new VM IP address to node {node.nodename} (IP address: {node.ip}). Error: {e}")
+                    self.logger.error(error_msg)
+                    return {}, error_msg
 
             if reused_vm_ids:
                 try:
@@ -296,7 +485,7 @@ class VmService:
 
             node_to_spec[node.nodename] = cvm_spec_internal
 
-        return node_to_spec
+        return node_to_spec, ""
 
     def execute_undeployment(self, deploy_nodes: List[ComputeNode], vm_id_list: List[str]) -> Dict:
         vm_instances = {}

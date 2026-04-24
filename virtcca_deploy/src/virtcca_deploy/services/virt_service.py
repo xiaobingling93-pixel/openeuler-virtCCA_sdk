@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from enum import Enum
 
+from flask import current_app
 import libvirt
 import subprocess
 
@@ -167,6 +168,33 @@ def handle_pci(root, pci_dict: dict):
     else:
         raise Exception("CVM template XML is invalid, unable to find element 'devices'!")
 
+
+def handle_serial(root, cvm_name: str):
+    """
+    Add a serial device to the VM XML and configure the log output path for the serial device.
+
+    :param root: The root XML element of the VM configuration.
+    :param cvm_name: The name of the VM, used to set the log file path.
+    """
+    device_node = root.find(".//devices")
+    
+    if device_node is not None:
+        # Create the serial device node
+        serial_node = ET.SubElement(device_node, "serial", type="pty")
+        
+        # Add the target port to the serial node
+        ET.SubElement(serial_node, "target", port="0")  # Port 0 can be adjusted as needed
+        
+        # Configure logging for the serial device
+        log_file_path = f"/var/log/libvirt/qemu/{cvm_name}_serial.log"
+        ET.SubElement(serial_node, "log", file=log_file_path)
+        
+        # Log the information
+        g_logger.info(f"Adding serial device to VM {cvm_name} with log path: {log_file_path}")
+        
+    else:
+        raise Exception("CVM template XML is invalid, unable to find element 'devices'!")
+
 def handle_virbr0(root, mac_addr: str):
     devices_node = root.find(".//devices")
     if devices_node is None:
@@ -226,6 +254,7 @@ def config_xml(cvm_name: str, vm_spec: VmDeploySpec, qcow2_file: str, host_numa_
         handle_topology(root, host_numa_id, vm_spec.core_num, vm_spec.memory)
         handle_disk(root, qcow2_file)
         handle_vm_id(root, cvm_name)
+        handle_serial(root, cvm_name)
         if device_dict:
             handle_pci(root, device_dict)
         if data_disk_file:
@@ -318,13 +347,12 @@ def config_net(ip_list: List[str], perfix: str):
         g_logger.info(f"Network config file created: {net_file} with IP {ip}")
 
 
-def cvm_name_check(base_vm_name: str, vm_num: int) -> str:
+def cvm_name_check(vm_id_list: List[str]) -> str:
     libvirt = libvirtDriver()
     vm_dict = libvirt.list_all_vm()
-    for i in range(vm_num):
-        cvm_name = f"{base_vm_name}-{i + 1}"
-        if cvm_name in vm_dict:
-            return f"CVM name '{cvm_name}' is already exist"
+    for vm_id in vm_id_list:
+        if vm_id in vm_dict:
+            return f"CVM name '{vm_id}' is already exist"
     return None
 
 def cvm_numa_check(core_num: int, mem_size: int, vm_num: int) -> Tuple[Optional[List[int]], str]:
@@ -890,10 +918,13 @@ def _phase1_check_resources(
         On success, error message is None
         On failure, available nodes is None
     """
-    err_msg = cvm_name_check(vm_id_list[0].rsplit("-", 1)[0] if "-" in vm_id_list[0] else vm_id_list[0],
-                             len(vm_id_list))
-    if err_msg:
-        g_logger.error(err_msg)
+    try:
+        err_msg = cvm_name_check(vm_id_list)
+        if err_msg:
+            g_logger.error(err_msg)
+            return None, err_msg
+    except Exception as e:
+        err_msg = f"VM name check exception: {e}"
         return None, err_msg
 
     available_nodes, err_msg = cvm_numa_check(vm_spec.core_num, vm_spec.memory, len(vm_id_list))
@@ -1039,6 +1070,7 @@ def _deploy_single_vm(
     host_numa_id: int,
     iface_list: List[VmInterface],
     server_config: config,
+    app
 ) -> VmDeploymentContext:
     """
     Execute the full four-phase deployment pipeline for a single VM.
@@ -1052,16 +1084,17 @@ def _deploy_single_vm(
     Returns:
         VmDeploymentContext with final deployment state
     """
-    ctx = _phase2_allocate_resources(cvm_name, vm_spec, host_numa_id, iface_list, server_config)
-    if ctx.error_message:
-        return ctx
+    with app.app_context():
+        ctx = _phase2_allocate_resources(cvm_name, vm_spec, host_numa_id, iface_list, server_config)
+        if ctx.error_message:
+            return ctx
 
-    ctx = _phase3_configure_xml(ctx)
-    if ctx.error_message:
-        return ctx
+        ctx = _phase3_configure_xml(ctx)
+        if ctx.error_message:
+            return ctx
 
-    ctx = _phase4_execute_deployment(ctx, server_config)
-    return ctx
+        ctx = _phase4_execute_deployment(ctx, server_config)
+        return ctx
 
 
 def deploy_cvm(
@@ -1123,6 +1156,7 @@ def deploy_cvm(
                 task["host_numa_id"],
                 task["iface_list"],
                 server_config,
+                current_app._get_current_object()
             ): task["cvm_name"]
             for task in deployment_tasks
         }
@@ -1248,6 +1282,16 @@ class libvirtDriver:
                         return False
             return False
 
+    def is_vm_exist(self, vm_name: str) -> bool:
+        with self._get_connection() as conn:
+            domains = conn.listAllDomains()
+            for domain in domains:
+                if domain.name() == vm_name:
+                    return True
+                else:
+                    return False
+            return False
+
     def destroy_cvm_by_name(self, vm_name) -> bool:
         """
         销毁虚拟机并移除其 XML 定义
@@ -1276,10 +1320,14 @@ class libvirtDriver:
         """
         with self._get_connection() as conn:
             try:
+                if not self.is_vm_exist(vm_name):
+                    return False
+
                 domain = conn.lookupByName(vm_name)
                 domain.undefine()
                 g_logger.info("cvm '%s' XML definition has been removed", vm_name)
                 return True
+
             except libvirt.libvirtError as e:
                 g_logger.error("unable to undefine cvm '%s': %s", vm_name, e)
                 return False
