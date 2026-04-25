@@ -453,7 +453,170 @@ class TestVirtServiceDeploy:
                 result, err_msg = deploy_cvm(cvm_deploy_spec_internal, server_config)
                 
                 assert "Failed to allocate resources" in err_msg
-                mock_reclaim.assert_called_once_with("compute01-2", server_config)
+                mock_reclaim.assert_called_once()
+                call_kwargs = mock_reclaim.call_args[1]
+                assert 'reclaim_ctx' in call_kwargs
+                reclaim_ctx = call_kwargs['reclaim_ctx']
+                assert reclaim_ctx.cvm_name == "compute01-2"
+                assert reclaim_ctx.server_config == server_config
+                assert reclaim_ctx.dhcp_entries == []
                 mock_deploy_single.assert_called()
                 assert mock_deploy_single.call_count >= 1
+
+    def test_deploy_cvm_single_vm_failure_with_dhcp_cleanup(self, monkeypatch, app):
+        """Test that deploy_cvm handles single VM failure and performs DHCP cleanup with structured context"""
+        from virtcca_deploy.common.data_model import VmDeploySpecInternal, VmDeploySpec
+        from virtcca_deploy.services.virt_service import VmDeploymentContext, CvmReclaimContext, DhcpEntryInfo
+        
+        vm_spec = VmDeploySpec(
+            max_vm_num=2,
+            memory=8192,
+            core_num=4,
+            vlan_id=0,
+            gateway_ip=['192.168.100.1'],
+            net_pf_num=1,
+            net_vf_num=0,
+            disk_size=10,
+            uuid='74260cba-197f-42d1-9af5-4247d182edd5'
+        )
+        
+        cvm_deploy_spec_internal = VmDeploySpecInternal(
+            vm_id_list=['compute01-1', 'compute01-2'],
+            vm_spec=vm_spec,
+            vm_iface={}
+        )
+        
+        server_config = MagicMock()
+        
+        def mock_deploy_single_vm(cvm_name, *args, **kwargs):
+            if cvm_name == "compute01-2":
+                return VmDeploymentContext(
+                    cvm_name="compute01-2",
+                    vm_spec=vm_spec,
+                    host_numa_id=0,
+                    success=False,
+                    error_message="Failed to start VM",
+                    virtbr0_mac_addr="52:54:00:aa:bb:cc",
+                    virtbr0_ip="192.168.122.50"
+                )
+            else:
+                return VmDeploymentContext(
+                    cvm_name=cvm_name,
+                    vm_spec=vm_spec,
+                    host_numa_id=0,
+                    success=True
+                )
+        
+        with patch('virtcca_deploy.services.virt_service.cvm_numa_check') as mock_numa_check, \
+             patch('virtcca_deploy.services.virt_service._deploy_single_vm', side_effect=mock_deploy_single_vm) as mock_deploy_single, \
+             patch('virtcca_deploy.services.virt_service.cvm_resource_reclaim') as mock_reclaim:
+            mock_numa_check.return_value = ([0], None)
+            with app.app_context():
+                result, err_msg = deploy_cvm(cvm_deploy_spec_internal, server_config)
+                
+                assert "Failed to start VM" in err_msg
+                mock_reclaim.assert_called_once()
+                call_kwargs = mock_reclaim.call_args[1]
+                assert 'reclaim_ctx' in call_kwargs
+                reclaim_ctx = call_kwargs['reclaim_ctx']
+                assert reclaim_ctx.cvm_name == "compute01-2"
+                assert reclaim_ctx.server_config == server_config
+                assert len(reclaim_ctx.dhcp_entries) == 1
+                assert reclaim_ctx.dhcp_entries[0].mac_address == "52:54:00:aa:bb:cc"
+                assert reclaim_ctx.dhcp_entries[0].ip_address == "192.168.122.50"
+
+    def test_deploy_cvm_exception_failure_with_dhcp_cleanup(self, monkeypatch, app):
+        """Test that deploy_cvm handles unexpected exception and performs DHCP cleanup"""
+        from virtcca_deploy.common.data_model import VmDeploySpecInternal, VmDeploySpec
+        from virtcca_deploy.services.virt_service import VmDeploymentContext, CvmReclaimContext, DhcpEntryInfo, DeploymentException
+        
+        vm_spec = VmDeploySpec(
+            max_vm_num=1,
+            memory=8192,
+            core_num=4,
+            vlan_id=0,
+            gateway_ip=['192.168.100.1'],
+            net_pf_num=1,
+            net_vf_num=0,
+            disk_size=10,
+            uuid='74260cba-197f-42d1-9af5-4247d182edd5'
+        )
+        
+        cvm_deploy_spec_internal = VmDeploySpecInternal(
+            vm_id_list=['compute01-1'],
+            vm_spec=vm_spec,
+            vm_iface={}
+        )
+        
+        server_config = MagicMock()
+        
+        def mock_deploy_single_vm(cvm_name, *args, **kwargs):
+            ctx = VmDeploymentContext(
+                cvm_name=cvm_name,
+                vm_spec=vm_spec,
+                host_numa_id=0,
+                virtbr0_mac_addr="52:54:00:dd:ee:ff",
+                virtbr0_ip="192.168.122.51"
+            )
+            raise DeploymentException("Unexpected libvirt error", ctx)
+        
+        with patch('virtcca_deploy.services.virt_service.cvm_numa_check') as mock_numa_check, \
+             patch('virtcca_deploy.services.virt_service._deploy_single_vm', side_effect=mock_deploy_single_vm) as mock_deploy_single, \
+             patch('virtcca_deploy.services.virt_service.cvm_resource_reclaim') as mock_reclaim:
+            mock_numa_check.return_value = ([0], None)
+            with app.app_context():
+                result, err_msg = deploy_cvm(cvm_deploy_spec_internal, server_config)
+                
+                assert "Unexpected libvirt error" in err_msg
+                mock_reclaim.assert_called_once()
+                call_kwargs = mock_reclaim.call_args[1]
+                assert 'reclaim_ctx' in call_kwargs
+                reclaim_ctx = call_kwargs['reclaim_ctx']
+                assert reclaim_ctx.cvm_name == "compute01-1"
+                assert len(reclaim_ctx.dhcp_entries) == 1
+                assert reclaim_ctx.dhcp_entries[0].mac_address == "52:54:00:dd:ee:ff"
+                assert reclaim_ctx.dhcp_entries[0].ip_address == "192.168.122.51"
+
+    def test_deploy_cvm_exception_before_context_created(self, monkeypatch, app):
+        """Test that deploy_cvm handles exception before context is created (no DHCP entries)"""
+        from virtcca_deploy.common.data_model import VmDeploySpecInternal, VmDeploySpec
+        from virtcca_deploy.services.virt_service import VmDeploymentContext, CvmReclaimContext
+        
+        vm_spec = VmDeploySpec(
+            max_vm_num=1,
+            memory=8192,
+            core_num=4,
+            vlan_id=0,
+            gateway_ip=['192.168.100.1'],
+            net_pf_num=1,
+            net_vf_num=0,
+            disk_size=10,
+            uuid='74260cba-197f-42d1-9af5-4247d182edd5'
+        )
+        
+        cvm_deploy_spec_internal = VmDeploySpecInternal(
+            vm_id_list=['compute01-1'],
+            vm_spec=vm_spec,
+            vm_iface={}
+        )
+        
+        server_config = MagicMock()
+        
+        def mock_deploy_single_vm(cvm_name, *args, **kwargs):
+            raise RuntimeError("Early failure before context creation")
+        
+        with patch('virtcca_deploy.services.virt_service.cvm_numa_check') as mock_numa_check, \
+             patch('virtcca_deploy.services.virt_service._deploy_single_vm', side_effect=mock_deploy_single_vm) as mock_deploy_single, \
+             patch('virtcca_deploy.services.virt_service.cvm_resource_reclaim') as mock_reclaim:
+            mock_numa_check.return_value = ([0], None)
+            with app.app_context():
+                result, err_msg = deploy_cvm(cvm_deploy_spec_internal, server_config)
+                
+                assert "Early failure before context creation" in err_msg
+                mock_reclaim.assert_called_once()
+                call_kwargs = mock_reclaim.call_args[1]
+                assert 'reclaim_ctx' in call_kwargs
+                reclaim_ctx = call_kwargs['reclaim_ctx']
+                assert reclaim_ctx.cvm_name == "compute01-1"
+                assert reclaim_ctx.dhcp_entries == []
 
