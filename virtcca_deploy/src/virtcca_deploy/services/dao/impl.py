@@ -448,6 +448,14 @@ class DeviceAllocationDAO(DeviceAllocationDAOInterface):
             logger.error(f"Failed to get device allocation by mac_address {mac_address}: {e}")
             raise
 
+    def get_by_bdf(self, bdf: str) -> Optional[DeviceAllocation]:
+        """Get device allocation by BDF address"""
+        try:
+            return DeviceAllocation.query.filter_by(bdf=bdf).first()
+        except Exception as e:
+            logger.error(f"Failed to get device allocation by bdf {bdf}: {e}")
+            raise
+
     def allocate_devices_by_mac(self, mac_addresses: List[str], vm_id: str) -> dict:
         if not mac_addresses:
             raise ValueError("mac_addresses list cannot be empty")
@@ -500,3 +508,65 @@ class DeviceAllocationDAO(DeviceAllocationDAOInterface):
             )
 
             raise RuntimeError(f"Batch allocation failed: {e}") from e
+
+    def get_all_bdfs(self) -> set:
+        """Get all BDFs from device allocation records"""
+        try:
+            bdfs = DeviceAllocation.query.with_entities(DeviceAllocation.bdf).all()
+            return {row[0] for row in bdfs}
+        except Exception as e:
+            logger.error(f"Failed to get all BDFs: {e}")
+            raise
+
+    def insert_device(self, device_record: DeviceAllocation) -> None:
+        """Insert a new device allocation record"""
+        try:
+            db.session.add(device_record)
+            logger.info(f"Inserted device record: {device_record.bdf}")
+        except Exception as e:
+            logger.error(f"Failed to insert device record: {e}")
+            raise
+
+    def update_device(
+        self,
+        bdf: str,
+        numa_node: int,
+        vendor_id: int,
+        device_id: int,
+        device_name: Optional[str],
+        mac_address: Optional[str],
+        preserve_mac: bool = False
+    ) -> bool:
+        """
+        Update device allocation record by BDF.
+
+        :param bdf: BDF address to identify the record
+        :param numa_node: NUMA node value
+        :param vendor_id: Vendor ID
+        :param device_id: Device ID
+        :param device_name: Device name
+        :param mac_address: MAC address
+        :param preserve_mac: If True and mac_address is None, keep existing MAC address
+        :return: True if record was updated, False if record not found
+        """
+        try:
+            record = DeviceAllocation.query.filter_by(bdf=bdf).first()
+            if record is None:
+                logger.warning(f"Device record not found for BDF: {bdf}")
+                return False
+
+            record.numa_node = numa_node
+            record.vendor_id = vendor_id
+            record.device_id = device_id
+            record.device_name = device_name
+
+            if preserve_mac and mac_address is None:
+                pass
+            else:
+                record.mac_address = mac_address
+
+            logger.info(f"Updated device record: {bdf}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to update device record for BDF {bdf}: {e}")
+            raise

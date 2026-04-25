@@ -219,6 +219,11 @@ class DeviceAllocationDAOInterface(ABC):
         pass
 
     @abstractmethod
+    def get_by_bdf(self, bdf: str) -> Optional[DeviceAllocation]:
+        """Get device allocation by BDF address"""
+        pass
+
+    @abstractmethod
     def allocate_devices_by_mac(
         self,
         mac_addresses: List[str],
@@ -235,5 +240,40 @@ class DeviceAllocationDAOInterface(ABC):
         :return: A dictionary mapping MAC addresses to BDF addresses for successfully allocated devices.
                 Returns an empty dictionary if any allocation fails.
         :raises RuntimeError: If the allocation process fails or an error occurs.
+        """
+        pass
+
+    @abstractmethod
+    def get_all_bdfs(self) -> set:
+        """Get all BDFs from device allocation records"""
+        pass
+
+    @abstractmethod
+    def insert_device(self, device_record: DeviceAllocation) -> None:
+        """Insert a new device allocation record"""
+        pass
+
+    @abstractmethod
+    def update_device(
+        self,
+        bdf: str,
+        numa_node: int,
+        vendor_id: int,
+        device_id: int,
+        device_name: Optional[str],
+        mac_address: Optional[str],
+        preserve_mac: bool = False
+    ) -> bool:
+        """
+        Update device allocation record by BDF.
+
+        :param bdf: BDF address to identify the record
+        :param numa_node: NUMA node value
+        :param vendor_id: Vendor ID
+        :param device_id: Device ID
+        :param device_name: Device name
+        :param mac_address: MAC address
+        :param preserve_mac: If True and mac_address is None, keep existing MAC address
+        :return: True if record was updated, False if record not found
         """
         pass
