@@ -2,9 +2,13 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Set
 import os
+import re
 import shutil
+import ipaddress
+import tempfile
+import threading
 import xml.etree.ElementTree as ET
 from contextlib import contextmanager
 import time
@@ -27,6 +31,81 @@ import virtcca_deploy.services.resource_allocator as resource_allocator
 
 g_logger = config.g_logger
 NET_CONFIG_PATH = "/etc/sysconfig/network-scripts"
+VIRBR0_NETWORK_NAME = "default"
+DHCP_CONFIG_DIR = "/var/lib/libvirt/dnsmasq"
+MAC_OUI_PREFIX = "52:54:00"
+
+_virbr0_config_lock = threading.Lock()
+
+
+@dataclass
+class DhcpEntryInfo:
+    """DHCP entry information for cleanup"""
+    mac_address: str = ""
+    ip_address: str = ""
+
+
+@dataclass
+class CvmReclaimContext:
+    """
+    Structured parameter input for cvm_resource_reclaim
+
+    Designed for extensibility: new fields can be added without changing
+    the function signature, maintaining backward compatibility.
+    """
+    cvm_name: str = ""
+    server_config: Optional[config] = None
+    dhcp_entries: List[DhcpEntryInfo] = field(default_factory=list)
+    network_name: str = ""
+
+
+@dataclass
+class Virbr0NetworkInfo:
+    """virbr0 network configuration information"""
+    network_name: str = ""
+    bridge_name: str = ""
+    ip_address: str = ""
+    netmask: str = ""
+    subnet_cidr: str = ""
+    dhcp_start: str = ""
+    dhcp_end: str = ""
+    subnet_network: Optional[ipaddress.IPv4Network] = None
+    existing_leases: List[Dict[str, str]] = field(default_factory=list)
+    existing_macs: Set[str] = field(default_factory=set)
+    existing_ips: Set[str] = field(default_factory=set)
+
+
+@dataclass
+class MacIpPair:
+    """Generated MAC and IP address pair"""
+    mac_address: str = ""
+    ip_address: str = ""
+
+
+@dataclass
+class VmDeploymentContext:
+    """Per-VM deployment context carrying state across phases"""
+    cvm_name: str
+    vm_spec: VmDeploySpec
+    host_numa_id: int = -1
+    device_dict: dict = field(default_factory=dict)
+    ip_list: List[str] = field(default_factory=list)
+    qcow2_path: str = ""
+    data_disk_path: str = ""
+    xml_config: str = ""
+    error_message: str = ""
+    success: bool = False
+    network_check_result: Optional["NetworkCheckResult"] = None
+    virtbr0_mac_addr: str = ""
+    virtbr0_ip: str = ""
+
+
+class DeploymentException(Exception):
+    """Exception that carries VmDeploymentContext for resource cleanup"""
+    def __init__(self, message: str, ctx: VmDeploymentContext):
+        super().__init__(message)
+        self.ctx = ctx
+
 
 def handle_vm_id(root, value):
     name_node = root.find(".//name")
@@ -217,7 +296,7 @@ def handle_virbr0(root, mac_addr: str):
         raise Exception("No interface with bridge 'virbr0' found in XML!")
 
 
-def config_xml(cvm_name: str, vm_spec: VmDeploySpec, qcow2_file: str, host_numa_id: int, device_dict: dict, data_disk_file: str = None) -> str:
+def config_xml(ctx: VmDeploymentContext) -> str:
     """
     Modify the XML configuration and return the XML string.
 
@@ -230,7 +309,7 @@ def config_xml(cvm_name: str, vm_spec: VmDeploySpec, qcow2_file: str, host_numa_
     Returns:
         The modified XML as a string, or "" if an error occurs
     """
-    if not vm_spec or not vm_spec.is_valid():
+    if not ctx.vm_spec or not ctx.vm_spec.is_valid():
         g_logger.error("Invalid VmDeploySpec configuration")
         return ""
 
@@ -249,16 +328,17 @@ def config_xml(cvm_name: str, vm_spec: VmDeploySpec, qcow2_file: str, host_numa_
         return ""
 
     try:
-        handle_memory(root, vm_spec.memory)
-        handle_vcpu(root, vm_spec.core_num)
-        handle_topology(root, host_numa_id, vm_spec.core_num, vm_spec.memory)
-        handle_disk(root, qcow2_file)
-        handle_vm_id(root, cvm_name)
-        handle_serial(root, cvm_name)
-        if device_dict:
-            handle_pci(root, device_dict)
-        if data_disk_file:
-            handle_data_disk(root, data_disk_file)
+        handle_memory(root, ctx.vm_spec.memory)
+        handle_vcpu(root, ctx.vm_spec.core_num)
+        handle_topology(root, ctx.host_numa_id, ctx.vm_spec.core_num, ctx.vm_spec.memory)
+        handle_disk(root, ctx.qcow2_path)
+        handle_vm_id(root, ctx.cvm_name)
+        handle_serial(root, ctx.cvm_name)
+        handle_virbr0(root, ctx.virtbr0_mac_addr)
+        if ctx.device_dict:
+            handle_pci(root, ctx.device_dict)
+        if ctx.data_disk_path:
+            handle_data_disk(root, ctx.data_disk_path)
     except Exception as e:
         g_logger.error("Error during configuration of XML, %s", e)
         return ""
@@ -447,24 +527,173 @@ def cvm_net_check(ip_list: List[str], retries: int = 5, delay: int = 3) -> List[
 
     return unreachable_ips
 
-def cvm_resource_reclaim(cvm_name: str, server_config: config):
-    g_logger.info("Clean up the resource of %s", cvm_name)
-    libvirt = libvirtDriver()
-    if libvirt.is_vm_running(cvm_name):
-        libvirt.destroy_cvm_by_name(cvm_name)
+def _cleanup_dhcp_entry(network_name: str, mac_address: str, ip_address: str):
+    """清理 DHCP 条目，失败时记录日志但不抛出异常"""
+    try:
+        driver = libvirtDriver()
+        success, err_msg = driver.remove_dhcp_host_entry(network_name, mac_address, ip_address)
+        if success:
+            g_logger.info("DHCP entry removed: mac=%s, ip=%s", mac_address, ip_address)
+        else:
+            g_logger.warning("Failed to remove DHCP entry (non-fatal): %s", err_msg)
+    except Exception as e:
+        g_logger.error("Exception during DHCP cleanup (non-fatal): %s", e)
+
+
+def _cleanup_vm_instance(cvm_name: str):
+    """清理 VM 实例（销毁或取消定义）"""
+    try:
+        libvirt = libvirtDriver()
+        if libvirt.is_vm_running(cvm_name):
+            libvirt.destroy_cvm_by_name(cvm_name)
+            g_logger.info("Destroyed running VM: %s", cvm_name)
+        else:
+            libvirt.undefine_cvm_by_name(cvm_name)
+            g_logger.info("Undefined stopped VM: %s", cvm_name)
+    except Exception as e:
+        g_logger.error("Exception during VM instance cleanup (non-fatal): %s", e)
+
+
+def _cleanup_disk_files(cvm_name: str, server_config: config):
+    """清理磁盘镜像文件"""
+    try:
+        qcow2_dir = server_config.config.get("DEFAULT", "cvm_image_path")
+        file_name = f"{cvm_name}.qcow2"
+        qcow2_path = os.path.join(qcow2_dir, file_name)
+        if os.path.exists(qcow2_path):
+            os.remove(qcow2_path)
+            g_logger.info("Removed system disk: %s", qcow2_path)
+
+        data_disk_name = f"{cvm_name}_data.qcow2"
+        data_disk_path = os.path.join(qcow2_dir, data_disk_name)
+        if os.path.exists(data_disk_path):
+            os.remove(data_disk_path)
+            g_logger.info("Removed data disk: %s", data_disk_path)
+    except Exception as e:
+        g_logger.error("Exception during disk cleanup (non-fatal): %s", e)
+
+
+def _cleanup_device_allocation(cvm_name: str, server_config: config):
+    """释放设备分配"""
+    try:
+        server_config.device_allocator.release(DeviceReleaseReq(vm_id=cvm_name))
+        g_logger.info("Released device allocation for: %s", cvm_name)
+    except Exception as e:
+        g_logger.error("Exception during device release (non-fatal): %s", e)
+
+
+def _find_dhcp_entries_by_hostname(hostname: str, network_name: str = None) -> List[DhcpEntryInfo]:
+    """
+    根据主机名扫描 DHCP 条目，查找所有关联的 MAC/IP 地址
+
+    支持虚拟机多网卡场景，返回所有匹配该主机名的 DHCP 条目。
+
+    :param hostname: VM 主机名
+    :param network_name: libvirt 网络名称
+    :return: DhcpEntryInfo 列表，未找到返回空列表
+    """
+    if network_name is None:
+        network_name = VIRBR0_NETWORK_NAME
+    try:
+        driver = libvirtDriver()
+        network_info, err_msg = driver.query_virbr0_config(network_name)
+        if err_msg or not network_info:
+            g_logger.warning("Failed to query network config for hostname lookup: %s", err_msg)
+            return []
+
+        entries = []
+        for lease in network_info.existing_leases:
+            lease_hostname = lease.get("hostname", "")
+            if lease_hostname == hostname:
+                mac = lease.get("mac", "")
+                ip = lease.get("ipaddr", "")
+                if mac and ip:
+                    entries.append(DhcpEntryInfo(mac_address=mac, ip_address=ip))
+
+        if entries:
+            g_logger.info(
+                "Found %d DHCP entries for hostname '%s': %s",
+                len(entries), hostname,
+                [(e.mac_address, e.ip_address) for e in entries]
+            )
+        else:
+            g_logger.info("No DHCP entry found for hostname '%s'", hostname)
+
+        return entries
+
+    except Exception as e:
+        g_logger.error("Exception during DHCP entry lookup for '%s': %s", hostname, e)
+        return []
+
+
+def _find_dhcp_entry_by_hostname(hostname: str, network_name: str = None) -> Tuple[str, str]:
+    """
+    根据主机名扫描 DHCP 条目，查找对应的 MAC/IP 地址（向后兼容接口）
+
+    :param hostname: VM 主机名
+    :param network_name: libvirt 网络名称
+    :return: (mac_address, ip_address) 元组，未找到返回 ("", "")
+    """
+    entries = _find_dhcp_entries_by_hostname(hostname, network_name)
+    if entries:
+        return entries[0].mac_address, entries[0].ip_address
+    return "", ""
+
+
+def _cleanup_dhcp_entries(network_name: str, dhcp_entries: List[DhcpEntryInfo]):
+    """批量清理多个 DHCP 条目，失败时记录日志但不抛出异常"""
+    if not dhcp_entries:
+        return
+
+    for entry in dhcp_entries:
+        if entry.mac_address and entry.ip_address:
+            _cleanup_dhcp_entry(network_name, entry.mac_address, entry.ip_address)
+
+
+def cvm_resource_reclaim(
+    cvm_name: str = "",
+    server_config: config = None,
+    mac_address: str = "",
+    ip_address: str = "",
+    network_name: str = None,
+    reclaim_ctx: CvmReclaimContext = None,
+):
+    """
+    清理 CVM 相关资源，包括：
+    1. 删除 DHCP 主机条目（恢复 libvirt 网桥配置）
+    2. 销毁或取消定义虚拟机
+    3. 删除磁盘镜像文件
+    4. 释放设备分配
+
+    支持两种调用方式：
+    - 向后兼容：使用独立参数 (cvm_name, server_config, mac_address, ip_address, network_name)
+    - 结构化参数：使用 reclaim_ctx (CvmReclaimContext)，支持多 DHCP 条目和未来扩展
+
+    采用"尽力清理"策略：单步失败不阻断后续清理
+    """
+    if reclaim_ctx is not None:
+        cvm_name = reclaim_ctx.cvm_name or cvm_name
+        server_config = reclaim_ctx.server_config or server_config
+        network_name = reclaim_ctx.network_name or network_name
+        dhcp_entries = reclaim_ctx.dhcp_entries
     else:
-        libvirt.undefine_cvm_by_name(cvm_name)
-    qcow2_dir = server_config.config.get("DEFAULT", "cvm_image_path")
-    file_name = f"{cvm_name}.qcow2"
-    qcow2_path = os.path.join(qcow2_dir, file_name)
-    if os.path.exists(qcow2_path):
-        os.remove(qcow2_path)
-    data_disk_name = f"{cvm_name}_data.qcow2"
-    data_disk_path = os.path.join(qcow2_dir, data_disk_name)
-    if os.path.exists(data_disk_path):
-        os.remove(data_disk_path)
-        g_logger.info("Removed data disk: %s", data_disk_path)
-    server_config.device_allocator.release(DeviceReleaseReq(vm_id=cvm_name))
+        if mac_address and ip_address:
+            dhcp_entries = [DhcpEntryInfo(mac_address=mac_address, ip_address=ip_address)]
+        else:
+            dhcp_entries = []
+
+    if network_name is None:
+        network_name = VIRBR0_NETWORK_NAME
+
+    g_logger.info("Clean up the resource of %s", cvm_name)
+
+    _cleanup_dhcp_entries(network_name, dhcp_entries)
+
+    _cleanup_vm_instance(cvm_name)
+
+    _cleanup_disk_files(cvm_name, server_config)
+
+    _cleanup_device_allocation(cvm_name, server_config)
 
 def _ensure_sriov_vf_resources(
     device_allocator: resource_allocator.DeviceManagerAllocator,
@@ -605,22 +834,6 @@ def _get_pf_max_vf_capacity(pf_device_name: str) -> int:
             f"Failed to read sriov_totalvfs for {pf_device_name}: {e}"
         )
         return 0
-
-
-@dataclass
-class VmDeploymentContext:
-    """Per-VM deployment context carrying state across phases"""
-    cvm_name: str
-    vm_spec: VmDeploySpec
-    host_numa_id: int = -1
-    device_dict: dict = field(default_factory=dict)
-    ip_list: List[str] = field(default_factory=list)
-    qcow2_path: str = ""
-    data_disk_path: str = ""
-    xml_config: str = ""
-    error_message: str = ""
-    success: bool = False
-    network_check_result: Optional["NetworkCheckResult"] = None
 
 
 class NetworkCheckType(Enum):
@@ -952,6 +1165,7 @@ def _phase2_allocate_resources(
 
     Allocate compute, network, and storage resources for a single VM:
     - Device allocation (PF/VF)
+    - Network allocation (virbr0 MAC/IP via libvirt API)
     - Disk image creation (system + optional data disk)
 
     Returns:
@@ -977,6 +1191,39 @@ def _phase2_allocate_resources(
 
     ctx.device_dict = device_dict
 
+    driver = libvirtDriver()
+
+    network_info, err_msg = driver.query_virbr0_config(VIRBR0_NETWORK_NAME)
+    if err_msg or not network_info:
+        ctx.error_message = f"Failed to query virbr0 network config: {err_msg}"
+        g_logger.error("Phase 2 (Resource Allocation) failed for %s: %s", cvm_name, ctx.error_message)
+        return ctx
+
+    mac_ip_pair, err_msg = driver.generate_mac_ip_pair(network_info)
+    if err_msg or not mac_ip_pair:
+        ctx.error_message = f"Failed to generate MAC/IP pair: {err_msg}"
+        g_logger.error("Phase 2 (Resource Allocation) failed for %s: %s", cvm_name, ctx.error_message)
+        return ctx
+
+    success, err_msg = driver.write_dhcp_host_entry(
+        VIRBR0_NETWORK_NAME,
+        mac_ip_pair.mac_address,
+        mac_ip_pair.ip_address,
+        cvm_name
+    )
+    if not success:
+        ctx.error_message = f"Failed to write DHCP host entry: {err_msg}"
+        g_logger.error("Phase 2 (Resource Allocation) failed for %s: %s", cvm_name, ctx.error_message)
+        return ctx
+
+    ctx.virtbr0_mac_addr = mac_ip_pair.mac_address
+    ctx.virtbr0_ip = mac_ip_pair.ip_address
+
+    g_logger.info(
+        "Allocated network for %s: mac=%s, ip=%s",
+        cvm_name, mac_ip_pair.mac_address, mac_ip_pair.ip_address
+    )
+
     qcow2_dir = server_config.config.get("DEFAULT", "cvm_image_path")
     qcow2_path, data_disk_path = config_disk(
         cvm_name, qcow2_dir, [], server_config, vm_spec.disk_size
@@ -991,8 +1238,8 @@ def _phase2_allocate_resources(
     ctx.data_disk_path = data_disk_path or ""
 
     g_logger.info(
-        "Phase 2 (Resource Allocation) passed for %s: numa=%d, devices=%s, disk=%s",
-        cvm_name, host_numa_id, device_dict, qcow2_path
+        "Phase 2 (Resource Allocation) passed for %s: numa=%d, devices=%s, disk=%s, mac=%s, ip=%s",
+        cvm_name, host_numa_id, device_dict, qcow2_path, ctx.virtbr0_mac_addr, ctx.virtbr0_ip
     )
     return ctx
 
@@ -1011,14 +1258,7 @@ def _phase3_configure_xml(
     if ctx.error_message:
         return ctx
 
-    output_xml = config_xml(
-        ctx.cvm_name,
-        ctx.vm_spec,
-        ctx.qcow2_path,
-        ctx.host_numa_id,
-        ctx.device_dict,
-        ctx.data_disk_path if ctx.data_disk_path else None,
-    )
+    output_xml = config_xml(ctx)
     if not output_xml:
         ctx.error_message = f"XML configuration failure for {ctx.cvm_name}"
         g_logger.error("Phase 3 (XML Configuration) failed for %s", ctx.cvm_name)
@@ -1093,7 +1333,13 @@ def _deploy_single_vm(
         if ctx.error_message:
             return ctx
 
-        ctx = _phase4_execute_deployment(ctx, server_config)
+        try:
+            ctx = _phase4_execute_deployment(ctx, server_config)
+        except Exception as e:
+            ctx.error_message = str(e)
+            g_logger.error("Phase 4 (Deployment Execution) exception for %s: %s", cvm_name, e)
+            raise DeploymentException(str(e), ctx)
+        
         return ctx
 
 
@@ -1171,11 +1417,50 @@ def deploy_cvm(
                     g_logger.error(
                         "Deployment failed for %s: %s", cvm_name, ctx.error_message
                     )
-                    cvm_resource_reclaim(cvm_name, server_config)
+                    dhcp_entries = []
+                    if ctx.virtbr0_mac_addr and ctx.virtbr0_ip:
+                        dhcp_entries.append(
+                            DhcpEntryInfo(
+                                mac_address=ctx.virtbr0_mac_addr,
+                                ip_address=ctx.virtbr0_ip
+                            )
+                        )
+                    cvm_resource_reclaim(
+                        reclaim_ctx=CvmReclaimContext(
+                            cvm_name=cvm_name,
+                            server_config=server_config,
+                            dhcp_entries=dhcp_entries
+                        )
+                    )
                     return successfully_deployed_vms, ctx.error_message
             except Exception as e:
                 g_logger.error("Unexpected error deploying %s: %s", cvm_name, e)
-                cvm_resource_reclaim(cvm_name, server_config)
+                dhcp_entries = []
+                
+                if isinstance(e, DeploymentException):
+                    ctx = e.ctx
+                    if ctx.virtbr0_mac_addr and ctx.virtbr0_ip:
+                        dhcp_entries.append(
+                            DhcpEntryInfo(
+                                mac_address=ctx.virtbr0_mac_addr,
+                                ip_address=ctx.virtbr0_ip
+                            )
+                        )
+                elif 'ctx' in locals() and ctx.virtbr0_mac_addr and ctx.virtbr0_ip:
+                    dhcp_entries.append(
+                        DhcpEntryInfo(
+                            mac_address=ctx.virtbr0_mac_addr,
+                            ip_address=ctx.virtbr0_ip
+                        )
+                    )
+                
+                cvm_resource_reclaim(
+                    reclaim_ctx=CvmReclaimContext(
+                        cvm_name=cvm_name,
+                        server_config=server_config,
+                        dhcp_entries=dhcp_entries
+                    )
+                )
                 return successfully_deployed_vms, str(e)
 
     g_logger.info(
@@ -1186,12 +1471,27 @@ def deploy_cvm(
 
 def undeploy_cvm(vm_id: str, server_config: config) -> bool:
     libvirt = libvirtDriver()
+    dhcp_entries = _find_dhcp_entries_by_hostname(vm_id)
     if libvirt.destroy_cvm_by_name(vm_id):
         g_logger.info('CVM %s destroy successfully!', vm_id)
-        cvm_resource_reclaim(vm_id, server_config)
+        cvm_resource_reclaim(
+            reclaim_ctx=CvmReclaimContext(
+                cvm_name=vm_id,
+                server_config=server_config,
+                dhcp_entries=dhcp_entries
+            )
+        )
         return True
     else:
         g_logger.error("Failed to destroy VM %s.", vm_id)
+        if dhcp_entries:
+            cvm_resource_reclaim(
+                reclaim_ctx=CvmReclaimContext(
+                    cvm_name=vm_id,
+                    server_config=server_config,
+                    dhcp_entries=dhcp_entries
+                )
+            )
         return False
 
 def stop_cvm(vm_id: str) -> Tuple[bool, str]:
@@ -1375,6 +1675,662 @@ class libvirtDriver:
                 err_msg = f"Failed to destroy VM '{vm_name}': {e}"
                 g_logger.error(err_msg)
                 return False, err_msg
+
+    def query_virbr0_config(self, network_name: str = VIRBR0_NETWORK_NAME) -> Tuple[Optional[Virbr0NetworkInfo], str]:
+        """
+        通过 libvirt API 查询 virbr0 网桥的网络配置信息
+
+        :param network_name: libvirt 网络名称（默认: "default"）
+        :return: (Virbr0NetworkInfo 或 None, 错误信息) 元组
+        """
+        try:
+            with self._get_connection() as conn:
+                network = conn.networkLookupByName(network_name)
+                xml_desc = network.XMLDesc(0)
+
+                g_logger.info("Retrieved network XML for '%s'", network_name)
+
+                network_info = self._parse_network_xml(xml_desc, network_name)
+
+                leases = self._get_dhcp_leases(network)
+                network_info.existing_leases = leases
+
+                for lease in leases:
+                    mac = lease.get("mac", "").lower()
+                    ip = lease.get("ipaddr", "")
+                    if mac:
+                        network_info.existing_macs.add(mac)
+                    if ip:
+                        network_info.existing_ips.add(ip)
+
+                g_logger.info(
+                    "Network '%s' info: subnet=%s, dhcp_range=[%s-%s], "
+                    "existing_leases=%d, existing_macs=%d, existing_ips=%d",
+                    network_name, network_info.subnet_cidr,
+                    network_info.dhcp_start, network_info.dhcp_end,
+                    len(leases), len(network_info.existing_macs),
+                    len(network_info.existing_ips)
+                )
+
+                return network_info, ""
+
+        except libvirt.libvirtError as e:
+            err_msg = f"Failed to query network '{network_name}': {e}"
+            g_logger.error(err_msg)
+            return None, err_msg
+        except Exception as e:
+            err_msg = f"Unexpected error querying network config: {e}"
+            g_logger.error(err_msg)
+            return None, err_msg
+
+    def _parse_network_xml(self, xml_desc: str, network_name: str) -> Virbr0NetworkInfo:
+        """解析 libvirt 网络 XML 提取配置信息"""
+        info = Virbr0NetworkInfo(network_name=network_name)
+
+        try:
+            root = ET.fromstring(xml_desc)
+
+            bridge_elem = root.find(".//bridge")
+            if bridge_elem is not None:
+                info.bridge_name = bridge_elem.get("name", "")
+
+            ip_elem = root.find(".//ip")
+            if ip_elem is not None:
+                info.ip_address = ip_elem.get("address", "")
+                info.netmask = ip_elem.get("netmask", "")
+
+                if info.ip_address and info.netmask:
+                    network = ipaddress.IPv4Network(
+                        f"{info.ip_address}/{info.netmask}", strict=False
+                    )
+                    info.subnet_cidr = str(network)
+                    info.subnet_network = network
+
+                dhcp_elem = ip_elem.find(".//dhcp")
+                if dhcp_elem is not None:
+                    range_elem = dhcp_elem.find(".//range")
+                    if range_elem is not None:
+                        info.dhcp_start = range_elem.get("start", "")
+                        info.dhcp_end = range_elem.get("end", "")
+
+            host_elems = root.findall(".//host")
+            for host_elem in host_elems:
+                mac = host_elem.get("mac", "").lower()
+                ip = host_elem.get("ip", "")
+                if mac:
+                    info.existing_macs.add(mac)
+                if ip:
+                    info.existing_ips.add(ip)
+
+        except ET.ParseError as e:
+            g_logger.error("Failed to parse network XML: %s", e)
+            raise
+        except Exception as e:
+            g_logger.error("Error parsing network XML: %s", e)
+            raise
+
+        return info
+
+    def _get_dhcp_leases(self, network) -> List[Dict[str, str]]:
+        """从 libvirt 网络获取当前 DHCP 租约"""
+        try:
+            leases = network.DHCPLeases()
+            result = []
+            for lease in leases:
+                result.append({
+                    "expirytime": lease.get("expirytime", ""),
+                    "ipaddr": lease.get("ipaddr", ""),
+                    "prefix": lease.get("prefix", ""),
+                    "mac": lease.get("mac", "").lower(),
+                    "iaid": lease.get("iaid", ""),
+                    "hostname": lease.get("hostname", ""),
+                })
+            return result
+        except libvirt.libvirtError as e:
+            g_logger.warning("Failed to get DHCP leases: %s", e)
+            return []
+        except Exception as e:
+            g_logger.warning("Unexpected error getting DHCP leases: %s", e)
+            return []
+
+    def generate_mac_address(self, existing_macs: Optional[Set[str]] = None) -> Tuple[str, str]:
+        """
+        生成不与现有设备 MAC 地址冲突的新 MAC 地址
+
+        使用 libvirt 保留的 OUI 前缀 52:54:00 确保 MAC 地址在本地管理范围内。
+        使用线程锁确保并发安全。
+
+        :param existing_macs: 需要避免的现有 MAC 地址集合
+        :return: (mac_address, error_message) 元组
+        """
+        with _virbr0_config_lock:
+            return self._generate_mac_address_internal(existing_macs)
+
+    def _generate_mac_address_internal(self, existing_macs: Optional[Set[str]] = None) -> Tuple[str, str]:
+        """内部 MAC 地址生成方法，必须在持有 _virbr0_config_lock 时调用"""
+        if existing_macs is None:
+            existing_macs = set()
+
+        existing_macs = {mac.lower() for mac in existing_macs}
+
+        import random
+
+        max_attempts = 100
+        for attempt in range(max_attempts):
+            octet4 = random.randint(0x00, 0xFF)
+            octet5 = random.randint(0x00, 0xFF)
+            octet6 = random.randint(0x00, 0xFF)
+
+            mac = f"{MAC_OUI_PREFIX}:{octet4:02x}:{octet5:02x}:{octet6:02x}"
+
+            if mac not in existing_macs:
+                g_logger.info("Generated new MAC address: %s", mac)
+                return mac, ""
+
+        err_msg = f"Failed to generate unique MAC address after {max_attempts} attempts"
+        g_logger.error(err_msg)
+        return "", err_msg
+
+    def generate_ip_address(
+        self,
+        network_info: Virbr0NetworkInfo,
+        existing_ips: Optional[Set[str]] = None,
+    ) -> Tuple[str, str]:
+        """
+        生成在 virbr0 子网范围内且不与当前 DHCP 分配记录冲突的 IP 地址
+
+        使用线程锁确保并发安全。
+
+        :param network_info: Virbr0NetworkInfo 包含子网和 DHCP 范围信息
+        :param existing_ips: 需要避免的现有 IP 地址集合
+        :return: (ip_address, error_message) 元组
+        """
+        with _virbr0_config_lock:
+            return self._generate_ip_address_internal(network_info, existing_ips)
+
+    def _generate_ip_address_internal(
+        self,
+        network_info: Virbr0NetworkInfo,
+        existing_ips: Optional[Set[str]] = None,
+    ) -> Tuple[str, str]:
+        """内部 IP 地址生成方法，必须在持有 _virbr0_config_lock 时调用"""
+        if existing_ips is None:
+            existing_ips = set()
+
+        if network_info.subnet_network is None:
+            err_msg = "Network info does not contain valid subnet information"
+            g_logger.error(err_msg)
+            return "", err_msg
+
+        dhcp_start = network_info.dhcp_start
+        dhcp_end = network_info.dhcp_end
+
+        if dhcp_start and dhcp_end:
+            available_ips = self._get_dhcp_range_ips(
+                network_info.subnet_network, dhcp_start, dhcp_end, existing_ips
+            )
+        else:
+            available_ips = self._get_subnet_available_ips(
+                network_info.subnet_network, existing_ips
+            )
+
+        if not available_ips:
+            err_msg = "No available IP addresses in the DHCP range"
+            g_logger.error(err_msg)
+            return "", err_msg
+
+        import random
+        selected_ip = random.choice(list(available_ips))
+
+        g_logger.info("Generated new IP address: %s", selected_ip)
+        return str(selected_ip), ""
+
+    def _get_dhcp_range_ips(
+        self,
+        network: ipaddress.IPv4Network,
+        dhcp_start: str,
+        dhcp_end: str,
+        existing_ips: Set[str],
+    ) -> Set[ipaddress.IPv4Address]:
+        """获取 DHCP 范围内的可用 IP"""
+        try:
+            start_ip = ipaddress.IPv4Address(dhcp_start)
+            end_ip = ipaddress.IPv4Address(dhcp_end)
+
+            if start_ip not in network or end_ip not in network:
+                g_logger.warning(
+                    "DHCP range [%s-%s] is outside network %s",
+                    dhcp_start, dhcp_end, network
+                )
+                return set()
+
+            available = set()
+            current = start_ip
+            while current <= end_ip:
+                if str(current) not in existing_ips:
+                    available.add(current)
+                current = current + 1
+
+            return available
+
+        except ValueError as e:
+            g_logger.error("Invalid DHCP range [%s-%s]: %s", dhcp_start, dhcp_end, e)
+            return set()
+
+    def _get_subnet_available_ips(
+        self,
+        network: ipaddress.IPv4Network,
+        existing_ips: Set[str],
+    ) -> Set[ipaddress.IPv4Address]:
+        """获取整个子网中的可用 IP"""
+        available = set()
+
+        for host in network.hosts():
+            ip_str = str(host)
+            if ip_str not in existing_ips:
+                last_octet = int(ip_str.split(".")[-1])
+                if 2 <= last_octet <= 254:
+                    available.add(host)
+
+        return available
+
+    def generate_mac_ip_pair(
+        self,
+        network_info: Virbr0NetworkInfo,
+        existing_macs: Optional[Set[str]] = None,
+        existing_ips: Optional[Set[str]] = None,
+    ) -> Tuple[Optional[MacIpPair], str]:
+        """
+        生成不冲突的 MAC 和 IP 地址对
+
+        使用线程锁确保并发安全。
+
+        :param network_info: Virbr0NetworkInfo 包含网络配置
+        :param existing_macs: 需要避免的现有 MAC 地址集合
+        :param existing_ips: 需要避免的现有 IP 地址集合
+        :return: (MacIpPair 或 None, error_message) 元组
+        """
+        with _virbr0_config_lock:
+            return self._generate_mac_ip_pair_internal(network_info, existing_macs, existing_ips)
+
+    def _generate_mac_ip_pair_internal(
+        self,
+        network_info: Virbr0NetworkInfo,
+        existing_macs: Optional[Set[str]] = None,
+        existing_ips: Optional[Set[str]] = None,
+    ) -> Tuple[Optional[MacIpPair], str]:
+        """内部 MAC/IP 对生成方法，必须在持有 _virbr0_config_lock 时调用"""
+        if existing_macs is None:
+            existing_macs = set()
+        if existing_ips is None:
+            existing_ips = set()
+
+        combined_macs = network_info.existing_macs | existing_macs
+        combined_ips = network_info.existing_ips | existing_ips
+
+        mac, err_msg = self._generate_mac_address_internal(combined_macs)
+        if err_msg:
+            return None, err_msg
+
+        ip, err_msg = self._generate_ip_address_internal(network_info, combined_ips)
+        if err_msg:
+            return None, err_msg
+
+        pair = MacIpPair(mac_address=mac, ip_address=ip)
+        g_logger.info("Generated MAC-IP pair: %s -> %s", mac, ip)
+        return pair, ""
+
+    def write_dhcp_host_entry(
+        self,
+        network_name: str,
+        mac_address: str,
+        ip_address: str,
+        hostname: str = "",
+    ) -> Tuple[bool, str]:
+        """
+        将 DHCP 主机条目写入 libvirt 网络配置
+
+        此方法更新 libvirt 网络 XML 以添加静态 DHCP 主机条目，
+        这是添加 MAC/IP 绑定的推荐方式。
+        使用线程锁确保并发安全。
+
+        :param network_name: libvirt 网络名称
+        :param mac_address: 要添加的 MAC 地址
+        :param ip_address: 要分配的 IP 地址
+        :param hostname: 条目的可选主机名
+        :return: (success, error_message) 元组
+        """
+        if not self._validate_mac_address(mac_address):
+            err_msg = f"Invalid MAC address format: {mac_address}"
+            g_logger.error(err_msg)
+            return False, err_msg
+
+        if not self._validate_ip_address(ip_address):
+            err_msg = f"Invalid IP address format: {ip_address}"
+            g_logger.error(err_msg)
+            return False, err_msg
+
+        with _virbr0_config_lock:
+            return self._write_dhcp_host_entry_internal(network_name, mac_address, ip_address, hostname)
+
+    def _write_dhcp_host_entry_internal(
+        self,
+        network_name: str,
+        mac_address: str,
+        ip_address: str,
+        hostname: str = "",
+    ) -> Tuple[bool, str]:
+        """内部 DHCP 主机条目写入方法，必须在持有 _virbr0_config_lock 时调用"""
+        try:
+            with self._get_connection() as conn:
+                network = conn.networkLookupByName(network_name)
+
+                network.update(
+                    libvirt.VIR_NETWORK_UPDATE_COMMAND_ADD_LAST,
+                    libvirt.VIR_NETWORK_SECTION_IP_DHCP_HOST,
+                    -1,
+                    f"<host mac='{mac_address}' ip='{ip_address}' name='{hostname}'/>",
+                    libvirt.VIR_NETWORK_UPDATE_AFFECT_LIVE | libvirt.VIR_NETWORK_UPDATE_AFFECT_CONFIG,
+                )
+
+                g_logger.info(
+                    "Added DHCP host entry: mac=%s, ip=%s, hostname=%s to network '%s'",
+                    mac_address, ip_address, hostname, network_name
+                )
+
+                return True, ""
+
+        except libvirt.libvirtError as e:
+            err_msg = f"Failed to write DHCP host entry: {e}"
+            g_logger.error(err_msg)
+            return False, err_msg
+        except Exception as e:
+            err_msg = f"Unexpected error writing DHCP host entry: {e}"
+            g_logger.error(err_msg)
+            return False, err_msg
+
+    def write_dhcp_config_file(
+        self,
+        mac_address: str,
+        ip_address: str,
+        hostname: str = "",
+        config_dir: str = DHCP_CONFIG_DIR,
+        network_name: str = VIRBR0_NETWORK_NAME,
+    ) -> Tuple[bool, str]:
+        """
+        将 MAC/IP 对直接写入 dnsmasq 配置文件
+
+        这是一种替代方法，直接写入 dnsmasq 主机配置文件。
+        使用原子写入防止损坏。
+        使用线程锁确保并发安全。
+
+        :param mac_address: 要添加的 MAC 地址
+        :param ip_address: 要分配的 IP 地址
+        :param hostname: 可选主机名
+        :param config_dir: dnsmasq 配置目录
+        :param network_name: 用于文件命名的网络名称
+        :return: (success, error_message) 元组
+        """
+        if not self._validate_mac_address(mac_address):
+            err_msg = f"Invalid MAC address format: {mac_address}"
+            g_logger.error(err_msg)
+            return False, err_msg
+
+        if not self._validate_ip_address(ip_address):
+            err_msg = f"Invalid IP address format: {ip_address}"
+            g_logger.error(err_msg)
+            return False, err_msg
+
+        with _virbr0_config_lock:
+            return self._write_dhcp_config_file_internal(
+                mac_address, ip_address, hostname, config_dir, network_name
+            )
+
+    def _write_dhcp_config_file_internal(
+        self,
+        mac_address: str,
+        ip_address: str,
+        hostname: str = "",
+        config_dir: str = DHCP_CONFIG_DIR,
+        network_name: str = VIRBR0_NETWORK_NAME,
+    ) -> Tuple[bool, str]:
+        """内部 DHCP 配置文件写入方法，必须在持有 _virbr0_config_lock 时调用"""
+        config_file = os.path.join(config_dir, f"{network_name}.hosts")
+
+        try:
+            os.makedirs(config_dir, exist_ok=True)
+
+            existing_content = ""
+            if os.path.exists(config_file):
+                with open(config_file, "r") as f:
+                    existing_content = f.read()
+
+            new_entry = self._format_dhcp_entry(mac_address, ip_address, hostname)
+
+            if self._entry_exists(existing_content, mac_address, ip_address):
+                g_logger.info(
+                    "DHCP entry already exists: mac=%s, ip=%s", mac_address, ip_address
+                )
+                return True, ""
+
+            updated_content = existing_content.rstrip("\n") + "\n" + new_entry + "\n"
+
+            self._atomic_write(config_file, updated_content)
+
+            g_logger.info(
+                "Wrote DHCP entry to %s: mac=%s, ip=%s", config_file, mac_address, ip_address
+            )
+
+            return True, ""
+
+        except PermissionError as e:
+            err_msg = f"Permission denied writing to {config_file}: {e}"
+            g_logger.error(err_msg)
+            return False, err_msg
+        except OSError as e:
+            err_msg = f"OS error writing to {config_file}: {e}"
+            g_logger.error(err_msg)
+            return False, err_msg
+        except Exception as e:
+            err_msg = f"Unexpected error writing DHCP config: {e}"
+            g_logger.error(err_msg)
+            return False, err_msg
+
+    def _format_dhcp_entry(self, mac_address: str, ip_address: str, hostname: str="") -> str:
+        """格式化 dnsmasq 主机文件条目"""
+        if hostname:
+            return f"{ip_address} {hostname} {mac_address}"
+        return f"{ip_address} {mac_address}"
+
+    def _entry_exists(self, content: str, mac_address: str, ip_address: str) -> bool:
+        """检查 MAC/IP 条目是否已存在于配置文件中"""
+        mac_normalized = mac_address.lower().replace("-", ":")
+
+        for line in content.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            parts = line.split()
+
+            if len(parts) >= 2:
+                file_ip = parts[0]
+                file_mac = parts[-1].lower().replace("-", ":")
+
+                if file_mac == mac_normalized or file_ip == ip_address:
+                    return True
+
+        return False
+
+    def _atomic_write(self, filepath: str, content: str):
+        """
+        原子性地写入内容到文件
+
+        使用先写入临时文件再重命名的策略确保原子性，
+        防止断电或崩溃时文件损坏。
+        """
+        dir_name = os.path.dirname(filepath)
+
+        fd, tmp_path = tempfile.mkstemp(dir=dir_name, prefix=".tmp_dhcp_")
+        try:
+            with os.fdopen(fd, "w") as tmp_file:
+                tmp_file.write(content)
+                tmp_file.flush()
+                os.fsync(tmp_file.fileno())
+
+            shutil.move(tmp_path, filepath)
+
+        except Exception:
+            if os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+            raise
+
+    def _validate_mac_address(self, mac_address: str) -> bool:
+        """验证 MAC 地址格式"""
+        if not mac_address:
+            return False
+
+        mac_pattern = re.compile(
+            r"^([0-9A-Fa-f]{2}[:]){5}([0-9A-Fa-f]{2})$"
+        )
+        return bool(mac_pattern.match(mac_address))
+
+    def _validate_ip_address(self, ip_address: str) -> bool:
+        """验证 IPv4 地址格式"""
+        if not ip_address:
+            return False
+
+        try:
+            ipaddress.IPv4Address(ip_address)
+            return True
+        except (ipaddress.AddressValueError, ValueError):
+            return False
+
+    def remove_dhcp_host_entry(
+        self,
+        network_name: str,
+        mac_address: str,
+        ip_address: str,
+    ) -> Tuple[bool, str]:
+        """
+        从 libvirt 网络配置中删除 DHCP 主机条目
+
+        使用线程锁确保并发安全。
+
+        :param network_name: libvirt 网络名称
+        :param mac_address: 要删除的 MAC 地址
+        :param ip_address: 要删除的 IP 地址
+        :return: (success, error_message) 元组
+        """
+        with _virbr0_config_lock:
+            return self._remove_dhcp_host_entry_internal(network_name, mac_address, ip_address)
+
+    def _remove_dhcp_host_entry_internal(
+        self,
+        network_name: str,
+        mac_address: str,
+        ip_address: str,
+    ) -> Tuple[bool, str]:
+        """内部 DHCP 主机条目删除方法，必须在持有 _virbr0_config_lock 时调用"""
+        try:
+            with self._get_connection() as conn:
+                network = conn.networkLookupByName(network_name)
+
+                network.update(
+                    libvirt.VIR_NETWORK_UPDATE_COMMAND_DELETE,
+                    libvirt.VIR_NETWORK_SECTION_IP_DHCP_HOST,
+                    -1,
+                    f"<host mac='{mac_address}' ip='{ip_address}'/>",
+                    libvirt.VIR_NETWORK_UPDATE_AFFECT_LIVE | libvirt.VIR_NETWORK_UPDATE_AFFECT_CONFIG,
+                )
+
+                g_logger.info(
+                    "Removed DHCP host entry: mac=%s, ip=%s from network '%s'",
+                    mac_address, ip_address, network_name
+                )
+
+                return True, ""
+
+        except libvirt.libvirtError as e:
+            err_msg = f"Failed to remove DHCP host entry: {e}"
+            g_logger.error(err_msg)
+            return False, err_msg
+        except Exception as e:
+            err_msg = f"Unexpected error removing DHCP host entry: {e}"
+            g_logger.error(err_msg)
+            return False, err_msg
+
+    def batch_allocate_mac_ip_pairs(
+        self,
+        network_info: Virbr0NetworkInfo,
+        count: int,
+    ) -> Tuple[List[MacIpPair], str]:
+        """
+        批量分配多个不冲突的 MAC/IP 对
+
+        使用线程锁确保整个批量分配的原子性。
+
+        :param network_info: Virbr0NetworkInfo 包含网络配置
+        :param count: 要生成的对数
+        :return: (MacIpPair 列表, error_message) 元组
+        """
+        if count <= 0:
+            return [], "Count must be a positive integer"
+
+        with _virbr0_config_lock:
+            return self._batch_allocate_mac_ip_pairs_internal(network_info, count)
+
+    def _batch_allocate_mac_ip_pairs_internal(
+        self,
+        network_info: Virbr0NetworkInfo,
+        count: int,
+    ) -> Tuple[List[MacIpPair], str]:
+        """内部批量分配方法，必须在持有 _virbr0_config_lock 时调用"""
+        pairs = []
+        used_macs = set()
+        used_ips = set()
+
+        for i in range(count):
+            pair, err_msg = self._generate_mac_ip_pair_internal(
+                network_info, used_macs, used_ips
+            )
+            if err_msg:
+                return pairs, f"Failed to generate pair {i+1}: {err_msg}"
+
+            pairs.append(pair)
+            used_macs.add(pair.mac_address.lower())
+            used_ips.add(pair.ip_address)
+
+        g_logger.info("Batch allocated %d MAC/IP pairs", count)
+        return pairs, ""
+
+    def batch_write_dhcp_entries(
+        self,
+        network_name: str,
+        pairs: List[MacIpPair],
+    ) -> Tuple[bool, str]:
+        """
+        批量写入多个 MAC/IP 对到 DHCP 配置
+
+        :param network_name: libvirt 网络名称
+        :param pairs: 要写入的 MacIpPair 列表
+        :return: (success, error_message) 元组
+        """
+        if not pairs:
+            return True, ""
+
+        for i, pair in enumerate(pairs):
+            success, err_msg = self.write_dhcp_host_entry(
+                network_name, pair.mac_address, pair.ip_address
+            )
+            if not success:
+                return False, f"Failed to write entry {i+1} ({pair.mac_address}): {err_msg}"
+
+        g_logger.info("Batch wrote %d DHCP entries", len(pairs))
+        return True, ""
 
     @contextmanager
     def _get_connection(self):
